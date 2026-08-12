@@ -1,0 +1,100 @@
+"""
+Mochi's character state machine.
+
+Two independent-but-related axes of state:
+
+- CharacterState: what Mochi is physically doing (idle, walking, sleeping...)
+- Emotion: how Mochi feels (spec section 9), which influences animation,
+  sound, TTS style, and behavior.
+
+Both are simple enums so the rest of the app (animator, behavior engine,
+AI response layer) can reason about them without stringly-typed values.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+from app.core.events import Events, event_bus
+
+
+class CharacterState(str, Enum):
+    IDLE = "idle"
+    WALK_LEFT = "walk_left"
+    WALK_RIGHT = "walk_right"
+    SIT = "sit"
+    STAND = "stand"
+    SLEEP = "sleep"
+    WAKE = "wake"
+    DRAGGED = "dragged"
+    TALKING = "talking"
+    THINKING = "thinking"
+    PLAY = "play"
+    JUMP = "jump"
+    STRETCH = "stretch"
+    YAWN = "yawn"
+    LOOK_LEFT = "look_left"
+    LOOK_RIGHT = "look_right"
+    LOOK_UP = "look_up"
+    LOOK_DOWN = "look_down"
+
+
+class Emotion(str, Enum):
+    NEUTRAL = "neutral"
+    HAPPY = "happy"
+    EXCITED = "excited"
+    CURIOUS = "curious"
+    SLEEPY = "sleepy"
+    SAD = "sad"
+    CONFUSED = "confused"
+    ANNOYED = "annoyed"
+    SURPRISED = "surprised"
+    PLAYFUL = "playful"
+
+
+# Emotion -> (animation folder, optional sound name) per spec section 9.
+EMOTION_PROFILE = {
+    Emotion.NEUTRAL: {"animation": "idle", "sound": None},
+    Emotion.HAPPY: {"animation": "happy", "sound": "chirp"},
+    Emotion.EXCITED: {"animation": "excited", "sound": "chirp"},
+    Emotion.CURIOUS: {"animation": "look_left", "sound": None},
+    Emotion.SLEEPY: {"animation": "yawn", "sound": "yawn"},
+    Emotion.SAD: {"animation": "sad", "sound": None},
+    Emotion.CONFUSED: {"animation": "confused", "sound": None},
+    Emotion.ANNOYED: {"animation": "angry", "sound": None},
+    Emotion.SURPRISED: {"animation": "surprised", "sound": "surprised"},
+    Emotion.PLAYFUL: {"animation": "play", "sound": "purr"},
+}
+
+
+@dataclass
+class CharacterStateMachine:
+    """Tracks Mochi's current physical state and emotion, and notifies
+    the rest of the app via the event bus when either changes."""
+
+    state: CharacterState = CharacterState.IDLE
+    emotion: Emotion = Emotion.NEUTRAL
+    _history: list = field(default_factory=list)
+
+    def set_state(self, new_state: CharacterState) -> None:
+        if new_state == self.state:
+            return
+        self._history.append(self.state)
+        self.state = new_state
+        event_bus.publish(Events.ANIMATION_REQUESTED, {"animation": new_state.value})
+
+    def set_emotion(self, new_emotion: Emotion) -> None:
+        if new_emotion == self.emotion:
+            return
+        self.emotion = new_emotion
+        profile = EMOTION_PROFILE.get(new_emotion, {})
+        event_bus.publish(
+            Events.EMOTION_CHANGED,
+            {"emotion": new_emotion.value, **profile},
+        )
+        if profile.get("sound"):
+            event_bus.publish(Events.SOUND_REQUESTED, {"sound": profile["sound"]})
+
+    def previous_state(self) -> CharacterState | None:
+        return self._history[-1] if self._history else None
