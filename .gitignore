@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+
+# Local data (never commit user data/db)
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Downloaded local models (large binaries, fetched by user/setup script)
+models/*
+!models/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Google OAuth secrets - never commit
+config/google_credentials.json
+config/token.json
