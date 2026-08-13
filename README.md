@@ -130,7 +130,7 @@ pytest
 
 ## 📁 Project layout
 
-See `PROJECT_ARCHITECTURE.md §3` for the full annotated module map.
+See `PROJECT_ARCHITECTURE.md ` for the full annotated module map.
 
 ```text
 app/
