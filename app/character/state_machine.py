@@ -23,8 +23,6 @@ class CharacterState(str, Enum):
     IDLE = "idle"
     WALK_LEFT = "walk_left"
     WALK_RIGHT = "walk_right"
-    SIT = "sit"
-    STAND = "stand"
     SLEEP = "sleep"
     WAKE = "wake"
     DRAGGED = "dragged"

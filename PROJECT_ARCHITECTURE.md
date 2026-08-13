@@ -19,9 +19,10 @@ every future change. Read this before adding new subsystems.
    executes an action. It returns structured JSON; Python validates it
    against a schema and permission rules before anything happens
    (see §5).
-4. **Deterministic where possible.** Idle wandering, walking, sitting, etc.
-   are driven by a weighted-random behavior engine and QTimers — never by
-   calling the LLM. The LLM is reserved for actual language understanding.
+4. **Deterministic where possible.** Idle wandering, walking, stretching,
+   looking around, etc. are driven by a weighted-random behavior engine and
+   QTimers — never by calling the LLM. The LLM is reserved for actual
+   language understanding.
 5. **Graceful degradation.** If Ollama, the mic, TTS, or Google Calendar are
    unavailable, Mochi keeps working in a reduced mode instead of crashing
    (see §7).
@@ -93,23 +94,32 @@ app/
 │
 ├── ai/                      (Phase 2+) LLM access, prompts, intent parsing
 ├── memory/                  SQLite access layer
-│   └── database.py          Connection management + schema (reminders now;
-│                            conversations/memories/mood/relationship/
-│                            calendar_cache tables land in later phases)
+│   └── database.py          Connection management + schema (reminders,
+│                            tasks, timers now; conversations/memories/
+│                            mood/relationship/calendar_cache land later)
 ├── voice/                   (Phase 4+) mic capture, STT, TTS, sound effects
 ├── tools/                   Python functions the LLM's intents map to
-│   └── reminder_tools.py    ✅ create/list/complete/cancel/snooze/delete -
-│                            JSON-in/JSON-out wrapper around reminders/manager.py,
-│                            ready to be the AI layer's execution target
+│   ├── reminder_tools.py    ✅ create/list/complete/cancel/snooze/delete
+│   ├── task_tools.py        ✅ create/list/complete/reopen/cancel/delete/update
+│   └── timer_tools.py       ✅ start/list_active/cancel/add_time
+│                            All JSON-in/JSON-out, ready to be the AI layer's
+│                            execution target
 ├── reminders/                ✅ Local reminder engine (V1)
 │   ├── manager.py           CRUD over the `reminders` table + repeat rules
-│   ├── scheduler.py         QTimer polling for due reminders (no AI calls)
-│   └── notifications.py     Turns a due reminder into character events
-│                            (wake animation, sound, speech, OS notification)
+│   ├── scheduler.py         QTimer polling for due reminders (~15s, no AI)
+│   └── notifications.py     Due reminder → wake/sound/speech/OS toast
+├── tasks/                    ✅ Local to-do list (V2)
+│   └── manager.py           CRUD over the `tasks` table (open/done/cancelled)
+├── timers/                   ✅ Local quick countdown timers (V2)
+│   ├── manager.py           CRUD over the `timers` table
+│   ├── scheduler.py         QTimer polling for finished timers (~1s, no AI)
+│   └── notifications.py     Finished timer → jump/sound/speech/OS toast
 ├── calendar/                (Phase 7/8) local + Google Calendar
 └── ui/                      Qt windows/dialogs
     ├── tray.py               ✅ System tray icon + menu
     ├── reminder_window.py    ✅ Create/list/complete/snooze/delete reminders UI
+    ├── task_window.py        ✅ Add/toggle-done/delete tasks UI
+    ├── timer_window.py       ✅ Start/view/extend/cancel timers, live countdown
     ├── chat_window.py         (Phase 2+)
     ├── settings_window.py     (Phase 10)
     └── calendar_window.py     (Phase 7/8)
@@ -247,6 +257,51 @@ reminder it publishes `Events.REMINDER_DUE`, which:
 If the app was closed when a reminder became due, the scheduler checks for
 missed reminders on the next startup and surfaces them then (spec §20's
 "one limitation" note).
+
+---
+
+## 6b. Local tasks & timers (V2 — implemented)
+
+**Tasks** (`app/tasks/`) are a simple local checklist — no due date, no
+repeat rule, no scheduler. `open → done` (or `cancelled`), toggleable from
+`app/ui/task_window.py`. They exist for things like *"remember I need to
+submit my assignment"* where a specific time isn't the point.
+
+```text
+data/mochi.db
+└── tasks
+    ├── id, title, status ('open'|'done'|'cancelled')
+    └── created_at, completed_at
+```
+
+**Timers** (`app/timers/`) are short, ad-hoc countdowns — *"set a timer for
+10 minutes"* — distinct from reminders because they're not tied to a
+calendar time or repeat rule, just a duration from "now." They're still
+persisted to SQLite (not just in-memory), so a running timer survives an
+app restart and still fires when it's due.
+
+```text
+data/mochi.db
+└── timers
+    ├── id, label, duration_seconds
+    ├── started_at, due_at
+    ├── status ('running'|'done'|'cancelled')
+    └── notified_at
+```
+
+`app/timers/scheduler.py` follows the same shape as the reminder
+scheduler but polls every **1s** instead of 15s, since a countdown timer
+finishing is a "this instant" event a user is actively waiting on, unlike
+a reminder which is fine being noticed within a ~15s window.
+`app/timers/notifications.py` mirrors `reminders/notifications.py`
+(character reacts, sound, speech bubble, OS toast) but uses a `JUMP`
+animation and `"<label>" is done!` phrasing to feel distinct from a
+reminder firing.
+
+Both subsystems follow the exact same layering as reminders (manager →
+scheduler/notifications + UI window + tools wrapper), so Phase 2's AI
+layer will be able to call `app/tools/task_tools.py` and
+`app/tools/timer_tools.py` the same way it calls `reminder_tools.py`.
 
 ---
 

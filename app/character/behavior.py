@@ -23,15 +23,15 @@ class BehaviorOption:
 
 
 DEFAULT_BEHAVIOR_WEIGHTS: list[BehaviorOption] = [
-    BehaviorOption(CharacterState.IDLE, 0.30),
-    BehaviorOption(CharacterState.WALK_LEFT, 0.10),
-    BehaviorOption(CharacterState.WALK_RIGHT, 0.10),
-    BehaviorOption(CharacterState.SIT, 0.15),
-    BehaviorOption(CharacterState.LOOK_LEFT, 0.05),
-    BehaviorOption(CharacterState.LOOK_RIGHT, 0.05),
+    BehaviorOption(CharacterState.IDLE, 0.35),
+    BehaviorOption(CharacterState.WALK_LEFT, 0.12),
+    BehaviorOption(CharacterState.WALK_RIGHT, 0.12),
+    BehaviorOption(CharacterState.LOOK_LEFT, 0.06),
+    BehaviorOption(CharacterState.LOOK_RIGHT, 0.06),
     BehaviorOption(CharacterState.SLEEP, 0.10),
-    BehaviorOption(CharacterState.STRETCH, 0.075),
-    BehaviorOption(CharacterState.YAWN, 0.075),
+    BehaviorOption(CharacterState.STRETCH, 0.08),
+    BehaviorOption(CharacterState.YAWN, 0.08),
+    BehaviorOption(CharacterState.PLAY, 0.07),
 ]
 
 
