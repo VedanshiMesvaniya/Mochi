@@ -19,9 +19,10 @@ every future change. Read this before adding new subsystems.
    executes an action. It returns structured JSON; Python validates it
    against a schema and permission rules before anything happens
    (see §5).
-4. **Deterministic where possible.** Idle wandering, walking, sitting, etc.
-   are driven by a weighted-random behavior engine and QTimers — never by
-   calling the LLM. The LLM is reserved for actual language understanding.
+4. **Deterministic where possible.** Idle wandering, walking, stretching,
+   looking around, etc. are driven by a weighted-random behavior engine and
+   QTimers — never by calling the LLM. The LLM is reserved for actual
+   language understanding.
 5. **Graceful degradation.** If Ollama, the mic, TTS, or Google Calendar are
    unavailable, Mochi keeps working in a reduced mode instead of crashing
    (see §7).
