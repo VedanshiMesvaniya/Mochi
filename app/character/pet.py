@@ -39,6 +39,7 @@ class PetWindow(QWidget):
 
         self._drag_offset: QPoint | None = None
         self._is_dragging = False
+        self._reminder_window = None
 
         self._setup_window()
         self._setup_ui()
@@ -103,6 +104,7 @@ class PetWindow(QWidget):
         self.action_sleep.triggered.connect(
             lambda: self.state_machine.set_state(CharacterState.SLEEP)
         )
+        self.action_reminders.triggered.connect(self._open_reminder_window)
 
         for action in (
             self.action_chat,
@@ -246,6 +248,21 @@ class PetWindow(QWidget):
 
         self.speech_bubble.show()
         self._speech_bubble_timer.start(duration_ms)
+
+    # ------------------------------------------------------------------
+    # Reminders window (spec section 13/20 - V1)
+    # ------------------------------------------------------------------
+    def _open_reminder_window(self) -> None:
+        # Local import avoids a hard PySide6-widget dependency for anything
+        # that only needs the lightweight character window.
+        from app.ui.reminder_window import ReminderWindow
+
+        if self._reminder_window is None:
+            self._reminder_window = ReminderWindow()
+        self._reminder_window.refresh_list()
+        self._reminder_window.show()
+        self._reminder_window.raise_()
+        self._reminder_window.activateWindow()
 
     # ------------------------------------------------------------------
     # Hooks for app/main.py to override/connect
