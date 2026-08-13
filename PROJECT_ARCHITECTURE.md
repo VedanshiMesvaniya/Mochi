@@ -92,20 +92,24 @@ app/
 │   └── state_machine.py     CharacterState + Emotion enums, event publisher
 │
 ├── ai/                      (Phase 2+) LLM access, prompts, intent parsing
-├── memory/                  SQLite access layer: conversations, memories,
-│                            reminders schema helpers, summarization
+├── memory/                  SQLite access layer
+│   └── database.py          Connection management + schema (reminders now;
+│                            conversations/memories/mood/relationship/
+│                            calendar_cache tables land in later phases)
 ├── voice/                   (Phase 4+) mic capture, STT, TTS, sound effects
 ├── tools/                   Python functions the LLM's intents map to
-│   └── reminder_tools.py    create/list/update/complete/delete reminders
-├── reminders/                Local reminder engine
-│   ├── manager.py           CRUD over the `reminders` table
-│   ├── scheduler.py         Background timer that finds due reminders
+│   └── reminder_tools.py    ✅ create/list/complete/cancel/snooze/delete -
+│                            JSON-in/JSON-out wrapper around reminders/manager.py,
+│                            ready to be the AI layer's execution target
+├── reminders/                ✅ Local reminder engine (V1)
+│   ├── manager.py           CRUD over the `reminders` table + repeat rules
+│   ├── scheduler.py         QTimer polling for due reminders (no AI calls)
 │   └── notifications.py     Turns a due reminder into character events
 │                            (wake animation, sound, speech, OS notification)
 ├── calendar/                (Phase 7/8) local + Google Calendar
 └── ui/                      Qt windows/dialogs
-    ├── tray.py               System tray icon + menu
-    ├── reminder_window.py    Create/list/complete/delete reminders UI
+    ├── tray.py               ✅ System tray icon + menu
+    ├── reminder_window.py    ✅ Create/list/complete/snooze/delete reminders UI
     ├── chat_window.py         (Phase 2+)
     ├── settings_window.py     (Phase 10)
     └── calendar_window.py     (Phase 7/8)
@@ -195,15 +199,29 @@ directly, or call the Google Calendar API itself. It only ever proposes a
 
 ---
 
-## 6. Local reminders (current V1 scope)
+## 6. Local reminders (V1 — implemented)
 
 Reminders are fully local and do not require the AI layer to function —
-V1 supports creating/listing/completing/deleting reminders directly through
-a UI dialog (`app/ui/reminder_window.py`), reachable from Mochi's right-click
-menu. Once Phase 2 (AI) lands, the same `app/tools/reminder_tools.py`
-functions become the execution target for LLM-parsed natural language
-requests like *"remind me at 7pm to call mom"* — the storage/scheduling
-layer does not change.
+V1 supports creating/listing/completing/snoozing/deleting reminders
+directly through a UI dialog (`app/ui/reminder_window.py`), reachable from
+Mochi's right-click menu. Once Phase 2 (AI) lands, the same
+`app/tools/reminder_tools.py` functions become the execution target for
+LLM-parsed natural language requests like *"remind me at 7pm to call
+mom"* — the storage/scheduling layer does not change.
+
+Layering (bottom = storage, top = what a caller uses):
+
+```text
+app/reminders/manager.py        raw CRUD + repeat-rule math, datetime in/out
+        │
+        ├── app/reminders/scheduler.py     polls for due reminders (QTimer)
+        │         │
+        │         └── app/reminders/notifications.py   due → wake/sound/speech/OS toast
+        │
+        ├── app/ui/reminder_window.py       manual create/list/complete/snooze/delete
+        │
+        └── app/tools/reminder_tools.py     JSON-in/JSON-out wrapper (Phase 2's target)
+```
 
 ```text
 data/mochi.db

@@ -15,7 +15,7 @@ system design, module map, and data flow.
 
 ## ✅ Current status
 
-**In progress — building toward V1 (desktop character + local reminders).**
+**V1 complete: desktop character + local reminders.** 🎉
 
 ### Implemented so far
 
@@ -29,22 +29,39 @@ system design, module map, and data flow.
   - [x] Desktop movement / screen-bounds math
   - [x] Dynamic sprite animation loader
   - [x] Transparent, frameless, always-on-top, draggable PySide6 window
+  - [x] Speech bubble (used by reminders now, chat later)
   - [x] Right-click menu (Chat / Reminders / Calendar / Memories /
         Settings / Sleep / Exit)
 - [x] System tray icon with show/hide/exit
 - [x] Application entry point (`app/main.py`)
-- [x] Unit tests for movement, behavior engine, and state machine
+- [x] **Local reminders (fully local, no AI/network required):**
+  - [x] SQLite schema + connection layer (`app/memory/database.py`)
+  - [x] Reminder manager: create / list / complete / cancel / snooze /
+        delete, with `DAILY` / `WEEKLY` / `MONTHLY` repeat rules
+        (`app/reminders/manager.py`)
+  - [x] Background scheduler that polls for due reminders, with
+        startup catch-up for reminders missed while the app was closed
+        (`app/reminders/scheduler.py`)
+  - [x] Notification bridge: due reminder → Mochi wakes up, plays a sound,
+        shows a speech bubble, and raises an OS desktop notification
+        (`app/reminders/notifications.py`)
+  - [x] Reminder management window (create/list/complete/snooze/delete),
+        reachable from Mochi's right-click menu
+        (`app/ui/reminder_window.py`)
+  - [x] `app/tools/reminder_tools.py` — JSON-in/JSON-out wrapper ready to
+        be the execution target once natural-language parsing (Phase 2)
+        lands
+- [x] 35 unit tests covering movement, behavior, state machine, the
+      reminder manager, and the reminder tools layer
 
 ### Not yet implemented
 
-- [ ] Local reminders (SQLite storage, scheduler, notifications, UI) — *in
-      progress*
-- [ ] Local AI chat (Ollama + Qwen3 0.6B)
-- [ ] Voice input/output (faster-whisper + Piper)
-- [ ] Local long-term memory
-- [ ] Local + Google Calendar integration
-- [ ] Relationship/personality system
-- [ ] Settings window
+- [ ] Local AI chat (Ollama + Qwen3 0.6B) — Phase 2
+- [ ] Voice input/output (faster-whisper + Piper) — Phase 4
+- [ ] Local long-term memory — Phase 5
+- [ ] Local + Google Calendar integration — Phase 7/8
+- [ ] Relationship/personality system — Phase 9
+- [ ] Settings window — Phase 10
 - [ ] Original character artwork/sounds (currently no sprite assets — the
       window renders transparently until artwork is added under
       `assets/animations/*`)
@@ -55,8 +72,8 @@ system design, module map, and data flow.
 
 | Version | Scope |
 |---|---|
-| **V1** *(current target)* | Desktop character + local reminders |
-| V2 | Timers + tasks |
+| **V1** ✅ *(done)* | Desktop character + local reminders |
+| V2 *(next)* | Timers + tasks |
 | V3 | Google Calendar (read-only) |
 | V4 | Google Calendar (create/edit, with confirmation) |
 | V5 | Long-term memory + proactive reminders |
