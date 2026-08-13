@@ -15,7 +15,7 @@ system design, module map, and data flow.
 
 ## ✅ Current status
 
-**V1 complete: desktop character + local reminders.** 🎉
+**V2 complete: desktop character + local reminders + tasks + timers.** 🎉
 
 ### Implemented so far
 
@@ -29,30 +29,36 @@ system design, module map, and data flow.
   - [x] Desktop movement / screen-bounds math
   - [x] Dynamic sprite animation loader
   - [x] Transparent, frameless, always-on-top, draggable PySide6 window
-  - [x] Speech bubble (used by reminders now, chat later)
-  - [x] Right-click menu (Chat / Reminders / Calendar / Memories /
-        Settings / Sleep / Exit)
+  - [x] Speech bubble (used by reminders/timers now, chat later)
+  - [x] Right-click menu (Chat / Reminders / Tasks / Timers / Calendar /
+        Memories / Settings / Sleep / Exit)
 - [x] System tray icon with show/hide/exit
 - [x] Application entry point (`app/main.py`)
-- [x] **Local reminders (fully local, no AI/network required):**
+- [x] **Local reminders (V1, fully local, no AI/network required):**
   - [x] SQLite schema + connection layer (`app/memory/database.py`)
   - [x] Reminder manager: create / list / complete / cancel / snooze /
         delete, with `DAILY` / `WEEKLY` / `MONTHLY` repeat rules
-        (`app/reminders/manager.py`)
-  - [x] Background scheduler that polls for due reminders, with
-        startup catch-up for reminders missed while the app was closed
-        (`app/reminders/scheduler.py`)
-  - [x] Notification bridge: due reminder → Mochi wakes up, plays a sound,
-        shows a speech bubble, and raises an OS desktop notification
-        (`app/reminders/notifications.py`)
-  - [x] Reminder management window (create/list/complete/snooze/delete),
-        reachable from Mochi's right-click menu
-        (`app/ui/reminder_window.py`)
-  - [x] `app/tools/reminder_tools.py` — JSON-in/JSON-out wrapper ready to
-        be the execution target once natural-language parsing (Phase 2)
-        lands
-- [x] 35 unit tests covering movement, behavior, state machine, the
-      reminder manager, and the reminder tools layer
+  - [x] Background scheduler (~15s poll) with startup catch-up for missed
+        reminders
+  - [x] Notification bridge: due reminder → wake, sound, speech bubble, OS
+        desktop notification
+  - [x] Reminder management window, reachable from Mochi's right-click menu
+  - [x] `app/tools/reminder_tools.py` — JSON-in/JSON-out wrapper ready for
+        Phase 2's natural-language parsing
+- [x] **Local tasks (V2):**
+  - [x] Simple to-do CRUD (`app/tasks/manager.py`) — no due date/repeat,
+        just open/done/cancelled
+  - [x] Task management window (add / toggle done / delete)
+  - [x] `app/tools/task_tools.py` JSON wrapper
+- [x] **Quick timers (V2):**
+  - [x] Countdown timer CRUD, persisted to SQLite so a running timer
+        survives an app restart (`app/timers/manager.py`)
+  - [x] Fast-poll (~1s) scheduler + notification bridge (jump animation,
+        sound, speech bubble, OS toast)
+  - [x] Timer window with live remaining-time display, +1 min, cancel
+  - [x] `app/tools/timer_tools.py` JSON wrapper
+- [x] 67 unit tests covering movement, behavior, state machine, and the
+      reminder/task/timer managers + tools layers
 
 ### Not yet implemented
 
@@ -72,9 +78,9 @@ system design, module map, and data flow.
 
 | Version | Scope |
 |---|---|
-| **V1** ✅ *(done)* | Desktop character + local reminders |
-| V2 *(next)* | Timers + tasks |
-| V3 | Google Calendar (read-only) |
+| V1 ✅ *(done)* | Desktop character + local reminders |
+| **V2** ✅ *(done)* | Timers + tasks |
+| V3 *(next)* | Google Calendar (read-only) |
 | V4 | Google Calendar (create/edit, with confirmation) |
 | V5 | Long-term memory + proactive reminders |
 
@@ -132,12 +138,16 @@ app/
 ├── core/          config, logging, events, exceptions
 ├── character/     on-screen presence, animation, behavior, movement
 ├── ai/            (planned) LLM access, prompts, intent parsing
-├── memory/        (planned) SQLite conversations & long-term memory
+├── memory/        SQLite connection + schema (reminders, tasks, timers)
 ├── voice/         (planned) mic capture, STT, TTS, sound effects
-├── tools/         (planned) LLM-callable Python functions
-├── reminders/     (in progress) local reminder engine
+├── tools/         reminder_tools, task_tools, timer_tools (JSON wrappers,
+│                  ready for the AI layer to call once Phase 2 lands)
+├── reminders/     local reminder engine (manager, scheduler, notifications)
+├── tasks/         local to-do list (manager)
+├── timers/        local countdown timers (manager, scheduler, notifications)
 ├── calendar/      (planned) local + Google Calendar
-└── ui/            tray, chat/reminder/settings/calendar windows
+└── ui/            tray, reminder/task/timer windows, (planned) chat/
+                   settings/calendar windows
 
 assets/            animations, sounds, icons (bring your own — see below)
 data/              local SQLite database (gitignored)

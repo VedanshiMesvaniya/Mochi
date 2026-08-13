@@ -40,6 +40,8 @@ class PetWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._is_dragging = False
         self._reminder_window = None
+        self._task_window = None
+        self._timer_window = None
 
         self._setup_window()
         self._setup_ui()
@@ -94,6 +96,8 @@ class PetWindow(QWidget):
         self.context_menu = QMenu(self)
         self.action_chat = QAction("Chat", self)
         self.action_reminders = QAction("Reminders", self)
+        self.action_tasks = QAction("Tasks", self)
+        self.action_timers = QAction("Timers", self)
         self.action_calendar = QAction("Calendar", self)
         self.action_memories = QAction("Memories", self)
         self.action_settings = QAction("Settings", self)
@@ -105,10 +109,14 @@ class PetWindow(QWidget):
             lambda: self.state_machine.set_state(CharacterState.SLEEP)
         )
         self.action_reminders.triggered.connect(self._open_reminder_window)
+        self.action_tasks.triggered.connect(self._open_task_window)
+        self.action_timers.triggered.connect(self._open_timer_window)
 
         for action in (
             self.action_chat,
             self.action_reminders,
+            self.action_tasks,
+            self.action_timers,
             self.action_calendar,
             self.action_memories,
             self.action_settings,
@@ -263,6 +271,32 @@ class PetWindow(QWidget):
         self._reminder_window.show()
         self._reminder_window.raise_()
         self._reminder_window.activateWindow()
+
+    # ------------------------------------------------------------------
+    # Tasks window (V2)
+    # ------------------------------------------------------------------
+    def _open_task_window(self) -> None:
+        from app.ui.task_window import TaskWindow
+
+        if self._task_window is None:
+            self._task_window = TaskWindow()
+        self._task_window.refresh_list()
+        self._task_window.show()
+        self._task_window.raise_()
+        self._task_window.activateWindow()
+
+    # ------------------------------------------------------------------
+    # Timers window (V2)
+    # ------------------------------------------------------------------
+    def _open_timer_window(self) -> None:
+        from app.ui.timer_window import TimerWindow
+
+        if self._timer_window is None:
+            self._timer_window = TimerWindow()
+        self._timer_window.refresh_list()
+        self._timer_window.show()
+        self._timer_window.raise_()
+        self._timer_window.activateWindow()
 
     # ------------------------------------------------------------------
     # Hooks for app/main.py to override/connect
