@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QPixmap, QMouseEvent, QAction
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QMenu, QApplication
 
+SPEECH_BUBBLE_DEFAULT_MS = 6000
+
 from app.character.animator import Animator
 from app.character.behavior import BehaviorEngine
 from app.character.movement import Mover, ScreenBounds
@@ -64,6 +66,25 @@ class PetWindow(QWidget):
         self.sprite_label.setAlignment(Qt.AlignCenter)
         self.sprite_label.setScaledContents(True)
         layout.addWidget(self.sprite_label)
+
+        # Speech bubble - a small floating label shown above Mochi's head
+        # for reminder notifications (Phase 1.5) and chat responses (Phase 2+).
+        self.speech_bubble = QLabel(self)
+        self.speech_bubble.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        )
+        self.speech_bubble.setAttribute(Qt.WA_TranslucentBackground)
+        self.speech_bubble.setStyleSheet(
+            "background-color: rgba(255, 255, 255, 235);"
+            "border-radius: 10px; padding: 8px 12px; font-size: 12px;"
+        )
+        self.speech_bubble.setWordWrap(True)
+        self.speech_bubble.setMaximumWidth(240)
+        self.speech_bubble.hide()
+
+        self._speech_bubble_timer = QTimer(self)
+        self._speech_bubble_timer.setSingleShot(True)
+        self._speech_bubble_timer.timeout.connect(self.speech_bubble.hide)
 
         self._refresh_sprite()
 
@@ -211,6 +232,20 @@ class PetWindow(QWidget):
             logger.info("Mochi double-clicked -> open chat")
             # Wired up to the real chat window in app/main.py
             self.on_open_chat_requested()
+
+    # ------------------------------------------------------------------
+    # Speech bubble (used by reminder notifications and, later, chat)
+    # ------------------------------------------------------------------
+    def show_speech_bubble(self, text: str, duration_ms: int = SPEECH_BUBBLE_DEFAULT_MS) -> None:
+        self.speech_bubble.setText(text)
+        self.speech_bubble.adjustSize()
+
+        bubble_x = self.x() + (self.width() // 2) - (self.speech_bubble.width() // 2)
+        bubble_y = self.y() - self.speech_bubble.height() - 8
+        self.speech_bubble.move(bubble_x, bubble_y)
+
+        self.speech_bubble.show()
+        self._speech_bubble_timer.start(duration_ms)
 
     # ------------------------------------------------------------------
     # Hooks for app/main.py to override/connect
