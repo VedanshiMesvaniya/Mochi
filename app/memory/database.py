@@ -2,8 +2,8 @@
 SQLite database layer (spec section 18 - Local Memory).
 
 Single local file at `data/mochi.db`. No server, no cloud. Tables are
-created incrementally as each phase needs them - this file only defines
-what's needed so far (reminders, for V1). Later phases
+created incrementally as each phase needs them - this file currently
+defines reminders (V1), plus tasks and timers (V2). Later phases
 (conversations, memories, mood_state, relationship_state, calendar_cache)
 will extend `SCHEMA_STATEMENTS` rather than replacing this module.
 """
@@ -36,6 +36,28 @@ SCHEMA_STATEMENTS: list[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_reminders_status_due ON reminders(status, due_at);",
+    """
+    CREATE TABLE IF NOT EXISTS tasks (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        title         TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'open',   -- open|done|cancelled
+        created_at    TEXT NOT NULL,
+        completed_at  TEXT
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);",
+    """
+    CREATE TABLE IF NOT EXISTS timers (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        label         TEXT NOT NULL,
+        duration_seconds INTEGER NOT NULL,
+        started_at    TEXT NOT NULL,
+        due_at        TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'running',  -- running|done|cancelled
+        notified_at   TEXT
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_timers_status_due ON timers(status, due_at);",
 ]
 
 

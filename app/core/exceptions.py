@@ -35,6 +35,14 @@ class ReminderError(MochiError):
     """Raised on reminder creation/scheduling failures."""
 
 
+class TaskError(MochiError):
+    """Raised on task (simple to-do item) failures."""
+
+
+class TimerError(MochiError):
+    """Raised on quick-timer failures."""
+
+
 class CalendarError(MochiError):
     """Raised on local or Google calendar failures."""
 

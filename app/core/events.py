@@ -58,6 +58,8 @@ class Events:
     REMINDER_DUE = "reminder.due"
     REMINDER_CREATED = "reminder.created"
 
+    TIMER_DONE = "timer.done"
+
     CHAT_MESSAGE_RECEIVED = "chat.message_received"
     CHAT_RESPONSE_READY = "chat.response_ready"
 
