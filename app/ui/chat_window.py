@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
@@ -80,7 +81,9 @@ class ChatWindow(TranslucentDialog):
     def _append(self, sender: str, text: str) -> None:
         item = QListWidgetItem(f"{sender}: {text}")
         if sender == "You":
-            item.setForeground(Qt.lightGray)
+            item.setForeground(QColor("#6e6785"))  # muted, readable on light glass
+        else:
+            item.setForeground(QColor("#3a3350"))
         self.message_log.addItem(item)
         self.message_log.scrollToBottom()
 
