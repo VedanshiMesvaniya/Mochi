@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,27 +17,26 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QVBoxLayout,
 )
 
 from app.core.exceptions import TaskError
 from app.core.logger import get_logger
 from app.tasks import manager
+from app.ui.base_window import TranslucentDialog
 
 logger = get_logger("mochi.ui.tasks")
 
 
-class TaskWindow(QDialog):
+class TaskWindow(TranslucentDialog):
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Mochi — Tasks")
+        super().__init__("Mochi — Tasks", parent)
         self.setMinimumSize(380, 440)
 
         self._build_ui()
         self.refresh_list()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
 
         label = QLabel("Add a task")
         label.setStyleSheet("font-weight: bold;")

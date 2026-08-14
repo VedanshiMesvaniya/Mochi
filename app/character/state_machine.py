@@ -36,6 +36,16 @@ class CharacterState(str, Enum):
     LOOK_RIGHT = "look_right"
     LOOK_UP = "look_up"
     LOOK_DOWN = "look_down"
+    # Emotion-reaction states (spec section 9) - these map 1:1 onto the
+    # emotion animation folders in assets/animations/, so a chat reaction
+    # can actually be *seen* instead of just changing an internal enum
+    # nothing reads.
+    HAPPY = "happy"
+    SAD = "sad"
+    EXCITED = "excited"
+    ANGRY = "angry"
+    CONFUSED = "confused"
+    SURPRISED = "surprised"
 
 
 class Emotion(str, Enum):
@@ -82,7 +92,12 @@ class CharacterStateMachine:
         self.state = new_state
         event_bus.publish(Events.ANIMATION_REQUESTED, {"animation": new_state.value})
 
-    def set_emotion(self, new_emotion: Emotion) -> None:
+    def set_emotion(self, new_emotion: Emotion, *, react: bool = True) -> None:
+        """Update Mochi's mood and (by default) actually play the matching
+        reaction animation/sound - see EMOTION_PROFILE. Pass react=False if
+        a caller only wants to track mood without interrupting whatever
+        animation is currently playing.
+        """
         if new_emotion == self.emotion:
             return
         self.emotion = new_emotion
@@ -93,6 +108,12 @@ class CharacterStateMachine:
         )
         if profile.get("sound"):
             event_bus.publish(Events.SOUND_REQUESTED, {"sound": profile["sound"]})
+        animation = profile.get("animation")
+        if react and animation:
+            try:
+                self.set_state(CharacterState(animation))
+            except ValueError:
+                pass  # animation name without a matching CharacterState yet
 
     def previous_state(self) -> CharacterState | None:
         return self._history[-1] if self._history else None

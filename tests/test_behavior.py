@@ -33,3 +33,23 @@ def test_tick_applies_a_state_when_enabled():
     engine.tick(lambda state: calls.append(state))
     assert len(calls) == 1
     assert isinstance(calls[0], CharacterState)
+
+
+def test_stays_idle_only_before_interaction():
+    """Spec: 'only idle part stay until it interact with user' - before
+    mark_interacted() is called, autonomous behavior must never wander,
+    sleep, or play on its own."""
+    engine = BehaviorEngine(enabled=True)
+    engine._rng = random.Random(123)
+    for _ in range(200):
+        assert engine.choose_behavior() == CharacterState.IDLE
+
+
+def test_full_behavior_set_unlocks_after_interaction():
+    engine = BehaviorEngine(enabled=True)
+    engine._rng = random.Random(123)
+    engine.mark_interacted()
+    results = {engine.choose_behavior() for _ in range(200)}
+    # With 200 draws across the default weighted set, we should see more
+    # than just IDLE.
+    assert len(results) > 1

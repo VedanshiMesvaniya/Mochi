@@ -30,7 +30,10 @@ class AnimationSet:
     """Cached mapping of animation name -> sorted list of frame paths."""
 
     animations_dir: Path = field(default_factory=lambda: settings.assets_dir / "animations")
-    default_fps: int = 8
+    # Slowed from 8fps -> settings.animation_fps (default 4): 8fps on an
+    # 8-frame loop made Mochi look like it was scrolling through images
+    # unrealistically fast rather than moving like a character.
+    default_fps: int = field(default_factory=lambda: settings.animation_fps)
     _cache: dict[str, list[Path]] = field(default_factory=dict)
 
     def available_animations(self) -> list[str]:
