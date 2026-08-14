@@ -78,6 +78,12 @@ class Settings:
     window_width: int = 180
     window_height: int = 180
 
+    # Animation - frames per second for sprite playback. Kept low on
+    # purpose (spec section 10/11: cute, readable 2D animation, not a fast
+    # flicker) - 8fps on short 6-8 frame loops looked like frames were
+    # being scrubbed through rather than a character moving.
+    animation_fps: int = 4
+
     # Logging
     log_level: str = "INFO"
 
@@ -115,6 +121,7 @@ class Settings:
             autonomous_behavior=_bool(os.getenv("MOCHI_AUTONOMOUS_BEHAVIOR"), True),
             window_width=_int(os.getenv("MOCHI_WINDOW_WIDTH"), 180),
             window_height=_int(os.getenv("MOCHI_WINDOW_HEIGHT"), 180),
+            animation_fps=_int(os.getenv("MOCHI_ANIMATION_FPS"), 4),
             log_level=os.getenv("MOCHI_LOG_LEVEL", "INFO"),
         )
 

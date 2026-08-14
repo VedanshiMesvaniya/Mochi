@@ -13,7 +13,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer as QtQTimer
 from PySide6.QtWidgets import (
     QComboBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,22 +21,21 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
-    QVBoxLayout,
 )
 
 from app.core.exceptions import TimerError
 from app.core.logger import get_logger
 from app.timers import manager
+from app.ui.base_window import TranslucentDialog
 
 logger = get_logger("mochi.ui.timers")
 
 UNIT_TO_SECONDS = {"seconds": 1, "minutes": 60, "hours": 3600}
 
 
-class TimerWindow(QDialog):
+class TimerWindow(TranslucentDialog):
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Mochi — Timers")
+        super().__init__("Mochi — Timers", parent)
         self.setMinimumSize(380, 420)
 
         self._build_ui()
@@ -50,7 +48,7 @@ class TimerWindow(QDialog):
         self._refresh_timer.start(1000)
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
 
         label = QLabel("Start a timer")
         label.setStyleSheet("font-weight: bold;")

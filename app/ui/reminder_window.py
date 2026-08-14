@@ -16,7 +16,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDateTimeEdit,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,12 +23,12 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QVBoxLayout,
 )
 
 from app.core.exceptions import ReminderError
 from app.core.logger import get_logger
 from app.reminders import manager
+from app.ui.base_window import TranslucentDialog
 
 logger = get_logger("mochi.ui.reminders")
 
@@ -41,10 +40,9 @@ REPEAT_OPTIONS = [
 ]
 
 
-class ReminderWindow(QDialog):
+class ReminderWindow(TranslucentDialog):
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Mochi — Reminders")
+        super().__init__("Mochi — Reminders", parent)
         self.setMinimumSize(420, 480)
 
         self._build_ui()
@@ -52,7 +50,7 @@ class ReminderWindow(QDialog):
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        layout = self.content_layout
 
         # --- Create form ---
         form_label = QLabel("New reminder")

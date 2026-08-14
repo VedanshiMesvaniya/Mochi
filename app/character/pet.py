@@ -23,6 +23,8 @@ from app.character.state_machine import CharacterState, CharacterStateMachine
 from app.core.config import settings
 from app.core.logger import get_logger
 
+SPEECH_BUBBLE_CHAT_MS = 5000
+
 logger = get_logger("mochi.pet")
 
 
@@ -42,6 +44,7 @@ class PetWindow(QWidget):
         self._reminder_window = None
         self._task_window = None
         self._timer_window = None
+        self._chat_window = None
 
         self._setup_window()
         self._setup_ui()
@@ -108,6 +111,7 @@ class PetWindow(QWidget):
         self.action_sleep.triggered.connect(
             lambda: self.state_machine.set_state(CharacterState.SLEEP)
         )
+        self.action_chat.triggered.connect(self.on_open_chat_requested)
         self.action_reminders.triggered.connect(self._open_reminder_window)
         self.action_tasks.triggered.connect(self._open_task_window)
         self.action_timers.triggered.connect(self._open_timer_window)
@@ -222,6 +226,7 @@ class PetWindow(QWidget):
             self._is_dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self.state_machine.set_state(CharacterState.DRAGGED)
+            self.behavior_engine.mark_interacted()
         elif event.button() == Qt.RightButton:
             self.context_menu.exec(event.globalPosition().toPoint())
 
@@ -299,8 +304,33 @@ class PetWindow(QWidget):
         self._timer_window.activateWindow()
 
     # ------------------------------------------------------------------
-    # Hooks for app/main.py to override/connect
+    # Chat window (spec section 14 / Phase 2)
     # ------------------------------------------------------------------
     def on_open_chat_requested(self) -> None:
-        """Overridden/monkeypatched by main.py to open the chat popup."""
-        pass
+        from app.ui.chat_window import ChatWindow
+
+        self.behavior_engine.mark_interacted()
+
+        if self._chat_window is None:
+            self._chat_window = ChatWindow(on_reaction=self._on_chat_reaction)
+        self._chat_window.show()
+        self._chat_window.raise_()
+        self._chat_window.activateWindow()
+
+    def _on_chat_reaction(self, reaction) -> None:
+        """Called by the chat window once a message's intent has been
+        detected (spec: 'on chat detect user intent and then mochi
+        react') - this is where the reaction actually becomes visible on
+        the character: animation, sound, and a speech bubble.
+        """
+        if reaction.animation is not None:
+            self.state_machine.set_state(reaction.animation)
+        if reaction.emotion is not None:
+            # react=False: we already picked the exact animation above,
+            # this just keeps mood tracking in sync without overriding it.
+            self.state_machine.set_emotion(reaction.emotion, react=False)
+        if reaction.sound:
+            from app.core.events import Events, event_bus
+
+            event_bus.publish(Events.SOUND_REQUESTED, {"sound": reaction.sound})
+        self.show_speech_bubble(reaction.text, duration_ms=SPEECH_BUBBLE_CHAT_MS)

@@ -34,6 +34,14 @@ DEFAULT_BEHAVIOR_WEIGHTS: list[BehaviorOption] = [
     BehaviorOption(CharacterState.PLAY, 0.07),
 ]
 
+# Before the user has ever interacted with Mochi (click, drag, or chat),
+# stay in idle so the very first thing anyone sees is calm, not a cat that
+# immediately starts wandering/sleeping/stretching on its own. Once
+# interaction happens, the full wander set above kicks in.
+IDLE_ONLY_WEIGHTS: list[BehaviorOption] = [
+    BehaviorOption(CharacterState.IDLE, 1.0),
+]
+
 
 @dataclass
 class BehaviorEngine:
@@ -49,14 +57,23 @@ class BehaviorEngine:
     weights: list[BehaviorOption] = field(
         default_factory=lambda: list(DEFAULT_BEHAVIOR_WEIGHTS)
     )
+    has_interacted: bool = False
     _rng: random.Random = field(default_factory=random.Random)
+
+    def mark_interacted(self) -> None:
+        """Call once the user clicks, drags, or chats with Mochi. Unlocks
+        the full autonomous wander/sleep/play set - see IDLE_ONLY_WEIGHTS."""
+        self.has_interacted = True
 
     def next_interval(self) -> float:
         return self._rng.uniform(self.min_interval_seconds, self.max_interval_seconds)
 
+    def _active_weights(self) -> list[BehaviorOption]:
+        return self.weights if self.has_interacted else IDLE_ONLY_WEIGHTS
+
     def choose_behavior(self) -> CharacterState:
-        options = [w.state for w in self.weights]
-        weights = [w.weight for w in self.weights]
+        options = [w.state for w in self._active_weights()]
+        weights = [w.weight for w in self._active_weights()]
         return self._rng.choices(options, weights=weights, k=1)[0]
 
     def tick(self, apply_state: Callable[[CharacterState], None]) -> None:
