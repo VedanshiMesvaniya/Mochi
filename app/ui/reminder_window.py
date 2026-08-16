@@ -156,6 +156,9 @@ class ReminderWindow(TranslucentDialog):
             return
         try:
             manager.complete_reminder(reminder_id)
+            from app.core.events import Events, event_bus
+
+            event_bus.publish(Events.REMINDER_COMPLETED, {"id": reminder_id})
         except ReminderError as exc:
             QMessageBox.warning(self, "Mochi", str(exc))
         self.refresh_list()

@@ -11,32 +11,39 @@ app/main.py and app/ui/ so this widget stays reusable and testable.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QPixmap, QMouseEvent, QAction
-from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QMenu, QApplication
+from PySide6.QtGui import QCursor, QMouseEvent, QAction
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QApplication, QLabel
 
 SPEECH_BUBBLE_DEFAULT_MS = 6000
 
-from app.character.animator import Animator
 from app.character.behavior import BehaviorEngine
 from app.character.movement import Mover, ScreenBounds
+from app.character.pixel_face import PixelFaceWidget
 from app.character.state_machine import CharacterState, CharacterStateMachine
 from app.core.config import settings
+from app.core.events import Events, event_bus
 from app.core.logger import get_logger
 
 SPEECH_BUBBLE_CHAT_MS = 5000
+FACE_TICK_MS = 50  # ~20fps - cheap since it's vector drawing, not sprite decoding
+BEHAVIOR_TICK_MS = 2000  # must match BehaviorEngine.tick_interval_seconds below
 
 logger = get_logger("mochi.pet")
 
 
 class PetWindow(QWidget):
-    """The floating desktop cat."""
+    """Mochi's on-screen presence: a small black rounded "screen" with an
+    EMO-style programmatic pixel face (see app/character/pixel_face.py) -
+    no sprite artwork, no walking around the desktop."""
 
     def __init__(self) -> None:
         super().__init__()
 
         self.state_machine = CharacterStateMachine()
-        self.animator = Animator()
-        self.behavior_engine = BehaviorEngine(enabled=settings.autonomous_behavior)
+        self.behavior_engine = BehaviorEngine(
+            enabled=settings.autonomous_behavior,
+            tick_interval_seconds=BEHAVIOR_TICK_MS / 1000,
+        )
         self.mover: Mover | None = None
 
         self._drag_offset: QPoint | None = None
@@ -51,6 +58,7 @@ class PetWindow(QWidget):
         self._setup_tray_free_menu()
         self._setup_timers()
         self._place_on_screen()
+        self._subscribe_to_events()
 
     # ------------------------------------------------------------------
     # Setup
@@ -68,10 +76,8 @@ class PetWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.sprite_label = QLabel(self)
-        self.sprite_label.setAlignment(Qt.AlignCenter)
-        self.sprite_label.setScaledContents(True)
-        layout.addWidget(self.sprite_label)
+        self.face = PixelFaceWidget(self)
+        layout.addWidget(self.face)
 
         # Speech bubble - a small floating label shown above Mochi's head
         # for reminder notifications (Phase 1.5) and chat responses (Phase 2+).
@@ -91,8 +97,6 @@ class PetWindow(QWidget):
         self._speech_bubble_timer = QTimer(self)
         self._speech_bubble_timer.setSingleShot(True)
         self._speech_bubble_timer.timeout.connect(self.speech_bubble.hide)
-
-        self._refresh_sprite()
 
     def _setup_tray_free_menu(self) -> None:
         """Right-click context menu (spec section 13)."""
@@ -130,16 +134,17 @@ class PetWindow(QWidget):
             self.context_menu.addAction(action)
 
     def _setup_timers(self) -> None:
-        # Animation frame advance timer
-        self.animation_timer = QTimer(self)
-        self.animation_timer.timeout.connect(self._on_animation_tick)
-        self.animation_timer.start(1000 // max(self.animator.animation_set.default_fps, 1))
+        # Face animation tick - blink/pulse/talk-frame advance + redraw.
+        self.face_timer = QTimer(self)
+        self.face_timer.timeout.connect(self._on_face_tick)
+        self.face_timer.start(FACE_TICK_MS)
 
-        # Autonomous behavior timer (spec section 12 - deterministic, no LLM)
+        # Autonomous behavior timer (spec section 12/31) - fixed cadence
+        # now that behavior is inactivity-tiered rather than a randomized
+        # weighted walk (see app/character/behavior.py).
         self.behavior_timer = QTimer(self)
-        self.behavior_timer.setSingleShot(True)
         self.behavior_timer.timeout.connect(self._on_behavior_tick)
-        self._schedule_next_behavior()
+        self.behavior_timer.start(BEHAVIOR_TICK_MS)
 
     def _place_on_screen(self) -> None:
         screen = QApplication.primaryScreen()
@@ -160,24 +165,35 @@ class PetWindow(QWidget):
         x, y = self.mover.teleport(start_x, start_y, bounds)
         self.move(x, y)
 
+    def _subscribe_to_events(self) -> None:
+        # Brief happy reaction when a reminder/task is completed (spec:
+        # "look happy when a task is completed"). See app/ui/reminder_window.py
+        # and app/ui/task_window.py for where these are published.
+        event_bus.subscribe(Events.REMINDER_COMPLETED, self._on_completion_event)
+        event_bus.subscribe(Events.TASK_COMPLETED, self._on_completion_event)
+
+    def _on_completion_event(self, _payload) -> None:
+        self.behavior_engine.mark_interacted()
+        self.state_machine.set_state(CharacterState.HAPPY)
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
-    def _refresh_sprite(self) -> None:
-        frame_path = self.animator.current_frame_path()
-        if frame_path is not None:
-            pixmap = QPixmap(str(frame_path))
-            self.sprite_label.setPixmap(pixmap)
-        else:
-            # No artwork yet for this animation - keep window transparent
-            # rather than crashing. See spec section 36 (graceful degradation).
-            self.sprite_label.clear()
-            self.sprite_label.setText("")
+    def _on_face_tick(self) -> None:
+        self.face.set_state(self.state_machine.state)
 
-    def _on_animation_tick(self) -> None:
-        self.animator.play(self.state_machine.state.value)
-        self.animator.advance()
-        self._refresh_sprite()
+        # Personality touch: pupils drift toward the mouse cursor while
+        # idle/alert/talking, so Mochi reads as "paying attention to you"
+        # rather than staring blankly - see FACE_EXPRESSIONS' cursor_follow.
+        cursor = QCursor.pos()
+        center = self.mapToGlobal(self.rect().center())
+        half_w = max(1, self.width() / 2)
+        half_h = max(1, self.height() / 2)
+        dx = max(-1.0, min(1.0, (cursor.x() - center.x()) / (half_w * 4)))
+        dy = max(-1.0, min(1.0, (cursor.y() - center.y()) / (half_h * 4)))
+        self.face.set_cursor_hint(dx, dy)
+
+        self.face.tick(FACE_TICK_MS / 1000)
 
     def _get_screen_bounds(self) -> ScreenBounds | None:
         screen = QApplication.primaryScreen()
@@ -194,29 +210,9 @@ class PetWindow(QWidget):
     # ------------------------------------------------------------------
     # Autonomous behavior (spec section 12 / 31)
     # ------------------------------------------------------------------
-    def _schedule_next_behavior(self) -> None:
-        interval_ms = int(self.behavior_engine.next_interval() * 1000)
-        self.behavior_timer.start(interval_ms)
-
     def _on_behavior_tick(self) -> None:
         if not self._is_dragging:
             self.behavior_engine.tick(self.state_machine.set_state)
-            self._maybe_walk()
-        self._schedule_next_behavior()
-
-    def _maybe_walk(self) -> None:
-        if self.mover is None:
-            return
-        bounds = self._get_screen_bounds()
-        if bounds is None:
-            return
-        if self.state_machine.state in (
-            CharacterState.WALK_LEFT,
-            CharacterState.WALK_RIGHT,
-        ):
-            self.mover.direction = -1 if self.state_machine.state == CharacterState.WALK_LEFT else 1
-            x, y = self.mover.step(bounds)
-            self.move(x, y)
 
     # ------------------------------------------------------------------
     # Mouse interaction (spec section 13)
@@ -225,8 +221,8 @@ class PetWindow(QWidget):
         if event.button() == Qt.LeftButton:
             self._is_dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            self.state_machine.set_state(CharacterState.DRAGGED)
             self.behavior_engine.mark_interacted()
+            self.state_machine.set_state(CharacterState.SURPRISED)
         elif event.button() == Qt.RightButton:
             self.context_menu.exec(event.globalPosition().toPoint())
 
@@ -245,7 +241,6 @@ class PetWindow(QWidget):
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
             logger.info("Mochi double-clicked -> open chat")
-            # Wired up to the real chat window in app/main.py
             self.on_open_chat_requested()
 
     # ------------------------------------------------------------------
@@ -312,10 +307,21 @@ class PetWindow(QWidget):
         self.behavior_engine.mark_interacted()
 
         if self._chat_window is None:
-            self._chat_window = ChatWindow(on_reaction=self._on_chat_reaction)
+            self._chat_window = ChatWindow(
+                on_reaction=self._on_chat_reaction,
+                on_thinking=self._on_chat_thinking,
+            )
         self._chat_window.show()
         self._chat_window.raise_()
         self._chat_window.activateWindow()
+
+    def _on_chat_thinking(self) -> None:
+        """Called the instant a message is sent, before a reply exists -
+        spec: 'think while the local model is processing'. Chat may fall
+        through to a local LLM call (bounded by a few seconds), so this
+        gives immediate visual feedback rather than a dead pause."""
+        self.behavior_engine.mark_interacted()
+        self.state_machine.set_state(CharacterState.THINKING)
 
     def _on_chat_reaction(self, reaction) -> None:
         """Called by the chat window once a message's intent has been

@@ -58,6 +58,14 @@ SCHEMA_STATEMENTS: list[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_timers_status_due ON timers(status, due_at);",
+    """
+    CREATE TABLE IF NOT EXISTS relationship (
+        id                 INTEGER PRIMARY KEY CHECK (id = 1),  -- single row
+        interaction_count  INTEGER NOT NULL DEFAULT 0,
+        first_seen         TEXT,
+        last_seen          TEXT
+    );
+    """,
 ]
 
 

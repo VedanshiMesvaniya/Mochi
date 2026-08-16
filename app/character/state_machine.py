@@ -46,6 +46,11 @@ class CharacterState(str, Enum):
     ANGRY = "angry"
     CONFUSED = "confused"
     SURPRISED = "surprised"
+    # EMOTE-style pixel-face states (see app/character/pixel_face.py).
+    # SLEEPY is a light-drowsy state distinct from SLEEP (fully asleep);
+    # ALERT is the "kitten noticed something / wants attention" pulse.
+    SLEEPY = "sleepy"
+    ALERT = "alert"
 
 
 class Emotion(str, Enum):
@@ -62,17 +67,19 @@ class Emotion(str, Enum):
 
 
 # Emotion -> (animation folder, optional sound name) per spec section 9.
+# Animation names here now point at pixel-face states (see
+# app/character/pixel_face.py::FACE_EXPRESSIONS) rather than sprite folders.
 EMOTION_PROFILE = {
     Emotion.NEUTRAL: {"animation": "idle", "sound": None},
     Emotion.HAPPY: {"animation": "happy", "sound": "chirp"},
     Emotion.EXCITED: {"animation": "excited", "sound": "chirp"},
-    Emotion.CURIOUS: {"animation": "look_left", "sound": None},
-    Emotion.SLEEPY: {"animation": "yawn", "sound": "yawn"},
+    Emotion.CURIOUS: {"animation": "thinking", "sound": None},
+    Emotion.SLEEPY: {"animation": "sleepy", "sound": "yawn"},
     Emotion.SAD: {"animation": "sad", "sound": None},
     Emotion.CONFUSED: {"animation": "confused", "sound": None},
     Emotion.ANNOYED: {"animation": "angry", "sound": None},
     Emotion.SURPRISED: {"animation": "surprised", "sound": "surprised"},
-    Emotion.PLAYFUL: {"animation": "play", "sound": "purr"},
+    Emotion.PLAYFUL: {"animation": "excited", "sound": "purr"},
 }
 
 

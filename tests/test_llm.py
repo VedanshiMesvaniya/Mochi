@@ -18,7 +18,7 @@ def test_ask_raises_llmunavailable_when_unreachable():
         ask("anything")
 
 
-def test_chat_engine_falls_back_gracefully_without_llm():
+def test_chat_engine_falls_back_gracefully_without_llm(temp_db):
     reaction = handle_message("what's the meaning of life")
     assert reaction.text  # never empty, even with no LLM available
 
@@ -84,13 +84,13 @@ def test_ask_falls_back_to_raw_text_when_not_json(fake_ollama):
     assert result["emotion"] == "neutral"
 
 
-def test_chat_engine_uses_llm_for_unrecognized_messages(fake_ollama):
+def test_chat_engine_uses_llm_for_unrecognized_messages(fake_ollama, temp_db):
     reaction = handle_message("give me a real answer to this")
     assert reaction.text == "a real answer"
     assert reaction.emotion == Emotion.CURIOUS
 
 
-def test_chat_engine_never_routes_reminders_through_llm(fake_ollama):
+def test_chat_engine_never_routes_reminders_through_llm(fake_ollama, temp_db):
     """Actionable intents must stay fully deterministic even when an LLM
     is available - spec section 41."""
     reaction = handle_message("remind me to water the plants at 6pm")
