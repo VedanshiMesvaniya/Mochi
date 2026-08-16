@@ -8,9 +8,25 @@ the duration of each test that requests it.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from app.core.config import settings
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """A single QApplication instance shared across any test that needs to
+    construct real Qt widgets (e.g. PixelFaceWidget rendering tests).
+    Session-scoped since Qt only allows one QApplication per process.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
 
 
 @pytest.fixture()

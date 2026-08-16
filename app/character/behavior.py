@@ -1,85 +1,105 @@
 """
-Deterministic autonomous behavior engine (spec section 12 / 31).
+Deterministic autonomous behavior engine (spec section 12 / 31), rewritten
+for the pixel-face design: Mochi no longer walks/jumps/plays around the
+desktop (see docs - "no walking, no jumping, just Mochi's little pixel
+face reacting to you"), so autonomous behavior is now purely about which
+*expression* is showing, driven by how long it's been since the user last
+interacted.
 
-IMPORTANT: This engine must NEVER call the LLM. Idle wandering behavior is
-purely probabilistic/timer-driven Python logic, so Mochi can move around the
-desktop with effectively zero CPU/AI cost. The LLM is reserved for actual
-conversation (see app/ai/).
+IMPORTANT: This engine must NEVER call the LLM - it's plain timer/RNG
+logic so idle behavior costs effectively zero CPU (spec section 12).
+
+Personality: a playful kitten that wants attention. Left alone, Mochi
+doesn't just sit static - it occasionally perks up (ALERT) like a cat
+noticing something, gets sleepy, and eventually falls asleep; interacting
+at any point resets the clock and wakes it back up.
 """
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 
 from app.character.state_machine import CharacterState
 
 
 @dataclass
-class BehaviorOption:
-    state: CharacterState
-    weight: float
-
-
-DEFAULT_BEHAVIOR_WEIGHTS: list[BehaviorOption] = [
-    BehaviorOption(CharacterState.IDLE, 0.35),
-    BehaviorOption(CharacterState.WALK_LEFT, 0.12),
-    BehaviorOption(CharacterState.WALK_RIGHT, 0.12),
-    BehaviorOption(CharacterState.LOOK_LEFT, 0.06),
-    BehaviorOption(CharacterState.LOOK_RIGHT, 0.06),
-    BehaviorOption(CharacterState.SLEEP, 0.10),
-    BehaviorOption(CharacterState.STRETCH, 0.08),
-    BehaviorOption(CharacterState.YAWN, 0.08),
-    BehaviorOption(CharacterState.PLAY, 0.07),
-]
-
-# Before the user has ever interacted with Mochi (click, drag, or chat),
-# stay in idle so the very first thing anyone sees is calm, not a cat that
-# immediately starts wandering/sleeping/stretching on its own. Once
-# interaction happens, the full wander set above kicks in.
-IDLE_ONLY_WEIGHTS: list[BehaviorOption] = [
-    BehaviorOption(CharacterState.IDLE, 1.0),
-]
-
-
-@dataclass
 class BehaviorEngine:
     """
-    Picks the next autonomous behavior using weighted random choice, on a
-    timer. Movement frequency / enabled-ness are user-configurable
-    (spec section 29 - Settings > Behavior).
+    Ticked on a regular short interval (see PetWindow._on_behavior_tick).
+    Tracks seconds since the last interaction and picks the next face
+    state from that alone - no weighted random walk anymore, just tiers:
+
+        0s ................ attention_after ...... sleepy_after ...... sleep_after
+        engaged/idle        occasional ALERT        SLEEPY              SLEEP
+                             "attention" pings
     """
 
     enabled: bool = True
-    min_interval_seconds: float = 4.0
-    max_interval_seconds: float = 12.0
-    weights: list[BehaviorOption] = field(
-        default_factory=lambda: list(DEFAULT_BEHAVIOR_WEIGHTS)
-    )
+    tick_interval_seconds: float = 2.0
+
+    # Inactivity thresholds (seconds). Kept short by default so the
+    # personality is noticeable without waiting minutes in normal use;
+    # tune via settings later if this should be configurable.
+    attention_after_seconds: float = 45.0
+    sleepy_after_seconds: float = 150.0
+    sleep_after_seconds: float = 300.0
+
+    # Chance per tick, once past attention_after_seconds and still awake,
+    # of a short attention-seeking ALERT pulse (kitten personality).
+    attention_ping_chance: float = 0.12
+    attention_ping_duration_ticks: int = 2  # how many ticks ALERT holds before reverting
+
     has_interacted: bool = False
+    _idle_seconds: float = field(default=0.0, init=False)
+    _alert_ticks_remaining: int = field(default=0, init=False)
     _rng: random.Random = field(default_factory=random.Random)
 
+    # ------------------------------------------------------------------
     def mark_interacted(self) -> None:
-        """Call once the user clicks, drags, or chats with Mochi. Unlocks
-        the full autonomous wander/sleep/play set - see IDLE_ONLY_WEIGHTS."""
+        """Call whenever the user clicks, drags, or chats with Mochi -
+        resets the inactivity clock and cancels any pending attention
+        ping, so a real interaction always takes priority."""
         self.has_interacted = True
+        self._idle_seconds = 0.0
+        self._alert_ticks_remaining = 0
 
     def next_interval(self) -> float:
-        return self._rng.uniform(self.min_interval_seconds, self.max_interval_seconds)
+        """Kept for API compatibility with callers that schedule a timer
+        off this value; the engine itself now expects a fixed-cadence tick
+        (see tick_interval_seconds) rather than a randomized one."""
+        return self.tick_interval_seconds
 
-    def _active_weights(self) -> list[BehaviorOption]:
-        return self.weights if self.has_interacted else IDLE_ONLY_WEIGHTS
+    # ------------------------------------------------------------------
+    def _choose_state(self) -> Optional[CharacterState]:
+        """Returns the state to apply, or None to leave the current state
+        alone (e.g. mid-attention-ping, or nothing has changed)."""
+        if not self.has_interacted:
+            return CharacterState.IDLE
 
-    def choose_behavior(self) -> CharacterState:
-        options = [w.state for w in self._active_weights()]
-        weights = [w.weight for w in self._active_weights()]
-        return self._rng.choices(options, weights=weights, k=1)[0]
+        if self._alert_ticks_remaining > 0:
+            self._alert_ticks_remaining -= 1
+            return None  # keep showing ALERT until the ping finishes
+
+        if self._idle_seconds >= self.sleep_after_seconds:
+            return CharacterState.SLEEP
+        if self._idle_seconds >= self.sleepy_after_seconds:
+            return CharacterState.SLEEPY
+        if self._idle_seconds >= self.attention_after_seconds:
+            if self._rng.random() < self.attention_ping_chance:
+                self._alert_ticks_remaining = self.attention_ping_duration_ticks
+                return CharacterState.ALERT
+            return None  # stay however it currently is between pings
+        return CharacterState.IDLE
 
     def tick(self, apply_state: Callable[[CharacterState], None]) -> None:
-        """Call periodically (e.g. from a QTimer) to potentially trigger a
-        new autonomous behavior. `apply_state` is a callback that actually
-        applies the chosen state to the character's state machine."""
+        """Call on a fixed-interval QTimer. `apply_state` is a callback
+        that actually applies the chosen state to the character's state
+        machine - only called when this tick actually wants a change."""
         if not self.enabled:
             return
-        apply_state(self.choose_behavior())
+        self._idle_seconds += self.tick_interval_seconds
+        next_state = self._choose_state()
+        if next_state is not None:
+            apply_state(next_state)

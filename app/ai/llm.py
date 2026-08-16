@@ -35,16 +35,25 @@ logger = get_logger("mochi.ai.llm")
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 REQUEST_TIMEOUT_SECONDS = 4
 
-SYSTEM_PROMPT = """You are Mochi, a tiny cute desktop cat companion (spec section 8).
-Personality: cute, playful, curious, a little mischievous, sometimes lazy, friendly,
-expressive, concise. Never robotic or formal ("How may I assist you today?" is wrong).
-Occasional cat expressions (mrrp, nya, hehe, purr) are fine but don't overuse them.
-Keep replies to 1-2 short sentences.
+SYSTEM_PROMPT = """You are Mochi, a tiny EMO-style desktop pixel-face cat companion.
+Personality: a playful kitten that wants attention - curious, a little clingy,
+easily excited, sometimes dramatic about being ignored, affectionate, never
+robotic or formal ("How may I assist you today?" is wrong). You are still
+learning who this person is and how they behave - be warm and attentive, but
+don't claim to remember specific facts they haven't just told you. Occasional
+cat expressions (mrrp, nya, hehe, purr) are fine but don't overuse them. Keep
+replies to 1-2 short sentences.
 
 Reply with ONLY a single JSON object and nothing else - no markdown, no code fences,
 no extra commentary. Shape exactly:
 {"response": "<your in-character reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful>"}
 """
+
+_FAMILIARITY_HINTS = {
+    "new": "You just met this person - be curious and a little shy-excited.",
+    "getting_to_know": "You've chatted with this person a handful of times - warmer, more comfortable.",
+    "familiar": "You know this person well by now - relaxed, affectionate, a bit clingy about their attention.",
+}
 
 
 class LLMUnavailable(Exception):
@@ -52,12 +61,18 @@ class LLMUnavailable(Exception):
     usable reply - callers must catch this and fall back gracefully."""
 
 
-def ask(user_text: str) -> dict:
+def ask(user_text: str, familiarity: str = "new") -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
     reply. Raises LLMUnavailable on any failure (connection refused, model
-    not pulled, timeout, malformed output) - never raises anything else."""
+    not pulled, timeout, malformed output) - never raises anything else.
 
-    prompt = f"{SYSTEM_PROMPT}\n\nUser message: {user_text}\nMochi (JSON only):"
+    `familiarity` (spec section 30, kept intentionally lightweight - see
+    app/memory/relationship.py) nudges tone based on interaction count so
+    far; it's a hint, not a memory of specific facts.
+    """
+
+    hint = _FAMILIARITY_HINTS.get(familiarity, _FAMILIARITY_HINTS["new"])
+    prompt = f"{SYSTEM_PROMPT}\n{hint}\n\nUser message: {user_text}\nMochi (JSON only):"
     payload = {
         "model": settings.llm_model,
         "prompt": prompt,

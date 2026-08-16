@@ -21,6 +21,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLineEdit,
     QListWidget,
@@ -41,10 +42,16 @@ ReactionCallback = Callable[[ChatReaction], None]
 
 
 class ChatWindow(TranslucentDialog):
-    def __init__(self, on_reaction: Optional[ReactionCallback] = None, parent=None) -> None:
+    def __init__(
+        self,
+        on_reaction: Optional[ReactionCallback] = None,
+        on_thinking: Optional[Callable[[], None]] = None,
+        parent=None,
+    ) -> None:
         super().__init__("Mochi", parent)
         self.setMinimumSize(320, 380)
         self._on_reaction = on_reaction
+        self._on_thinking = on_thinking
 
         self._build_ui()
         self._append("Mochi", "Hehe, hi! What are we up to?")
@@ -93,6 +100,16 @@ class ChatWindow(TranslucentDialog):
             return
         self.input_field.clear()
         self._append("You", text)
+
+        if self._on_thinking is not None:
+            self._on_thinking()
+            # handle_message() below is synchronous and may block for a
+            # few seconds if it falls through to a local LLM call - force
+            # one repaint now so the "thinking" face is actually visible
+            # during that wait instead of freezing until it returns.
+            # (A background QThread would be the cleaner long-term fix;
+            # skipped for now per "no heavy thing" scope.)
+            QApplication.processEvents()
 
         try:
             reaction = handle_message(text)

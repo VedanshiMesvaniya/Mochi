@@ -121,6 +121,9 @@ class TaskWindow(TranslucentDialog):
                 manager.reopen_task(task_id)
             else:
                 manager.complete_task(task_id)
+                from app.core.events import Events, event_bus
+
+                event_bus.publish(Events.TASK_COMPLETED, {"id": task_id})
         except TaskError as exc:
             QMessageBox.warning(self, "Mochi", str(exc))
         self.refresh_list()

@@ -261,7 +261,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         return DetectedIntent(
             name="thanks",
             emotion=Emotion.PLAYFUL,
-            animation=CharacterState.PLAY,
+            animation=CharacterState.EXCITED,
             sound="purr",
             response="Purrr~ anytime!",
         )
@@ -284,7 +284,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         return DetectedIntent(
             name="user_sleepy",
             emotion=Emotion.SLEEPY,
-            animation=CharacterState.YAWN,
+            animation=CharacterState.SLEEPY,
             sound="yawn",
             response="Me too... let's take a break.",
         )
@@ -292,7 +292,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         return DetectedIntent(
             name="user_bored",
             emotion=Emotion.PLAYFUL,
-            animation=CharacterState.PLAY,
+            animation=CharacterState.EXCITED,
             sound="purr",
             response="Then stop working and play with me!",
         )
@@ -307,7 +307,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         return DetectedIntent(
             name="what_doing",
             emotion=Emotion.CURIOUS,
-            animation=CharacterState.LOOK_LEFT,
+            animation=CharacterState.THINKING,
             response="Just watching you work. What about you?",
         )
     if _matches_any(lowered, MEMORY_QUERY):

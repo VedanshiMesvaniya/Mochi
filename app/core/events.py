@@ -57,6 +57,10 @@ event_bus = EventBus()
 class Events:
     REMINDER_DUE = "reminder.due"
     REMINDER_CREATED = "reminder.created"
+    REMINDER_COMPLETED = "reminder.completed"
+    REMINDER_IGNORED = "reminder.ignored"
+
+    TASK_COMPLETED = "task.completed"
 
     TIMER_DONE = "timer.done"
 

@@ -24,6 +24,7 @@ from app.ai.llm import LLMUnavailable, ask as ask_llm
 from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
 from app.core.exceptions import MochiError
 from app.core.logger import get_logger
+from app.memory import relationship
 from app.reminders import manager as reminder_manager
 from app.tasks import manager as task_manager
 from app.timers import manager as timer_manager
@@ -46,6 +47,14 @@ _ENSURE_READY = {
     "create_reminder": reminder_manager.ensure_ready,
     "start_timer": timer_manager.ensure_ready,
     "create_task": task_manager.ensure_ready,
+}
+
+# Spec section 30 - lightweight familiarity flavor. NEW isn't listed here
+# because the rule-based greeting in app/ai/intent.py already reads right
+# for a Mochi that's just meeting you.
+_FAMILIAR_GREETINGS = {
+    relationship.GETTING_TO_KNOW: "Hey, good to see you again!",
+    relationship.FAMILIAR: "You're back! I missed you~",
 }
 
 
@@ -72,11 +81,21 @@ def _emotion_and_animation(name: str) -> tuple[Emotion, CharacterState]:
 
 def handle_message(text: str) -> ChatReaction:
     """Process one chat message end-to-end and return how Mochi should react."""
+    try:
+        interaction_count = relationship.record_interaction()
+    except Exception:  # noqa: BLE001 - familiarity tracking must never break chat
+        logger.exception("Failed to record interaction (non-fatal)")
+        interaction_count = 0
+    familiarity = relationship.level_for_count(interaction_count)
+
     intent: DetectedIntent = detect_intent(text)
     response = intent.response
     emotion = intent.emotion
     animation = intent.animation
     sound = intent.sound
+
+    if intent.name == "greeting" and familiarity in _FAMILIAR_GREETINGS:
+        response = _FAMILIAR_GREETINGS[familiarity]
 
     # The rule-based detector above is intentionally deterministic for
     # actionable things (reminders/timers/tasks - spec section 41, these
@@ -87,7 +106,7 @@ def handle_message(text: str) -> ChatReaction:
     # if one isn't available (see app/ai/llm.py for why this is safe).
     if intent.name == "unknown":
         try:
-            llm_reply = ask_llm(text)
+            llm_reply = ask_llm(text, familiarity=familiarity)
             response = llm_reply["response"]
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])
             sound = EMOTION_PROFILE.get(emotion, {}).get("sound")
