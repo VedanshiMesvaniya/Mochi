@@ -29,7 +29,7 @@ from enum import Enum
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QRadialGradient
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
 from app.character.state_machine import CharacterState
@@ -101,6 +101,15 @@ _BLINK_INTERVAL_MAX_S = 6.0
 _BLINK_DURATION_S = 0.14
 _PULSE_PERIOD_S = 3.2
 _TALK_FRAME_S = 0.16
+
+# Palette - purple/lavender glow, matching the reference "EMO desktop
+# companion" mockup rather than the earlier blue.
+GLOW_COLOR = QColor(196, 165, 255)      # eyes, mouth, brows, Zzz
+GLOW_HALO_COLOR = QColor(151, 111, 220)  # soft radial "breathing" glow
+SCREEN_COLOR = QColor(21, 15, 30, 240)   # near-black casing, faint purple tint
+EAR_COLOR = QColor(34, 26, 48, 255)      # same family as the casing, slightly lighter
+EDGE_COLOR = QColor(90, 74, 118, 170)    # subtle rim so the silhouette reads on any desktop background
+WHISKER_COLOR = QColor(220, 205, 245, 130)  # thin, subtle - decorative, not a UI element
 
 
 class PixelFaceWidget(QWidget):
@@ -202,29 +211,105 @@ class PixelFaceWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        rect = QRectF(self.rect()).adjusted(4, 4, -4, -4)
+        full_rect = QRectF(self.rect()).adjusted(3, 3, -3, -3)
+        # Screen sits inset from the widget's full bounds, leaving room
+        # above for cat ears and to the sides for whiskers - both drawn
+        # outside the screen itself, like a physical device's casing.
+        ear_room = full_rect.height() * 0.16
+        whisker_room = full_rect.width() * 0.12
+        rect = QRectF(
+            full_rect.left() + whisker_room,
+            full_rect.top() + ear_room,
+            full_rect.width() - whisker_room * 2,
+            full_rect.height() - ear_room - full_rect.height() * 0.04,
+        )
         radius = min(rect.width(), rect.height()) * 0.22
+
+        self._draw_ears(painter, rect)
 
         # Screen body
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
-        painter.fillPath(path, QColor(18, 16, 24, 235))
+        painter.fillPath(path, SCREEN_COLOR)
+        edge_pen = QPen(EDGE_COLOR)
+        edge_pen.setWidthF(max(1.0, rect.width() * 0.006))
+        painter.setPen(edge_pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+        painter.setPen(Qt.NoPen)
 
         # Soft "breathing" glow behind the face - part of the idle-alive feel.
         pulse = 0.5 + 0.5 * math.sin((self._clock / _PULSE_PERIOD_S) * 2 * math.pi)
         glow_alpha = int(30 + 40 * self._expr.glow * pulse)
         glow = QRadialGradient(rect.center(), rect.width() * 0.55)
-        glow.setColorAt(0.0, QColor(142, 156, 230, glow_alpha))
-        glow.setColorAt(1.0, QColor(142, 156, 230, 0))
+        glow.setColorAt(0.0, QColor(GLOW_HALO_COLOR.red(), GLOW_HALO_COLOR.green(), GLOW_HALO_COLOR.blue(), glow_alpha))
+        glow.setColorAt(1.0, QColor(GLOW_HALO_COLOR.red(), GLOW_HALO_COLOR.green(), GLOW_HALO_COLOR.blue(), 0))
         painter.setClipPath(path)
         painter.fillRect(rect, glow)
+        painter.setClipping(False)
 
         self._draw_face(painter, rect)
+        self._draw_whiskers(painter, rect, full_rect)
         painter.end()
+
+    @staticmethod
+    def _draw_ears(painter: QPainter, screen_rect: QRectF) -> None:
+        """Two simple triangular cat ears sitting on top of the screen,
+        same material/color as the casing (not glowing) - purely a shape
+        cue, like the reference mockup's physical device. A thin rim
+        keeps them visible against light or dark desktop backgrounds."""
+        ear_w = screen_rect.width() * 0.30
+        ear_h = screen_rect.height() * 0.26
+        inset = screen_rect.width() * 0.08
+
+        pen = QPen(EDGE_COLOR)
+        pen.setWidthF(max(1.0, screen_rect.width() * 0.006))
+        painter.setPen(pen)
+        painter.setBrush(EAR_COLOR)
+        for side in (-1, 1):
+            base_x = (
+                screen_rect.left() + inset
+                if side == -1
+                else screen_rect.right() - inset - ear_w
+            )
+            tip_x = base_x + (ear_w * 0.15 if side == -1 else ear_w * 0.85)
+            path = QPainterPath()
+            path.moveTo(base_x, screen_rect.top() + ear_h * 0.15)
+            path.lineTo(base_x + ear_w, screen_rect.top() + ear_h * 0.15)
+            path.lineTo(tip_x, screen_rect.top() - ear_h * 0.7)
+            path.closeSubpath()
+            painter.drawPath(path)
+        painter.setPen(Qt.NoPen)
+
+    @staticmethod
+    def _draw_whiskers(painter: QPainter, screen_rect: QRectF, full_rect: QRectF) -> None:
+        """A few thin lines poking out either side, filling the margin
+        left between the screen and the widget's outer edge - decorative
+        only, sized to reliably read at small window sizes."""
+        pen = QPen(WHISKER_COLOR)
+        pen.setWidthF(max(1.6, screen_rect.width() * 0.01))
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+
+        base_y = screen_rect.top() + screen_rect.height() * 0.58
+        spacing = screen_rect.height() * 0.08
+
+        for i, dy in enumerate((-spacing, 0, spacing)):
+            y = base_y + dy
+            tilt = (i - 1) * screen_rect.height() * 0.035
+            painter.drawLine(
+                QPointF(screen_rect.left() - 1, y),
+                QPointF(full_rect.left(), y + tilt),
+            )
+            painter.drawLine(
+                QPointF(screen_rect.right() + 1, y),
+                QPointF(full_rect.right(), y + tilt),
+            )
+        painter.setPen(Qt.NoPen)
 
     def _draw_face(self, painter: QPainter, rect: QRectF) -> None:
         w, h = rect.width(), rect.height()
-        eye_color = QColor(150, 200, 255)
+        eye_color = GLOW_COLOR
         cx = rect.center().x()
         cy = rect.center().y() - h * 0.05
 
@@ -250,7 +335,7 @@ class PixelFaceWidget(QWidget):
         if abs(self._expr.brow_angle) > 0.5:
             self._draw_brows(painter, eye_centers, cy - eye_max_h * 0.75, eye_w, w, self._expr.brow_angle)
 
-        mouth_color = QColor(150, 200, 255)
+        mouth_color = GLOW_COLOR
         mouth_y = cy + h * 0.24
         mouth_w = w * 0.22
         painter.setPen(Qt.NoPen)
@@ -284,9 +369,7 @@ class PixelFaceWidget(QWidget):
     ) -> None:
         """Simple angled eyebrow lines. Positive brow_angle furrows the
         inner ends downward (angry); negative raises them (sad/worried)."""
-        from PySide6.QtGui import QPen
-
-        pen = QPen(QColor(150, 200, 255))
+        pen = QPen(GLOW_COLOR)
         pen.setWidthF(max(2.0, w * 0.014))
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
@@ -330,14 +413,14 @@ class PixelFaceWidget(QWidget):
                 start_x + seg_w * (i + 1), y,
             )
         pen = painter.pen()
-        painter.setPen(QColor(150, 200, 255))
+        painter.setPen(GLOW_COLOR)
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
         painter.setPen(pen)
 
     def _draw_zzz(self, painter: QPainter, rect: QRectF) -> None:
         bob = math.sin(self._clock * 1.4) * rect.height() * 0.02
-        painter.setPen(QColor(150, 200, 255, 220))
+        painter.setPen(QColor(GLOW_COLOR.red(), GLOW_COLOR.green(), GLOW_COLOR.blue(), 220))
         font = painter.font()
         font.setBold(True)
         font.setPointSizeF(max(8.0, rect.height() * 0.09))
