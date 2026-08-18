@@ -59,7 +59,9 @@ non-Windows platforms.
 ## Chat
 
 Double-click Mochi (or right-click → Chat) to open a small translucent
-chat popup. Messages are handled in two layers:
+chat popup — it stays pinned on top of other windows while open (toggle
+via the green dot) so it doesn't get buried mid-conversation, and only
+goes away when you actually close it. Messages are handled in two layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
    greetings, and common small talk are recognized by a rule-based
@@ -69,10 +71,12 @@ chat popup. Messages are handled in two layers:
    sent to a locally-running [Ollama](https://ollama.com) model (default
    `qwen3:0.6b`, configurable) for a real conversational reply, on a
    background thread so a slow reply never freezes the chat window. If
-   Ollama isn't installed or running, Mochi falls back to a friendly "not
-   sure what you mean yet" reply instead of breaking — the LLM is a
-   nice-to-have layered on top of a fully working local app, not a
-   requirement.
+   Ollama isn't installed, isn't running, or the model hasn't been
+   pulled, Mochi says so directly ("my brain's offline right now...")
+   rather than giving the same generic "I'm not sure what you mean" line
+   a genuinely-unrecognized message gets — the LLM is a nice-to-have
+   layered on top of a fully working local app, not a requirement, but
+   it shouldn't be a mystery when it's not active.
 
 Mochi also keeps a lightweight local interaction counter (not any kind of
 learned model) that shifts its greeting and tone a little as you talk to
@@ -140,7 +144,7 @@ app/
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
 data/               local SQLite database (gitignored)
-tests/              pytest suite (222 tests)
+tests/              pytest suite (227 tests)
 ```
 
 ---

@@ -78,7 +78,7 @@ class ChatWindow(TranslucentDialog):
         on_thinking: Optional[Callable[[], None]] = None,
         parent=None,
     ) -> None:
-        super().__init__("Mochi", parent)
+        super().__init__("Mochi", parent, pinned_by_default=True)
         self.setMinimumSize(320, 380)
         self._on_reaction = on_reaction
         self._on_thinking = on_thinking
@@ -164,6 +164,12 @@ class ChatWindow(TranslucentDialog):
         self.input_field.setEnabled(True)
         self.send_button.setEnabled(True)
         self.input_field.setFocus()
+
+        # Bring the window back to front for the reply - pinned-on-top
+        # keeps it from being buried, but doesn't force focus back after
+        # the user's clicked elsewhere while waiting on a slow reply.
+        self.raise_()
+        self.activateWindow()
 
         # Let the finished thread be cleaned up before the next message.
         if self._worker is not None:

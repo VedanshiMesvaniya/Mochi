@@ -79,7 +79,7 @@ class _DotButton(QPushButton):
 class TranslucentDialog(QDialog):
     """Base class - frosted glass, rounded, frameless, draggable popup."""
 
-    def __init__(self, title: str, parent=None) -> None:
+    def __init__(self, title: str, parent=None, pinned_by_default: bool = False) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
@@ -163,6 +163,15 @@ class TranslucentDialog(QDialog):
         self.content_layout = QVBoxLayout()
         self.content_layout.setSpacing(8)
         panel_layout.addLayout(self.content_layout)
+
+        # Some popups (chat, in particular) are meant to be interacted
+        # with *while* the user does other things (switch to a terminal,
+        # check something, come back) - without WindowStaysOnTopHint a
+        # plain Qt.Tool window has no taskbar entry and can end up buried
+        # behind whatever's clicked next, which reads as "it closed
+        # itself". Default those to pinned; still toggleable via the dot.
+        if pinned_by_default:
+            self._toggle_pinned()
 
     # ------------------------------------------------------------------
     def _toggle_pinned(self) -> None:
