@@ -55,7 +55,12 @@ class DetectedIntent:
 GREETINGS = ("hi", "hello", "hey", "yo", "good morning", "good evening", "morning")
 FAREWELLS = ("bye", "goodbye", "see you", "gtg", "good night", "night")
 THANKS = ("thanks", "thank you", "ty", "thx")
-COMPLIMENTS = ("good boy", "good girl", "good cat", "cute", "i love you", "love you")
+# Compliments are split by intensity so the reaction actually varies (spec:
+# "give all pending expressions" - BLUSH and HEART were previously
+# unreachable from chat): a mild "cute"/"good cat" gets a shy BLUSH, while
+# an outright "I love you" earns the bigger HEART-eyes reaction.
+COMPLIMENTS_MILD = ("good boy", "good girl", "good cat", "cute")
+COMPLIMENTS_STRONG = ("i love you", "love you")
 INSULTS = ("stupid", "dumb", "shut up", "annoying", "useless")
 SLEEPY_WORDS = ("i'm tired", "im tired", "so sleepy", "i am sleepy", "exhausted")
 BORED_WORDS = ("i'm bored", "im bored", "bored")
@@ -265,13 +270,21 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             sound="purr",
             response="Purrr~ anytime!",
         )
-    if _matches_any(lowered, COMPLIMENTS):
+    if _matches_any(lowered, COMPLIMENTS_STRONG):
         return DetectedIntent(
-            name="compliment",
+            name="compliment_strong",
             emotion=Emotion.EXCITED,
-            animation=CharacterState.EXCITED,
+            animation=CharacterState.HEART,
             sound="chirp",
-            response="Nya~! Say that again!",
+            response="Nya~! I love you too!",
+        )
+    if _matches_any(lowered, COMPLIMENTS_MILD):
+        return DetectedIntent(
+            name="compliment_mild",
+            emotion=Emotion.PLAYFUL,
+            animation=CharacterState.BLUSH,
+            sound="purr",
+            response="Hehe... say that again?",
         )
     if _matches_any(lowered, INSULTS):
         return DetectedIntent(

@@ -16,20 +16,43 @@ optional LLM step talks to a locally-running Ollama, not the cloud).
 ## What Mochi looks like
 
 A ~180×180px frameless, translucent window: a dark rounded square with
-small triangular ears and a few whiskers, glowing purple pixel eyes and
-mouth. It blinks on its own, has a faint idle "breathing" glow, and its
-pupils drift toward your mouse cursor while idle.
+small triangular ears and a few whiskers, glowing pixel eyes and mouth in
+your choice of four color themes. It blinks on its own, has a faint idle
+"breathing" glow, and its pupils drift toward your mouse cursor while
+idle. Every expression change eases and bounces into place through a
+small spring-physics layer rather than snapping instantly — that's the
+main thing that makes it read as alive rather than a slideshow of static
+faces.
 
-**Expressions:** idle, happy, sad, angry, confused, surprised, thinking,
-sleepy, sleeping, talking, excited, alert — all drawn programmatically
-(no image assets), so every expression is just numbers (eye openness,
-pupil offset, mouth shape, brow angle), not artwork.
+**Expressions (16):** idle, happy, sad, angry, confused, surprised,
+thinking, sleepy, sleeping, talking, excited, alert, blush, shy, heart,
+wink — all drawn programmatically (no image assets), so every expression
+is just numbers (eye openness, pupil offset, mouth shape, brow angle,
+blush/heart-eyes flags), not artwork. Chat reactions pick between these
+organically — a mild compliment gets a shy blush, "I love you" gets
+heart-eyes, and an ignored-too-long attention ping alternates between an
+alert pulse and a playful wink.
+
+**Glow theme:** Purple (default), Blue, Mint, or Rose — pick one from
+right-click → Theme. Purely cosmetic (expression geometry never changes),
+persisted locally in SQLite so it's remembered across restarts.
+
+**Sleep:** eyes close and a small cartoon-style "Zzz" floats up and fades
+near the ear, looping, always contained within the window's own bounds.
 
 **Personality:** a playful kitten that wants attention. Left alone, it
-doesn't sit static — it occasionally perks up (alert), gets sleepy, and
-falls asleep; any interaction wakes it back up. It shows "thinking" the
-instant you send a chat message, gets happy when you complete a reminder
-or task, and gets annoyed if a reminder sits ignored for a while.
+doesn't sit static — it occasionally perks up (alert or wink), gets
+sleepy, and falls asleep; any interaction wakes it back up. It shows
+"thinking" the instant you send a chat message, gets happy when you
+complete a reminder or task, and gets annoyed if a reminder sits ignored
+for a while.
+
+**Lock-screen easter egg (Windows only):** when you lock your PC, Mochi
+closes its eyes; every couple of seconds it playfully peeks one eye open,
+then closes it again; unlocking wakes it up excited. Purely cosmetic, no
+password handling of any kind on Mochi's side — it just detects the OS
+lock state (see `app/character/lock_watcher.py`). No-ops safely on
+non-Windows platforms.
 
 ---
 
@@ -44,10 +67,12 @@ chat popup. Messages are handled in two layers:
    or delete data should never depend on a language model's judgement.
 2. **Local LLM fallback** — anything that bucket doesn't recognize is
    sent to a locally-running [Ollama](https://ollama.com) model (default
-   `qwen3:0.6b`, configurable) for a real conversational reply. If Ollama
-   isn't installed or running, Mochi falls back to a friendly "not sure
-   what you mean yet" reply instead of breaking — the LLM is a nice-to-have
-   layered on top of a fully working local app, not a requirement.
+   `qwen3:0.6b`, configurable) for a real conversational reply, on a
+   background thread so a slow reply never freezes the chat window. If
+   Ollama isn't installed or running, Mochi falls back to a friendly "not
+   sure what you mean yet" reply instead of breaking — the LLM is a
+   nice-to-have layered on top of a fully working local app, not a
+   requirement.
 
 Mochi also keeps a lightweight local interaction counter (not any kind of
 learned model) that shifts its greeting and tone a little as you talk to
@@ -115,7 +140,7 @@ app/
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
 data/               local SQLite database (gitignored)
-tests/              pytest suite (134 tests)
+tests/              pytest suite (222 tests)
 ```
 
 ---

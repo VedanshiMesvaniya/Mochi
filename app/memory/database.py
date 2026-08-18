@@ -66,6 +66,12 @@ SCHEMA_STATEMENTS: list[str] = [
         last_seen          TEXT
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+    );
+    """,
 ]
 
 
