@@ -39,3 +39,21 @@ def test_greeting_changes_once_familiar(temp_db):
     familiar_reaction = handle_message("hi")
     assert familiar_reaction.text != first_reaction.text
     assert "back" in familiar_reaction.text.lower()
+
+
+def test_unknown_message_with_llm_unavailable_gives_a_setup_hint(temp_db, monkeypatch):
+    """Regression test: previously an LLM-unavailable fallback used the
+    exact same generic line as a genuinely-unrecognized message, so a
+    working-as-designed 'Ollama isn't running' situation looked
+    indistinguishable from a broken/confused Mochi. It must now say
+    something actionable instead."""
+    from app.ai.llm import LLMUnavailable
+
+    def _boom(*_args, **_kwargs):
+        raise LLMUnavailable("connection refused")
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _boom)
+
+    reaction = handle_message("what is the meaning of life")
+    assert "ollama" in reaction.text.lower()
+    assert reaction.animation == CharacterState.SLEEPY

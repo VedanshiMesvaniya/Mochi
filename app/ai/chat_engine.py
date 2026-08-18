@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from app.ai.intent import DetectedIntent, detect_intent
 from app.ai.llm import LLMUnavailable, ask as ask_llm
 from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
+from app.core.config import settings
 from app.core.exceptions import MochiError
 from app.core.logger import get_logger
 from app.memory import relationship
@@ -111,7 +112,22 @@ def handle_message(text: str) -> ChatReaction:
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])
             sound = EMOTION_PROFILE.get(emotion, {}).get("sound")
         except LLMUnavailable as exc:
-            logger.info("Local LLM unavailable, using rule-based fallback: %s", exc)
+            # Previously this fell back to the exact same generic "I'm not
+            # sure what you mean yet" line used for a truly-unrecognized
+            # message - which made a *working-as-designed* "Ollama isn't
+            # running" situation look identical to a broken/confused
+            # Mochi. Surface the real reason so the person can actually
+            # fix it (install Ollama / pull the model / start it) instead
+            # of assuming chat itself is broken.
+            logger.info("Local LLM unavailable, using setup-hint fallback: %s", exc)
+            response = (
+                "Mrrp... my brain's offline right now! Install Ollama, run "
+                f"'ollama pull {settings.llm_model}', and make sure Ollama's "
+                "running - then I can actually chat about anything."
+            )
+            emotion = Emotion.SLEEPY
+            animation = CharacterState.SLEEPY
+            sound = None
 
     if intent.tool:
         tool_fn = _TOOL_MODULES.get(intent.tool)
