@@ -12,16 +12,21 @@ the chat window.
 Voice input (spec section 15) isn't wired up yet - the mic button is
 present but disabled, and degrades gracefully to typing-only per spec
 section 36 (graceful degradation), rather than pretending it works.
+
+`handle_message()` can fall through to a local LLM call bounded by a
+30-second timeout (see app/ai/llm.py) - that's too long to run on the UI
+thread without freezing the whole window, so it's run on a background
+`ChatWorker` QThread instead; the result comes back via a Qt signal and is
+applied on the UI thread as usual.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QLineEdit,
     QListWidget,
@@ -41,6 +46,31 @@ logger = get_logger("mochi.ui.chat")
 ReactionCallback = Callable[[ChatReaction], None]
 
 
+class ChatWorker(QThread):
+    """Runs one `handle_message()` call off the UI thread so a slow local
+    LLM reply (up to the 30s bound in app/ai/llm.py) never freezes the
+    chat window or the rest of the app. One-shot: create, start, let it
+    emit `finished_reaction`, then let it get garbage collected."""
+
+    finished_reaction = Signal(object)  # emits a ChatReaction
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(parent)
+        self._text = text
+
+    def run(self) -> None:  # noqa: D102 - QThread override
+        try:
+            reaction = handle_message(self._text)
+        except Exception:  # noqa: BLE001 - chat must never crash the app
+            logger.exception("Chat engine failed on message: %s", self._text)
+            reaction = ChatReaction(
+                text="Sorry, my brain hiccuped there. Try again?",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        self.finished_reaction.emit(reaction)
+
+
 class ChatWindow(TranslucentDialog):
     def __init__(
         self,
@@ -52,6 +82,8 @@ class ChatWindow(TranslucentDialog):
         self.setMinimumSize(320, 380)
         self._on_reaction = on_reaction
         self._on_thinking = on_thinking
+
+        self._worker: Optional[ChatWorker] = None
 
         self._build_ui()
         self._append("Mochi", "Hehe, hi! What are we up to?")
@@ -84,6 +116,14 @@ class ChatWindow(TranslucentDialog):
         self.content_layout.addLayout(input_row)
         self.input_field.setFocus()
 
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # Avoid "QThread destroyed while still running" if the window is
+        # closed mid-reply; the LLM call itself can't be cancelled, but we
+        # can at least wait briefly for the worker to notice and finish.
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(200)
+        super().closeEvent(event)
+
     # ------------------------------------------------------------------
     def _append(self, sender: str, text: str) -> None:
         item = QListWidgetItem(f"{sender}: {text}")
@@ -95,6 +135,9 @@ class ChatWindow(TranslucentDialog):
         self.message_log.scrollToBottom()
 
     def _on_send_clicked(self) -> None:
+        if self._worker is not None:
+            return  # a reply is already in flight - ignore double-sends
+
         text = self.input_field.text().strip()
         if not text:
             return
@@ -103,24 +146,26 @@ class ChatWindow(TranslucentDialog):
 
         if self._on_thinking is not None:
             self._on_thinking()
-            # handle_message() below is synchronous and may block for a
-            # few seconds if it falls through to a local LLM call - force
-            # one repaint now so the "thinking" face is actually visible
-            # during that wait instead of freezing until it returns.
-            # (A background QThread would be the cleaner long-term fix;
-            # skipped for now per "no heavy thing" scope.)
-            QApplication.processEvents()
 
-        try:
-            reaction = handle_message(text)
-        except Exception:  # noqa: BLE001 - chat must never crash the app
-            logger.exception("Chat engine failed on message: %s", text)
-            reaction = ChatReaction(
-                text="Sorry, my brain hiccuped there. Try again?",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+        # Disable input while waiting so the user can see Mochi is
+        # "thinking" rather than the field just silently doing nothing.
+        self.input_field.setEnabled(False)
+        self.send_button.setEnabled(False)
 
+        self._worker = ChatWorker(text, self)
+        self._worker.finished_reaction.connect(self._on_reaction_ready)
+        self._worker.start()
+
+    def _on_reaction_ready(self, reaction: ChatReaction) -> None:
         self._append("Mochi", reaction.text)
         if self._on_reaction is not None:
             self._on_reaction(reaction)
+
+        self.input_field.setEnabled(True)
+        self.send_button.setEnabled(True)
+        self.input_field.setFocus()
+
+        # Let the finished thread be cleaned up before the next message.
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None

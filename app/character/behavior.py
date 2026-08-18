@@ -47,9 +47,13 @@ class BehaviorEngine:
     sleep_after_seconds: float = 300.0
 
     # Chance per tick, once past attention_after_seconds and still awake,
-    # of a short attention-seeking ALERT pulse (kitten personality).
-    attention_ping_chance: float = 0.12
-    attention_ping_duration_ticks: int = 2  # how many ticks ALERT holds before reverting
+    # of a short attention-seeking ping (kitten personality). Raised
+    # slightly and now alternates between ALERT and a playful WINK so an
+    # ignored Mochi reads as more expressive rather than repeating the
+    # exact same pulse every time.
+    attention_ping_chance: float = 0.18
+    attention_ping_duration_ticks: int = 2  # how many ticks the ping holds before reverting
+    wink_ping_chance: float = 0.5  # of an attention ping firing, how often it's a WINK instead of ALERT
 
     has_interacted: bool = False
     _idle_seconds: float = field(default=0.0, init=False)
@@ -89,6 +93,8 @@ class BehaviorEngine:
         if self._idle_seconds >= self.attention_after_seconds:
             if self._rng.random() < self.attention_ping_chance:
                 self._alert_ticks_remaining = self.attention_ping_duration_ticks
+                if self._rng.random() < self.wink_ping_chance:
+                    return CharacterState.WINK
                 return CharacterState.ALERT
             return None  # stay however it currently is between pings
         return CharacterState.IDLE

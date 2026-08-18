@@ -87,24 +87,37 @@ app/
 │   ├── pet.py                 PySide6 transparent/frameless/draggable window;
 │   │                           owns the state machine, behavior engine, and
 │   │                           the face widget; wires chat/reminder/task
-│   │                           reactions into visible state changes
+│   │                           reactions, the theme menu, and the lock-screen
+│   │                           watcher into visible state changes
 │   ├── pixel_face.py           Programmatic EMO-style face renderer - eyes,
 │   │                           mouth, brows, ears, whiskers, blink/pulse/
-│   │                           talk-cycle animation, cursor-following pupils.
+│   │                           talk-cycle animation, cursor-following pupils,
+│   │                           a spring-physics smoothing layer so expression
+│   │                           changes bounce into place instead of snapping,
+│   │                           and a cartoon multi-glyph "Zzz" while asleep.
 │   │                           No image assets; every expression is a small
-│   │                           dataclass of numbers (FACE_EXPRESSIONS table)
+│   │                           dataclass of numbers (FACE_EXPRESSIONS table,
+│   │                           16 expressions total)
+│   ├── theme.py                 Four selectable glow-color palettes (Purple/
+│   │                            Blue/Mint/Rose) - cosmetic only, never touches
+│   │                            expression geometry
+│   ├── lock_watcher.py           Windows-only (ctypes) OS lock-state polling
+│   │                             for the lock-screen easter egg; injectable
+│   │                             probe for testing, safe no-op elsewhere
 │   ├── state_machine.py        CharacterState + Emotion enums, event publisher
 │   ├── behavior.py             Inactivity-tiered autonomous behavior (idle →
-│   │                           occasional "alert" attention ping → sleepy →
-│   │                           sleep); fixed-interval QTimer, no LLM calls
+│   │                           occasional "alert"/"wink" attention ping →
+│   │                           sleepy → sleep); fixed-interval QTimer, no LLM
+│   │                           calls
 │   └── movement.py             Screen-bounds math used when dragging the window
 │
 ├── ai/                         Chat brain
 │   ├── intent.py                Rule-based matcher: greeting/farewell/thanks/
-│   │                            compliment/insult/sleepy/bored/reminder/
-│   │                            timer/task/unknown, each mapped to a
-│   │                            response + emotion + animation (+ a tool
-│   │                            call, for actionable intents)
+│   │                            compliment (mild → blush, strong → heart)/
+│   │                            insult/sleepy/bored/reminder/timer/task/
+│   │                            unknown, each mapped to a response + emotion
+│   │                            + animation (+ a tool call, for actionable
+│   │                            intents)
 │   ├── chat_engine.py            Orchestrates a message end-to-end: runs
 │   │                            intent detection, executes any tool call
 │   │                            (with validation), falls through to the
@@ -112,16 +125,19 @@ app/
 │   │                            the interaction for familiarity tracking
 │   └── llm.py                    Optional local LLM backend - talks to
 │                                 Ollama's HTTP API directly (stdlib only,
-│                                 no extra dependency); bounded timeout;
+│                                 no extra dependency); 30s bounded timeout
+│                                 (generous enough for a cold local model);
 │                                 raises LLMUnavailable on any failure so
 │                                 the caller can fall back gracefully
 │
 ├── memory/                     SQLite access layer
 │   ├── database.py              Connection management + schema (reminders,
-│   │                            tasks, timers, relationship)
-│   └── relationship.py           Lightweight interaction counter (not ML) -
-│                                 flavors greetings/LLM tone as familiarity
-│                                 grows (new / getting_to_know / familiar)
+│   │                            tasks, timers, relationship, app_settings)
+│   ├── relationship.py           Lightweight interaction counter (not ML) -
+│   │                             flavors greetings/LLM tone as familiarity
+│   │                             grows (new / getting_to_know / familiar)
+│   └── settings_store.py         Tiny SQLite key-value store for small
+│                                 persisted preferences (currently: glow theme)
 │
 ├── tools/                      JSON-in/JSON-out functions the intent layer
 │   ├── reminder_tools.py        calls to actually create/modify data -
@@ -147,7 +163,9 @@ app/
     ├── base_window.py            Shared frameless/translucent/rounded dialog
     │                             base (frosted-glass style, draggable,
     │                             macOS-style close/minimize/pin dots)
-    ├── chat_window.py             The chat popup
+    ├── chat_window.py             The chat popup; runs the LLM call on a
+    │                             background ChatWorker(QThread) so a slow
+    │                             reply never freezes the UI
     ├── reminder_window.py          Create/list/complete/snooze/delete reminders
     ├── task_window.py              Add/toggle-done/delete tasks
     ├── timer_window.py             Start/view/extend/cancel timers

@@ -78,6 +78,26 @@ def test_attention_ping_eventually_fires_with_high_probability():
     assert CharacterState.ALERT in seen
 
 
+def test_attention_ping_can_be_a_playful_wink():
+    """Kitten personality: an ignored-too-long ping isn't always the same
+    ALERT pulse - it sometimes winks instead (spec: "give all pending
+    expressions", playful personality)."""
+    engine = BehaviorEngine(
+        enabled=True,
+        tick_interval_seconds=1,
+        attention_after_seconds=2,
+        sleepy_after_seconds=10_000,
+        sleep_after_seconds=20_000,
+        attention_ping_chance=1.0,
+        wink_ping_chance=1.0,
+    )
+    engine.mark_interacted()
+    seen = []
+    for _ in range(5):
+        engine.tick(lambda s: seen.append(s))
+    assert CharacterState.WINK in seen
+
+
 def test_next_interval_returns_tick_interval():
     engine = BehaviorEngine(tick_interval_seconds=3.0)
     assert engine.next_interval() == 3.0

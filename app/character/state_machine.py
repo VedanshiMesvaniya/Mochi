@@ -51,6 +51,17 @@ class CharacterState(str, Enum):
     # ALERT is the "kitten noticed something / wants attention" pulse.
     SLEEPY = "sleepy"
     ALERT = "alert"
+    # Extra expressive states (spec: "give all pending expressions" - the
+    # 16-expression reference sheet). Reached organically through chat
+    # reactions/behavior rather than the physical-movement states above.
+    BLUSH = "blush"
+    SHY = "shy"
+    HEART = "heart"
+    WINK = "wink"
+    # Windows lock-screen easter egg (spec section: "fun" lock reaction) -
+    # eyes closed like SLEEP but distinct so it's never confused with
+    # actually being tired, and never shows the sleepy Zzz.
+    LOCKED = "locked"
 
 
 class Emotion(str, Enum):

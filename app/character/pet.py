@@ -17,12 +17,15 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QApplication, QLabel
 SPEECH_BUBBLE_DEFAULT_MS = 6000
 
 from app.character.behavior import BehaviorEngine
+from app.character.lock_watcher import LockWatcher
 from app.character.movement import Mover, ScreenBounds
 from app.character.pixel_face import PixelFaceWidget
 from app.character.state_machine import CharacterState, CharacterStateMachine
+from app.character.theme import THEME_ORDER, THEMES
 from app.core.config import settings
 from app.core.events import Events, event_bus
 from app.core.logger import get_logger
+from app.memory import settings_store
 
 SPEECH_BUBBLE_CHAT_MS = 5000
 FACE_TICK_MS = 50  # ~20fps - cheap since it's vector drawing, not sprite decoding
@@ -53,12 +56,22 @@ class PetWindow(QWidget):
         self._timer_window = None
         self._chat_window = None
 
+        self.lock_watcher = LockWatcher(parent=self)
+        self._pre_lock_state: CharacterState | None = None
+        self._wake_timer = QTimer(self)
+        self._wake_timer.setSingleShot(True)
+        self._wake_timer.timeout.connect(self._on_wake_settle)
+
         self._setup_window()
         self._setup_ui()
         self._setup_tray_free_menu()
+        self._setup_theme_menu()
         self._setup_timers()
         self._place_on_screen()
         self._subscribe_to_events()
+        self._load_theme()
+        self._subscribe_to_lock_watcher()
+        self.lock_watcher.start()
 
     # ------------------------------------------------------------------
     # Setup
@@ -133,6 +146,21 @@ class PetWindow(QWidget):
         ):
             self.context_menu.addAction(action)
 
+    def _setup_theme_menu(self) -> None:
+        """Glow-color theme picker (spec: 4 selectable options, persisted
+        locally). Inserted into the right-click menu next to Settings,
+        since there's no full settings window yet."""
+        self.theme_menu = QMenu("Theme", self)
+        self._theme_actions: dict[str, QAction] = {}
+        for key in THEME_ORDER:
+            theme = THEMES[key]
+            action = QAction(theme.label, self, checkable=True)
+            action.triggered.connect(lambda _checked, k=key: self._set_theme(k))
+            self.theme_menu.addAction(action)
+            self._theme_actions[key] = action
+        # Inserted before Settings so the menu reads: ... Memories, Theme, Settings, ...
+        self.context_menu.insertMenu(self.action_settings, self.theme_menu)
+
     def _setup_timers(self) -> None:
         # Face animation tick - blink/pulse/talk-frame advance + redraw.
         self.face_timer = QTimer(self)
@@ -175,6 +203,50 @@ class PetWindow(QWidget):
     def _on_completion_event(self, _payload) -> None:
         self.behavior_engine.mark_interacted()
         self.state_machine.set_state(CharacterState.HAPPY)
+
+    # ------------------------------------------------------------------
+    # Glow theme (spec: 4 selectable options, persisted locally)
+    # ------------------------------------------------------------------
+    def _load_theme(self) -> None:
+        saved_key = settings_store.get_setting(settings_store.KEY_GLOW_THEME)
+        self._set_theme(saved_key or "purple", persist=False)
+
+    def _set_theme(self, key: str, persist: bool = True) -> None:
+        self.face.set_theme(key)
+        for action_key, action in getattr(self, "_theme_actions", {}).items():
+            action.setChecked(action_key == key)
+        if persist:
+            settings_store.set_setting(settings_store.KEY_GLOW_THEME, key)
+
+    # ------------------------------------------------------------------
+    # Lock-screen easter egg (just for fun - spec: eyes close on lock,
+    # peek playfully while locked, wake up excited on unlock). Windows
+    # only; LockWatcher is a safe no-op everywhere else - see
+    # app/character/lock_watcher.py.
+    # ------------------------------------------------------------------
+    def _subscribe_to_lock_watcher(self) -> None:
+        self.lock_watcher.locked.connect(self._on_screen_locked)
+        self.lock_watcher.unlocked.connect(self._on_screen_unlocked)
+        self.lock_watcher.peek.connect(self._on_peek)
+
+    def _on_screen_locked(self) -> None:
+        self._pre_lock_state = self.state_machine.state
+        self._wake_timer.stop()
+        self.state_machine.set_state(CharacterState.LOCKED)
+
+    def _on_peek(self) -> None:
+        if self.state_machine.state == CharacterState.LOCKED:
+            self.face.peek_one_eye()
+
+    def _on_screen_unlocked(self) -> None:
+        # Welcome-back reaction, then settle back to normal autonomous
+        # behavior after a beat rather than snapping straight to idle.
+        self.behavior_engine.mark_interacted()
+        self.state_machine.set_state(CharacterState.EXCITED)
+        self._wake_timer.start(1500)
+
+    def _on_wake_settle(self) -> None:
+        self.state_machine.set_state(CharacterState.IDLE)
 
     # ------------------------------------------------------------------
     # Rendering

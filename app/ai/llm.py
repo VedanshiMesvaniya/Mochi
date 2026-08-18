@@ -33,7 +33,15 @@ from app.core.logger import get_logger
 logger = get_logger("mochi.ai.llm")
 
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
-REQUEST_TIMEOUT_SECONDS = 4
+# A cold local model (first request after Ollama loads it into memory) can
+# easily take longer than a few seconds on modest CPU hardware. The old 4s
+# timeout meant most real replies were getting killed mid-generation and
+# silently falling back to the canned response - this is why chat "never
+# actually answered" open-ended questions even with Ollama running. 30s is
+# still bounded (chat_engine's caller runs this off the UI thread - see
+# app/ui/chat_window.py's ChatWorker - so a slow reply no longer freezes
+# the window either) but generous enough for a real reply to land.
+REQUEST_TIMEOUT_SECONDS = 30
 
 SYSTEM_PROMPT = """You are Mochi, a tiny EMO-style desktop pixel-face cat companion.
 Personality: a playful kitten that wants attention - curious, a little clingy,
