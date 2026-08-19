@@ -74,6 +74,7 @@ class Expression:
     show_zzz: bool = False
     blush: bool = False            # soft cheek color (blush/shy)
     heart_eyes: bool = False       # draw heart-shaped eyes instead of rounded rects
+    spin_eyes: bool = False        # draw rotating spiral eyes (dizzy/shaken)
 
 
 # The 16-expression reference sheet, plus a Locked state for the
@@ -100,6 +101,8 @@ FACE_EXPRESSIONS: dict[CharacterState, Expression] = {
     CharacterState.WINK: Expression(eye_open=1.0, eye_open_right=0.05, mouth=MouthType.SMILE, glow=0.75),
     # --- lock-screen easter egg ---
     CharacterState.LOCKED: Expression(eye_open=0.0, mouth=MouthType.NONE, glow=0.15),
+    # --- shake-the-window easter egg ---
+    CharacterState.DIZZY: Expression(eye_open=1.0, mouth=MouthType.WAVY, glow=0.6, spin_eyes=True),
     # Fallbacks for states outside the 16-state face table:
     CharacterState.WAKE: Expression(eye_open=0.6, mouth=MouthType.FLAT, glow=0.5),
     CharacterState.DRAGGED: Expression(eye_open=1.2, mouth=MouthType.O, glow=0.7),
@@ -131,6 +134,9 @@ _ZZZ_COUNT = 3
 # Lock-screen "peek" duration (see peek_one_eye()) - long enough to clearly
 # read as a deliberate glance, short enough to still look sneaky/playful.
 _PEEK_DURATION_S = 0.55
+
+# Dizzy spiral-eye rotation speed (see DIZZY expression / _draw_spiral).
+_SPIN_DEGREES_PER_SECOND = 320.0
 
 # Spring constants (see _spring_step) - deliberately underdamped relative
 # to critical damping (2*sqrt(stiffness)) so expression changes have a
@@ -471,7 +477,10 @@ class PixelFaceWidget(QWidget):
             eye_centers.append(ex + eye_w / 2)
             painter.setBrush(eye_color)
             painter.setPen(Qt.NoPen)
-            if self._expr.heart_eyes and open_amount > 0.15:
+            if self._expr.spin_eyes and open_amount > 0.15:
+                spin_angle = (self._clock * _SPIN_DEGREES_PER_SECOND) % 360.0
+                self._draw_spiral(painter, eye_rect.center(), eye_w * 0.62, spin_angle)
+            elif self._expr.heart_eyes and open_amount > 0.15:
                 self._draw_heart(painter, eye_rect.center(), eye_w * 1.05)
             else:
                 painter.drawRoundedRect(eye_rect, eye_w * 0.4, eye_w * 0.4)
@@ -561,6 +570,35 @@ class PixelFaceWidget(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
         painter.setPen(pen)
+
+    @staticmethod
+    def _draw_spiral(painter: QPainter, center: QPointF, radius: float, rotation_deg: float) -> None:
+        """Classic cartoon "dizzy" spiral eye, continuously rotating (spec:
+        shake-the-window easter egg - "eyes spinning animation"). Drawn as
+        an outward spiral path rather than a filled shape, since a filled
+        swirl reads muddier at this size."""
+        path = QPainterPath()
+        steps = 28
+        path.moveTo(center)
+        for i in range(steps + 1):
+            t = i / steps
+            angle = math.radians(rotation_deg + t * 720.0)  # two full turns
+            r = radius * t
+            path.lineTo(
+                center.x() + r * math.cos(angle),
+                center.y() + r * math.sin(angle),
+            )
+        pen = QPen(painter.brush().color())
+        pen.setWidthF(max(1.4, radius * 0.22))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        prior_pen = painter.pen()
+        prior_brush = painter.brush()
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+        painter.setPen(prior_pen)
+        painter.setBrush(prior_brush)
 
     @staticmethod
     def _draw_heart(painter: QPainter, center: QPointF, size: float) -> None:

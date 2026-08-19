@@ -104,6 +104,10 @@ app/
 │   ├── lock_watcher.py           Windows-only (ctypes) OS lock-state polling
 │   │                             for the lock-screen easter egg; injectable
 │   │                             probe for testing, safe no-op elsewhere
+│   ├── shake_detector.py          Plain-arithmetic gesture detector (no Qt) -
+│   │                             flags a "shake" from rapid direction
+│   │                             reversals in dragged cursor x-position;
+│   │                             feeds the dizzy-then-angry easter egg
 │   ├── state_machine.py        CharacterState + Emotion enums, event publisher
 │   ├── behavior.py             Inactivity-tiered autonomous behavior (idle →
 │   │                           occasional "alert"/"wink" attention ping →

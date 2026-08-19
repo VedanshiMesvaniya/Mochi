@@ -12,6 +12,18 @@ from app.ai.chat_engine import ChatReaction
 from app.character.state_machine import CharacterState, Emotion
 
 
+def _bubble_text(message_log, index: int) -> str:
+    """Pull the rendered text back out of a ChatBubble row for assertions
+    (see app/ui/chat_window.py's ChatBubble - messages are now bubble
+    widgets via setItemWidget, not plain item text)."""
+    from PySide6.QtWidgets import QLabel
+
+    item = message_log.item(index)
+    bubble = message_log.itemWidget(item)
+    label = bubble.findChild(QLabel)
+    return label.text()
+
+
 def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
     from app.ui.chat_window import ChatWorker
 
@@ -78,4 +90,33 @@ def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
 
     assert window.input_field.isEnabled() is True
     assert window.send_button.isEnabled() is True
-    assert any("done" in window.message_log.item(i).text() for i in range(window.message_log.count()))
+    assert any("done" in _bubble_text(window.message_log, i) for i in range(window.message_log.count()))
+
+
+def test_messages_render_as_chat_bubbles_not_plain_text(qapp):
+    from app.ui.chat_window import ChatBubble, ChatWindow
+
+    window = ChatWindow()
+    window._append("You", "hey mochi")
+    window._append("Mochi", "hehe hi!")
+
+    last_two = [window.message_log.item(i) for i in range(window.message_log.count())][-2:]
+    bubbles = [window.message_log.itemWidget(item) for item in last_two]
+    assert all(isinstance(bubble, ChatBubble) for bubble in bubbles)
+    assert bubbles[0]._is_user is True   # "You" message
+    assert bubbles[1]._is_user is False  # Mochi's reply
+
+    assert _bubble_text(window.message_log, window.message_log.count() - 2) == "hey mochi"
+    assert _bubble_text(window.message_log, window.message_log.count() - 1) == "hehe hi!"
+    window.close()
+
+
+def test_chat_bubbles_are_not_selectable_list_items(qapp):
+    from PySide6.QtCore import Qt
+    from app.ui.chat_window import ChatWindow
+
+    window = ChatWindow()
+    window._append("Mochi", "just a bubble")
+    item = window.message_log.item(window.message_log.count() - 1)
+    assert item.flags() == Qt.NoItemFlags
+    window.close()

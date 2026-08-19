@@ -54,14 +54,30 @@ password handling of any kind on Mochi's side — it just detects the OS
 lock state (see `app/character/lock_watcher.py`). No-ops safely on
 non-Windows platforms.
 
+**Shake-it easter egg:** grab Mochi and shake it (rapid back-and-forth
+drag) and its eyes spin dizzily for a moment — then it gets properly
+annoyed with you (angry face + a scolding speech bubble) before settling
+back down. Detected purely from cursor movement while dragging (see
+`app/character/shake_detector.py`), no accelerometer/OS hooks involved.
+
+**Expression timing:** every reaction — chat replies, task/reminder
+completions, unlock, shake — holds for a duration tuned to that specific
+emotion (a surprised flash is quick; a sulk lingers) before settling back
+to idle, instead of being interrupted by the next autonomous-behavior
+tick a couple of seconds later. The floating speech bubble and the face
+expression are timed together so they appear and clear as one reaction.
+
 ---
 
 ## Chat
 
 Double-click Mochi (or right-click → Chat) to open a small translucent
-chat popup — it stays pinned on top of other windows while open (toggle
-via the green dot) so it doesn't get buried mid-conversation, and only
-goes away when you actually close it. Messages are handled in two layers:
+chat popup — messages render as rounded speech bubbles (yours on the
+right, Mochi's on the left), like the floating bubble above the
+character itself. It stays pinned on top of other windows while open
+(toggle via the green dot) so it doesn't get buried mid-conversation, and
+only goes away when you actually close it. Messages are handled in two
+layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
    greetings, and common small talk are recognized by a rule-based
@@ -144,7 +160,7 @@ app/
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
 data/               local SQLite database (gitignored)
-tests/              pytest suite (227 tests)
+tests/              pytest suite (243 tests)
 ```
 
 ---
