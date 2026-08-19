@@ -78,7 +78,9 @@ class BehaviorEngine:
     # ------------------------------------------------------------------
     def _choose_state(self) -> Optional[CharacterState]:
         """Returns the state to apply, or None to leave the current state
-        alone (e.g. mid-attention-ping, or nothing has changed)."""
+        alone (e.g. mid-attention-ping, nothing has changed, or a more
+        specific reaction - like a chat reply's expression - is already
+        showing and shouldn't be interrupted by this engine)."""
         if not self.has_interacted:
             return CharacterState.IDLE
 
@@ -97,7 +99,18 @@ class BehaviorEngine:
                     return CharacterState.WINK
                 return CharacterState.ALERT
             return None  # stay however it currently is between pings
-        return CharacterState.IDLE
+
+        # Recently interacted with, not yet drowsy or attention-seeking:
+        # this used to unconditionally force IDLE on every single tick
+        # (every ~2s), which is why a chat reaction's expression (happy,
+        # blush, surprised, ...) never actually got to hold for its full
+        # intended duration - it got stomped back to IDLE almost
+        # immediately regardless of what PetWindow had just set. Proper
+        # expression timing is PetWindow's job now (see
+        # PetWindow._show_reaction's hold timer); this engine should only
+        # step in once it's actually time for autonomous behavior to take
+        # back over (sleepy/sleep/attention-ping, handled above).
+        return None
 
     def tick(self, apply_state: Callable[[CharacterState], None]) -> None:
         """Call on a fixed-interval QTimer. `apply_state` is a callback

@@ -10,6 +10,8 @@ app/main.py and app/ui/ so this widget stays reusable and testable.
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QCursor, QMouseEvent, QAction
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QApplication, QLabel
@@ -20,6 +22,7 @@ from app.character.behavior import BehaviorEngine
 from app.character.lock_watcher import LockWatcher
 from app.character.movement import Mover, ScreenBounds
 from app.character.pixel_face import PixelFaceWidget
+from app.character.shake_detector import ShakeDetector
 from app.character.state_machine import CharacterState, CharacterStateMachine
 from app.character.theme import THEME_ORDER, THEMES
 from app.core.config import settings
@@ -30,6 +33,32 @@ from app.memory import settings_store
 SPEECH_BUBBLE_CHAT_MS = 5000
 FACE_TICK_MS = 50  # ~20fps - cheap since it's vector drawing, not sprite decoding
 BEHAVIOR_TICK_MS = 2000  # must match BehaviorEngine.tick_interval_seconds below
+
+# How long a reaction expression actually holds before Mochi settles back
+# to idle (see PetWindow._show_reaction). Tuned per-emotion rather than
+# one blanket number: a surprised flash should be quick, a sulk should
+# linger. Anything not listed uses DEFAULT_REACTION_HOLD_MS.
+REACTION_HOLD_MS: dict[CharacterState, int] = {
+    CharacterState.SURPRISED: 900,
+    CharacterState.ALERT: 1200,
+    CharacterState.WINK: 1400,
+    CharacterState.HAPPY: 3200,
+    CharacterState.EXCITED: 3200,
+    CharacterState.PLAY: 3200,
+    CharacterState.BLUSH: 3600,
+    CharacterState.SHY: 3600,
+    CharacterState.HEART: 3600,
+    CharacterState.SAD: 4200,
+    CharacterState.ANGRY: 3800,
+    CharacterState.CONFUSED: 3000,
+    CharacterState.SLEEPY: 3000,
+}
+DEFAULT_REACTION_HOLD_MS = 3200
+
+# Shake-the-window easter egg (see app/character/shake_detector.py):
+# spin dizzily first, then get properly annoyed about it.
+SHAKE_DIZZY_MS = 1400
+SHAKE_ANGRY_HOLD_MS = 3200
 
 logger = get_logger("mochi.pet")
 
@@ -57,10 +86,23 @@ class PetWindow(QWidget):
         self._chat_window = None
 
         self.lock_watcher = LockWatcher(parent=self)
-        self._pre_lock_state: CharacterState | None = None
-        self._wake_timer = QTimer(self)
-        self._wake_timer.setSingleShot(True)
-        self._wake_timer.timeout.connect(self._on_wake_settle)
+
+        # Expression-hold timer (see _show_reaction): whatever reaction
+        # expression is currently showing (chat reply, task-completed
+        # happy, unlock-excited, ...) reverts to idle after its own tuned
+        # duration (REACTION_HOLD_MS) rather than being cut short by the
+        # next autonomous-behavior tick.
+        self._expression_hold_timer = QTimer(self)
+        self._expression_hold_timer.setSingleShot(True)
+        self._expression_hold_timer.timeout.connect(self._on_expression_hold_expired)
+        self._held_state: CharacterState | None = None
+
+        # Shake-the-window easter egg.
+        self.shake_detector = ShakeDetector()
+        self._shake_active = False
+        self._shake_angry_timer = QTimer(self)
+        self._shake_angry_timer.setSingleShot(True)
+        self._shake_angry_timer.timeout.connect(self._on_shake_angry)
 
         self._setup_window()
         self._setup_ui()
@@ -202,7 +244,34 @@ class PetWindow(QWidget):
 
     def _on_completion_event(self, _payload) -> None:
         self.behavior_engine.mark_interacted()
-        self.state_machine.set_state(CharacterState.HAPPY)
+        self._show_reaction(CharacterState.HAPPY)
+
+    # ------------------------------------------------------------------
+    # Expression timing (fixes reactions being cut short almost
+    # immediately by the next autonomous-behavior tick - see
+    # BehaviorEngine._choose_state). Every "Mochi should react to X for a
+    # bit" call site (chat replies, completions, unlock, ...) should go
+    # through this rather than calling state_machine.set_state directly,
+    # so the hold duration is consistent and centrally tunable
+    # (REACTION_HOLD_MS above).
+    # ------------------------------------------------------------------
+    def _show_reaction(self, state: CharacterState, hold_ms: int | None = None) -> None:
+        if hold_ms is None:
+            hold_ms = REACTION_HOLD_MS.get(state, DEFAULT_REACTION_HOLD_MS)
+        self.state_machine.set_state(state)
+        self._held_state = state
+        self._expression_hold_timer.stop()
+        self._expression_hold_timer.start(hold_ms)
+
+    def _on_expression_hold_expired(self) -> None:
+        # Only revert if nothing else has taken over in the meantime
+        # (another reaction, sleep, a lock, a fresh shake, ...) - each of
+        # those either calls _show_reaction again (which restarts this
+        # timer against the new state) or stops this timer outright.
+        if self._held_state is not None and self.state_machine.state == self._held_state:
+            self.state_machine.set_state(CharacterState.IDLE)
+        self._held_state = None
+        self._shake_active = False
 
     # ------------------------------------------------------------------
     # Glow theme (spec: 4 selectable options, persisted locally)
@@ -230,8 +299,7 @@ class PetWindow(QWidget):
         self.lock_watcher.peek.connect(self._on_peek)
 
     def _on_screen_locked(self) -> None:
-        self._pre_lock_state = self.state_machine.state
-        self._wake_timer.stop()
+        self._expression_hold_timer.stop()
         self.state_machine.set_state(CharacterState.LOCKED)
 
     def _on_peek(self) -> None:
@@ -242,11 +310,7 @@ class PetWindow(QWidget):
         # Welcome-back reaction, then settle back to normal autonomous
         # behavior after a beat rather than snapping straight to idle.
         self.behavior_engine.mark_interacted()
-        self.state_machine.set_state(CharacterState.EXCITED)
-        self._wake_timer.start(1500)
-
-    def _on_wake_settle(self) -> None:
-        self.state_machine.set_state(CharacterState.IDLE)
+        self._show_reaction(CharacterState.EXCITED, hold_ms=1500)
 
     # ------------------------------------------------------------------
     # Rendering
@@ -294,7 +358,9 @@ class PetWindow(QWidget):
             self._is_dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self.behavior_engine.mark_interacted()
-            self.state_machine.set_state(CharacterState.SURPRISED)
+            self.shake_detector.reset()
+            self.shake_detector.feed(time.monotonic(), event.globalPosition().x())
+            self._show_reaction(CharacterState.SURPRISED)
         elif event.button() == Qt.RightButton:
             self.context_menu.exec(event.globalPosition().toPoint())
 
@@ -305,15 +371,40 @@ class PetWindow(QWidget):
             if self.mover is not None:
                 self.mover.x, self.mover.y = new_pos.x(), new_pos.y()
 
+            if not self._shake_active:
+                shook = self.shake_detector.feed(time.monotonic(), event.globalPosition().x())
+                if shook:
+                    self._play_shake_reaction()
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
             self._is_dragging = False
-            self.state_machine.set_state(CharacterState.IDLE)
+            self.shake_detector.reset()
+            if not self._shake_active:
+                self._expression_hold_timer.stop()
+                self.state_machine.set_state(CharacterState.IDLE)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
             logger.info("Mochi double-clicked -> open chat")
             self.on_open_chat_requested()
+
+    # ------------------------------------------------------------------
+    # Shake-the-window easter egg (see app/character/shake_detector.py):
+    # shake it rapidly and it gets dizzy, then annoyed with you about it.
+    # ------------------------------------------------------------------
+    def _play_shake_reaction(self) -> None:
+        self._shake_active = True
+        self._shake_angry_timer.stop()
+        self.behavior_engine.mark_interacted()
+        self._expression_hold_timer.stop()
+        self.state_machine.set_state(CharacterState.DIZZY)
+        self.show_speech_bubble("Whoa?! Stop shaking me!!", duration_ms=SHAKE_DIZZY_MS + 200)
+        self._shake_angry_timer.start(SHAKE_DIZZY_MS)
+
+    def _on_shake_angry(self) -> None:
+        self.show_speech_bubble("Hmph. I did NOT like that.", duration_ms=SHAKE_ANGRY_HOLD_MS)
+        self._show_reaction(CharacterState.ANGRY, hold_ms=SHAKE_ANGRY_HOLD_MS)
 
     # ------------------------------------------------------------------
     # Speech bubble (used by reminder notifications and, later, chat)
@@ -393,6 +484,8 @@ class PetWindow(QWidget):
         through to a local LLM call (bounded by a few seconds), so this
         gives immediate visual feedback rather than a dead pause."""
         self.behavior_engine.mark_interacted()
+        self._expression_hold_timer.stop()
+        self._held_state = None
         self.state_machine.set_state(CharacterState.THINKING)
 
     def _on_chat_reaction(self, reaction) -> None:
@@ -400,15 +493,20 @@ class PetWindow(QWidget):
         detected (spec: 'on chat detect user intent and then mochi
         react') - this is where the reaction actually becomes visible on
         the character: animation, sound, and a speech bubble.
+
+        The expression and the speech bubble are held for the same
+        duration (see REACTION_HOLD_MS) so they read as one reaction and
+        disappear together, rather than the face snapping back to idle
+        seconds before the bubble (or vice versa).
         """
+        hold_ms = DEFAULT_REACTION_HOLD_MS
         if reaction.animation is not None:
-            self.state_machine.set_state(reaction.animation)
+            hold_ms = REACTION_HOLD_MS.get(reaction.animation, DEFAULT_REACTION_HOLD_MS)
+            self._show_reaction(reaction.animation, hold_ms=hold_ms)
         if reaction.emotion is not None:
             # react=False: we already picked the exact animation above,
             # this just keeps mood tracking in sync without overriding it.
             self.state_machine.set_emotion(reaction.emotion, react=False)
         if reaction.sound:
-            from app.core.events import Events, event_bus
-
             event_bus.publish(Events.SOUND_REQUESTED, {"sound": reaction.sound})
-        self.show_speech_bubble(reaction.text, duration_ms=SPEECH_BUBBLE_CHAT_MS)
+        self.show_speech_bubble(reaction.text, duration_ms=max(hold_ms, 2500))

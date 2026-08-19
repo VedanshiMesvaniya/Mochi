@@ -25,13 +25,15 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
+    QWidget,
 )
 
 from app.ai.chat_engine import ChatReaction, handle_message
@@ -44,6 +46,46 @@ logger = get_logger("mochi.ui.chat")
 # Type alias for the reaction callback PetWindow supplies: called with the
 # ChatReaction so the character can actually animate/speak/show a bubble.
 ReactionCallback = Callable[[ChatReaction], None]
+
+_BUBBLE_MAX_WIDTH = 230
+_MOCHI_BUBBLE_STYLE = (
+    "background-color: rgba(255, 255, 255, 225);"
+    "color: #3a3350;"
+    "border-radius: 14px;"
+    "padding: 7px 12px;"
+)
+_USER_BUBBLE_STYLE = (
+    "background-color: rgba(150, 120, 220, 210);"
+    "color: #ffffff;"
+    "border-radius: 14px;"
+    "padding: 7px 12px;"
+)
+
+
+class ChatBubble(QWidget):
+    """One message rendered as a rounded speech-bubble row - Mochi's
+    replies left-aligned, the user's messages right-aligned, matching how
+    the floating speech bubble above the character itself looks (spec:
+    'make chat bubble for answer'), rather than plain list-row text."""
+
+    def __init__(self, sender: str, text: str, parent=None) -> None:
+        super().__init__(parent)
+        self._is_user = sender == "You"
+
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setMaximumWidth(_BUBBLE_MAX_WIDTH)
+        label.setStyleSheet(_USER_BUBBLE_STYLE if self._is_user else _MOCHI_BUBBLE_STYLE)
+        label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        if self._is_user:
+            layout.addStretch(1)
+            layout.addWidget(label)
+        else:
+            layout.addWidget(label)
+            layout.addStretch(1)
 
 
 class ChatWorker(QThread):
@@ -126,12 +168,12 @@ class ChatWindow(TranslucentDialog):
 
     # ------------------------------------------------------------------
     def _append(self, sender: str, text: str) -> None:
-        item = QListWidgetItem(f"{sender}: {text}")
-        if sender == "You":
-            item.setForeground(QColor("#6e6785"))  # muted, readable on light glass
-        else:
-            item.setForeground(QColor("#3a3350"))
+        bubble = ChatBubble(sender, text)
+        item = QListWidgetItem()
+        item.setFlags(Qt.NoItemFlags)  # display-only, not selectable/clickable
+        item.setSizeHint(bubble.sizeHint())
         self.message_log.addItem(item)
+        self.message_log.setItemWidget(item, bubble)
         self.message_log.scrollToBottom()
 
     def _on_send_clicked(self) -> None:

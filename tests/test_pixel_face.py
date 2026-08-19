@@ -115,6 +115,21 @@ def test_locked_state_has_closed_eyes_and_no_zzz():
     assert expr.show_zzz is False
 
 
+def test_dizzy_state_has_spinning_eyes():
+    expr = FACE_EXPRESSIONS[CharacterState.DIZZY]
+    assert expr.spin_eyes is True
+    assert expr.eye_open > 0.0  # eyes stay open to actually show the spiral
+
+
+def test_dizzy_state_renders_without_crashing(qapp):
+    widget = PixelFaceWidget()
+    widget.resize(160, 160)
+    widget.set_state(CharacterState.DIZZY)
+    for _ in range(10):
+        widget.tick(0.05)
+    widget.grab()  # must not raise
+
+
 def test_peek_one_eye_opens_an_eye_while_locked(qapp):
     widget = PixelFaceWidget()
     widget.set_state(CharacterState.LOCKED)

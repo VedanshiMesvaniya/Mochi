@@ -62,6 +62,9 @@ class CharacterState(str, Enum):
     # eyes closed like SLEEP but distinct so it's never confused with
     # actually being tired, and never shows the sleepy Zzz.
     LOCKED = "locked"
+    # Shake-the-window easter egg (see app/character/shake_detector.py):
+    # a brief dizzy spinning-eyes reaction, followed by ANGRY.
+    DIZZY = "dizzy"
 
 
 class Emotion(str, Enum):
