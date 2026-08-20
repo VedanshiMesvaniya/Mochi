@@ -93,6 +93,39 @@ def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
     assert any("done" in _bubble_text(window.message_log, i) for i in range(window.message_log.count()))
 
 
+def test_typing_indicator_shows_while_waiting_and_clears_on_reply(qapp, monkeypatch):
+    """Regression: while a reply was pending, the chat window's own log gave
+    no feedback at all (the only sign of life was the character's face
+    changing state elsewhere on the desktop), which read as the chat having
+    silently frozen or closed."""
+    from app.ui.chat_window import ChatWindow
+
+    def _slow_reply(_text):
+        time.sleep(0.3)
+        return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
+
+    monkeypatch.setattr("app.ui.chat_window.handle_message", _slow_reply)
+
+    window = ChatWindow()
+    window.input_field.setText("hi there")
+    window._on_send_clicked()
+
+    assert window._typing_item is not None
+    assert "thinking" in _bubble_text(window.message_log, window.message_log.count() - 1).lower()
+
+    deadline = time.time() + 5
+    while window._worker is not None and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+
+    assert window._typing_item is None
+    assert not any(
+        "thinking" in _bubble_text(window.message_log, i).lower()
+        for i in range(window.message_log.count())
+    )
+    window.close()
+
+
 def test_messages_render_as_chat_bubbles_not_plain_text(qapp):
     from app.ui.chat_window import ChatBubble, ChatWindow
 

@@ -67,6 +67,17 @@ BORED_WORDS = ("i'm bored", "im bored", "bored")
 HOW_ARE_YOU = ("how are you", "how r u", "how are u", "hows it going")
 WHAT_DOING = ("what are you doing", "whatcha doing", "what r u doing")
 MEMORY_QUERY = ("what do you remember", "remember about me")
+# Direct identity questions (spec: "clarify the intent" - these were
+# previously falling through to the open-ended LLM bucket, which could
+# answer evasively or vaguely instead of just saying who Mochi is).
+# Regex (rather than the plain phrase tuples above) so "are you cat?" and
+# "are you a cat?" both match without listing every article/phrasing
+# combination by hand.
+IDENTITY_TRIGGER = re.compile(
+    r"\bare you (a |an )?(cat|real|human|ai|a\.?i\.?|robot|bot)\b"
+    r"|\b(what|who) (are|is) (you|mochi)\b",
+    re.IGNORECASE,
+)
 
 def _matches_any(text: str, phrases: tuple[str, ...]) -> bool:
     """Whole-word/phrase containment check.
@@ -322,6 +333,18 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.CURIOUS,
             animation=CharacterState.THINKING,
             response="Just watching you work. What about you?",
+        )
+    # Checked after WHAT_DOING (not before): "what are you doing" would
+    # otherwise also match the shorter "what are you" identity phrase.
+    if IDENTITY_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="identity",
+            emotion=Emotion.PLAYFUL,
+            animation=CharacterState.TALKING,
+            response=(
+                "I'm Mochi! Your own little cat friend who lives right here "
+                "on your desktop - not a real cat, but I try my best. hehe"
+            ),
         )
     if _matches_any(lowered, MEMORY_QUERY):
         return DetectedIntent(

@@ -18,13 +18,19 @@ section 36 (graceful degradation), rather than pretending it works.
 thread without freezing the whole window, so it's run on a background
 `ChatWorker` QThread instead; the result comes back via a Qt signal and is
 applied on the UI thread as usual.
+
+While a reply is pending, a "thinking..." bubble is shown directly in this
+window's own log (see `_start_typing_indicator`/`_stop_typing_indicator`).
+Without it, the only feedback during a slow reply was the character's face
+changing state elsewhere on the desktop - easy to miss if you're looking at
+this window, and it reads as the chat having silently stalled or closed.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QThread, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -77,6 +83,8 @@ class ChatBubble(QWidget):
         label.setMaximumWidth(_BUBBLE_MAX_WIDTH)
         label.setStyleSheet(_USER_BUBBLE_STYLE if self._is_user else _MOCHI_BUBBLE_STYLE)
         label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.label = label  # kept accessible so the typing indicator can
+        # update this bubble's text in place instead of adding/removing rows
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -127,6 +135,18 @@ class ChatWindow(TranslucentDialog):
 
         self._worker: Optional[ChatWorker] = None
 
+        # Typing indicator (spec: "chat looks closed/frozen while waiting").
+        # The pet's face already changes state while a reply is pending,
+        # but that's easy to miss when you're focused on this window, not
+        # the character - so give feedback right here in the log too,
+        # rather than the log just sitting still for up to 30s.
+        self._typing_item: Optional[QListWidgetItem] = None
+        self._typing_bubble: Optional[ChatBubble] = None
+        self._typing_frame = 0
+        self._typing_timer = QTimer(self)
+        self._typing_timer.setInterval(450)
+        self._typing_timer.timeout.connect(self._advance_typing_indicator)
+
         self._build_ui()
         self._append("Mochi", "Hehe, hi! What are we up to?")
 
@@ -162,9 +182,40 @@ class ChatWindow(TranslucentDialog):
         # Avoid "QThread destroyed while still running" if the window is
         # closed mid-reply; the LLM call itself can't be cancelled, but we
         # can at least wait briefly for the worker to notice and finish.
+        self._typing_timer.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.wait(200)
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Typing indicator
+    # ------------------------------------------------------------------
+    def _start_typing_indicator(self) -> None:
+        self._typing_frame = 0
+        self._typing_bubble = ChatBubble("Mochi", "thinking")
+        item = QListWidgetItem()
+        item.setFlags(Qt.NoItemFlags)
+        item.setSizeHint(self._typing_bubble.sizeHint())
+        self.message_log.addItem(item)
+        self.message_log.setItemWidget(item, self._typing_bubble)
+        self.message_log.scrollToBottom()
+        self._typing_item = item
+        self._typing_timer.start()
+
+    def _advance_typing_indicator(self) -> None:
+        if self._typing_bubble is None:
+            return
+        self._typing_frame = (self._typing_frame + 1) % 3
+        self._typing_bubble.label.setText("thinking" + "." * (self._typing_frame + 1))
+
+    def _stop_typing_indicator(self) -> None:
+        self._typing_timer.stop()
+        if self._typing_item is not None:
+            row = self.message_log.row(self._typing_item)
+            if row != -1:
+                self.message_log.takeItem(row)
+        self._typing_item = None
+        self._typing_bubble = None
 
     # ------------------------------------------------------------------
     def _append(self, sender: str, text: str) -> None:
@@ -193,12 +244,14 @@ class ChatWindow(TranslucentDialog):
         # "thinking" rather than the field just silently doing nothing.
         self.input_field.setEnabled(False)
         self.send_button.setEnabled(False)
+        self._start_typing_indicator()
 
         self._worker = ChatWorker(text, self)
         self._worker.finished_reaction.connect(self._on_reaction_ready)
         self._worker.start()
 
     def _on_reaction_ready(self, reaction: ChatReaction) -> None:
+        self._stop_typing_indicator()
         self._append("Mochi", reaction.text)
         if self._on_reaction is not None:
             self._on_reaction(reaction)
