@@ -88,9 +88,12 @@ def test_show_reaction_holds_then_reverts_to_idle(qapp, temp_db):
     window._on_behavior_tick()
     assert window.state_machine.state == CharacterState.HAPPY
 
-    # Once the hold timer actually fires, it settles back to idle.
+    # Once the hold timer actually fires, it settles back to the resting
+    # default - HAPPY here (not a flat IDLE), since default_expression()
+    # returns HAPPY while still within the just-interacted window (see
+    # BehaviorEngine.mark_interacted / default_expression).
     window._on_expression_hold_expired()
-    assert window.state_machine.state == CharacterState.IDLE
+    assert window.state_machine.state == CharacterState.HAPPY
     window.close()
 
 
@@ -139,8 +142,11 @@ def test_shake_triggers_dizzy_then_angry(qapp, temp_db):
     assert window.state_machine.state == CharacterState.ANGRY
     assert window._shake_active is True  # still true through the angry hold
 
+    # Settles back to the resting default (HAPPY, not a flat IDLE - see
+    # default_expression) once the hold timer fires, same as any other
+    # reaction.
     window._on_expression_hold_expired()
-    assert window.state_machine.state == CharacterState.IDLE
+    assert window.state_machine.state == CharacterState.HAPPY
     assert window._shake_active is False
     window.close()
 

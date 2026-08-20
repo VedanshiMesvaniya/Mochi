@@ -78,9 +78,15 @@ def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
     window._on_send_clicked()
 
     # Immediately after sending, the UI must not be frozen/blocked - the
-    # call above should return right away, with input disabled to signal
+    # call above should return right away, with input marked busy to signal
     # "Mochi is thinking" rather than the field just sitting there mute.
-    assert window.input_field.isEnabled() is False
+    #
+    # Read-only rather than disabled, deliberately: disabling a focused
+    # widget can yank keyboard focus away from the dialog entirely, which
+    # on some platforms is enough to make a Qt.Tool popup like this one
+    # drop out of view mid-wait (see _on_send_clicked's comment) - staying
+    # read-only keeps focus right where it was.
+    assert window.input_field.isReadOnly() is True
     assert window.send_button.isEnabled() is False
 
     deadline = time.time() + 5
@@ -88,9 +94,42 @@ def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
         qapp.processEvents()
         time.sleep(0.02)
 
-    assert window.input_field.isEnabled() is True
+    assert window.input_field.isReadOnly() is False
     assert window.send_button.isEnabled() is True
     assert any("done" in _bubble_text(window.message_log, i) for i in range(window.message_log.count()))
+
+
+def test_window_is_reshown_if_hidden_while_reply_pending(qapp, monkeypatch):
+    """Regression: 'chat window closes after I send a message, I have to
+    open it again'. Whatever the platform-level cause of the window
+    dropping out of view mid-wait, the fix must not depend on the window
+    still being visible when the reply lands - _on_reaction_ready has to
+    actively re-show it, not just raise_()/activateWindow() (which are
+    no-ops on an already-hidden window)."""
+    from app.ui.chat_window import ChatWindow
+
+    def _slow_reply(_text):
+        time.sleep(0.2)
+        return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
+
+    monkeypatch.setattr("app.ui.chat_window.handle_message", _slow_reply)
+
+    window = ChatWindow()
+    window.show()
+    window.input_field.setText("hi there")
+    window._on_send_clicked()
+
+    # Simulate whatever hid it mid-wait (focus change, window manager, ...)
+    window.hide()
+    assert window.isVisible() is False
+
+    deadline = time.time() + 5
+    while window._worker is not None and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+
+    assert window.isVisible() is True
+    window.close()
 
 
 def test_typing_indicator_shows_while_waiting_and_clears_on_reply(qapp, monkeypatch):

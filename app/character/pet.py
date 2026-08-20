@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QCursor, QMouseEvent, QAction
+from PySide6.QtGui import QColor, QCursor, QMouseEvent, QAction, QPainter
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QApplication, QLabel
 
 SPEECH_BUBBLE_DEFAULT_MS = 6000
@@ -61,6 +61,55 @@ SHAKE_DIZZY_MS = 1400
 SHAKE_ANGRY_HOLD_MS = 3200
 
 logger = get_logger("mochi.pet")
+
+
+class _SpeechBubble(QWidget):
+    """Mochi's floating speech bubble - a small always-on-top popup shown
+    above the character for reminders, chat replies, and reactions.
+
+    Deliberately NOT styled via a QSS `background-color` on this widget.
+    This is a translucent (`WA_TranslucentBackground`), frameless,
+    top-level `Qt.Tool` popup, and that specific combination is a known Qt
+    trouble spot: a stylesheet `background-color` + `border-radius` can
+    silently fail to composite on some platforms/graphics drivers, leaving
+    only the text visible, floating directly over whatever's on the
+    desktop behind it with no box at all - exactly the "I can't read the
+    reply, it's not adapting to my background" report. Painting the
+    rounded background ourselves with QPainter is the reliable, portable
+    way to do a translucent top-level popup, and it also guarantees the
+    text stays readable against literally anything behind it (a photo, a
+    dark app, a bright one), rather than depending on the stylesheet
+    engine to composite correctly on a given machine.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self._label = QLabel(self)
+        self._label.setWordWrap(True)
+        self._label.setMaximumWidth(220)
+        self._label.setStyleSheet("background: transparent; color: #3a3350; font-size: 12px;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.addWidget(self._label)
+
+    def setText(self, text: str) -> None:
+        self._label.setText(text)
+        self.adjustSize()
+
+    def text(self) -> str:
+        return self._label.text()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 245))
+        painter.drawRoundedRect(self.rect(), 10, 10)
+        super().paintEvent(event)
 
 
 class PetWindow(QWidget):
@@ -134,24 +183,10 @@ class PetWindow(QWidget):
         self.face = PixelFaceWidget(self)
         layout.addWidget(self.face)
 
-        # Speech bubble - a small floating label shown above Mochi's head
-        # for reminder notifications (Phase 1.5) and chat responses (Phase 2+).
-        self.speech_bubble = QLabel(self)
-        self.speech_bubble.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        )
-        self.speech_bubble.setAttribute(Qt.WA_TranslucentBackground)
-        self.speech_bubble.setStyleSheet(
-            "background-color: rgba(255, 255, 255, 235);"
-            "color: #3a3350;"  # explicit dark text - without this the label
-            # inherited a light/white color from the OS or app palette on
-            # some systems, rendering near-invisible on its own light
-            # bubble background (and worse once it overlapped a light
-            # desktop/browser behind it).
-            "border-radius: 10px; padding: 8px 12px; font-size: 12px;"
-        )
-        self.speech_bubble.setWordWrap(True)
-        self.speech_bubble.setMaximumWidth(240)
+        # Speech bubble - a small floating popup shown above Mochi's head
+        # for reminder notifications (Phase 1.5) and chat responses (Phase
+        # 2+). See _SpeechBubble for why this isn't a plain styled QLabel.
+        self.speech_bubble = _SpeechBubble(self)
         self.speech_bubble.hide()
 
         self._speech_bubble_timer = QTimer(self)
@@ -273,8 +308,13 @@ class PetWindow(QWidget):
         # (another reaction, sleep, a lock, a fresh shake, ...) - each of
         # those either calls _show_reaction again (which restarts this
         # timer against the new state) or stops this timer outright.
+        #
+        # Reverts to behavior_engine.default_expression() rather than a
+        # hardcoded IDLE: right after an interaction Mochi's resting face
+        # is HAPPY (spec: "make default happy"), settling to a calm IDLE
+        # only once that brief window has passed - see BehaviorEngine.
         if self._held_state is not None and self.state_machine.state == self._held_state:
-            self.state_machine.set_state(CharacterState.IDLE)
+            self.state_machine.set_state(self.behavior_engine.default_expression())
         self._held_state = None
         self._shake_active = False
 
@@ -415,8 +455,7 @@ class PetWindow(QWidget):
     # Speech bubble (used by reminder notifications and, later, chat)
     # ------------------------------------------------------------------
     def show_speech_bubble(self, text: str, duration_ms: int = SPEECH_BUBBLE_DEFAULT_MS) -> None:
-        self.speech_bubble.setText(text)
-        self.speech_bubble.adjustSize()
+        self.speech_bubble.setText(text)  # also resizes to fit (see _SpeechBubble.setText)
 
         bubble_x = self.x() + (self.width() // 2) - (self.speech_bubble.width() // 2)
         bubble_y = self.y() - self.speech_bubble.height() - 8
@@ -478,6 +517,7 @@ class PetWindow(QWidget):
             self._chat_window = ChatWindow(
                 on_reaction=self._on_chat_reaction,
                 on_thinking=self._on_chat_thinking,
+                parent=self,
             )
         self._chat_window.show()
         self._chat_window.raise_()

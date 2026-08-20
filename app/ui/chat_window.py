@@ -240,9 +240,14 @@ class ChatWindow(TranslucentDialog):
         if self._on_thinking is not None:
             self._on_thinking()
 
-        # Disable input while waiting so the user can see Mochi is
-        # "thinking" rather than the field just silently doing nothing.
-        self.input_field.setEnabled(False)
+        # "Busy" while waiting: read-only (not fully disabled) so the field
+        # keeps keyboard focus instead of yanking it elsewhere the instant
+        # a reply is requested. A widget losing focus right as a Qt.Tool
+        # popup like this one is mid-interaction is exactly the kind of
+        # thing that can make the window drop out of view on some
+        # platforms (spec: "chat window closes, I have to open it again") -
+        # keeping focus inside the dialog avoids that trigger outright.
+        self.input_field.setReadOnly(True)
         self.send_button.setEnabled(False)
         self._start_typing_indicator()
 
@@ -256,13 +261,18 @@ class ChatWindow(TranslucentDialog):
         if self._on_reaction is not None:
             self._on_reaction(reaction)
 
-        self.input_field.setEnabled(True)
+        self.input_field.setReadOnly(False)
         self.send_button.setEnabled(True)
         self.input_field.setFocus()
 
-        # Bring the window back to front for the reply - pinned-on-top
-        # keeps it from being buried, but doesn't force focus back after
-        # the user's clicked elsewhere while waiting on a slow reply.
+        # Bring the window back to front for the reply. show() first,
+        # deliberately, not just raise_()/activateWindow(): those only
+        # reorder/refocus a window that's already visible - they do
+        # nothing if it somehow ended up hidden while the reply was
+        # pending, which is exactly the failure mode behind "chat window
+        # closes, I have to reopen it". show() is a harmless no-op if it
+        # was visible the whole time, and a real fix if it wasn't.
+        self.show()
         self.raise_()
         self.activateWindow()
 
