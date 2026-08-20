@@ -79,6 +79,61 @@ IDENTITY_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 
+# On-demand expression command (spec: "in chat if i say make <expression>
+# for me then it show me [it] cutely") - maps a requested expression name
+# onto one of the 16 pixel-face states (see app/character/pixel_face.py).
+# Deliberately excludes LOCKED/DIZZY - those are easter-egg-only states
+# (lock-screen, shake-the-window), not part of the performable set.
+EXPRESSION_TRIGGER = re.compile(r"\b(?:make|show|do)\b", re.IGNORECASE)
+_EXPRESSION_FILLER_WORDS = {
+    "for", "me", "you", "your", "please", "a", "an", "the",
+    "face", "expression", "eyes", "look", "some", "my", "cutely", "cute",
+}
+EXPRESSION_ALIASES: dict[str, CharacterState] = {
+    "happy": CharacterState.HAPPY,
+    "sad": CharacterState.SAD,
+    "angry": CharacterState.ANGRY,
+    "mad": CharacterState.ANGRY,
+    "confused": CharacterState.CONFUSED,
+    "surprised": CharacterState.SURPRISED,
+    "shocked": CharacterState.SURPRISED,
+    "thinking": CharacterState.THINKING,
+    "sleepy": CharacterState.SLEEPY,
+    "tired": CharacterState.SLEEPY,
+    "sleeping": CharacterState.SLEEP,
+    "asleep": CharacterState.SLEEP,
+    "talking": CharacterState.TALKING,
+    "excited": CharacterState.EXCITED,
+    "alert": CharacterState.ALERT,
+    "blush": CharacterState.BLUSH,
+    "blushing": CharacterState.BLUSH,
+    "shy": CharacterState.SHY,
+    "heart": CharacterState.HEART,
+    "heart eyes": CharacterState.HEART,
+    "love": CharacterState.HEART,
+    "wink": CharacterState.WINK,
+    "winking": CharacterState.WINK,
+    "idle": CharacterState.IDLE,
+    "neutral": CharacterState.IDLE,
+}
+
+
+def _match_expression_command(lowered: str) -> Optional[CharacterState]:
+    if not EXPRESSION_TRIGGER.search(lowered):
+        return None
+    # Strip the trigger word, then the filler words, so "make a happy face
+    # for me", "show me your wink", and "do sad expression" all reduce to
+    # just the bare expression name before matching EXPRESSION_ALIASES.
+    body = EXPRESSION_TRIGGER.sub("", lowered, count=1)
+    words = [w for w in re.findall(r"[a-z]+", body) if w not in _EXPRESSION_FILLER_WORDS]
+    if not words:
+        return None
+    state = EXPRESSION_ALIASES.get(" ".join(words))
+    if state is not None:
+        return state
+    return EXPRESSION_ALIASES.get(words[-1])  # e.g. leftover ordering quirks
+
+
 def _matches_any(text: str, phrases: tuple[str, ...]) -> bool:
     """Whole-word/phrase containment check.
 
@@ -255,6 +310,22 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             response=f"Noted! I'll remember: {title.lower()}.",
             tool="create_task",
             tool_args={"title": title},
+        )
+
+    # --- On-demand expression command --------------------------------
+    # Checked after reminders/timers/tasks (so "make a reminder to..."
+    # etc. are never shadowed by this) but before small talk, since it's
+    # a deliberate, specific command rather than something that should be
+    # outranked by a stray keyword match.
+    requested_state = _match_expression_command(lowered)
+    if requested_state is not None:
+        display = requested_state.value.replace("_", " ")
+        return DetectedIntent(
+            name="expression_request",
+            emotion=Emotion.PLAYFUL,
+            animation=requested_state,
+            sound="chirp",
+            response=f"Hehe, here's my {display} face for you~",
         )
 
     # --- Small talk ------------------------------------------------------

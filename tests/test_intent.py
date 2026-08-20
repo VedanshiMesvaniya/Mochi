@@ -81,6 +81,42 @@ def test_what_are_you_doing_is_not_swallowed_by_identity_check():
     assert result.name == "what_doing"
 
 
+def test_expression_command_make_face():
+    """spec: 'in chat if i say make <expression> for me then it show me
+    cutely for me' - a direct on-demand expression request."""
+    result = detect_intent("make happy for me", now=NOW)
+    assert result.name == "expression_request"
+    assert result.animation == CharacterState.HAPPY
+
+
+def test_expression_command_variants():
+    for text, expected in [
+        ("make a wink face", CharacterState.WINK),
+        ("show me your wink", CharacterState.WINK),
+        ("do sad expression", CharacterState.SAD),
+        ("can you make a heart face for me", CharacterState.HEART),
+        ("make surprised", CharacterState.SURPRISED),
+    ]:
+        result = detect_intent(text, now=NOW)
+        assert result.name == "expression_request", text
+        assert result.animation == expected, text
+
+
+def test_expression_command_ignores_non_expression_make_requests():
+    """'make' alone shouldn't hijack unrelated messages that just happen
+    to contain the word."""
+    result = detect_intent("make me a sandwich", now=NOW)
+    assert result.name != "expression_request"
+
+
+def test_expression_command_does_not_shadow_reminders_or_tasks():
+    """Reminder/task triggers are checked before the expression command,
+    so a reminder that happens to contain the word 'make' still creates a
+    reminder/task rather than being misread as a face request."""
+    result = detect_intent("add task make dinner", now=NOW)
+    assert result.name == "create_task"
+
+
 def test_unknown_message_still_reacts():
     result = detect_intent("asdkjaslkdj", now=NOW)
     assert result.name == "unknown"
