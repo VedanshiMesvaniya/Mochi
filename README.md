@@ -2,7 +2,7 @@
 
 Mochi is a small, local-first desktop companion: a black rounded "screen"
 with cat ears and whiskers that sits on your desktop and shows an
-EMO-style pixel face — no body, no walking, just an expressive face that
+expressive pixel face — no body, no walking, just a face that
 reacts to you. You can type to it, and it can create local reminders,
 tasks, and timers, answer open-ended questions through an optional local
 LLM, and remembers roughly how often you've talked to it.
@@ -24,6 +24,13 @@ small spring-physics layer rather than snapping instantly — that's the
 main thing that makes it read as alive rather than a slideshow of static
 faces.
 
+**Glow theme:** Purple (default), Blue, Mint, or Rose — pick one from
+right-click → Theme. Purely cosmetic (expression geometry never changes
+between themes, only the color), persisted locally in SQLite so it's
+remembered across restarts.
+
+![Mochi's four glow themes: Purple, Blue, Mint, and Rose](./assets/readme/themes.png)
+
 **Expressions (16):** idle, happy, sad, angry, confused, surprised,
 thinking, sleepy, sleeping, talking, excited, alert, blush, shy, heart,
 wink — all drawn programmatically (no image assets), so every expression
@@ -33,9 +40,7 @@ organically — a mild compliment gets a shy blush, "I love you" gets
 heart-eyes, and an ignored-too-long attention ping alternates between an
 alert pulse and a playful wink.
 
-**Glow theme:** Purple (default), Blue, Mint, or Rose — pick one from
-right-click → Theme. Purely cosmetic (expression geometry never changes),
-persisted locally in SQLite so it's remembered across restarts.
+![All 16 of Mochi's expressions](./assets/readme/expressions.png)
 
 **Sleep:** eyes close and a small cartoon-style "Zzz" floats up and fades
 near the ear, looping, always contained within the window's own bounds.
@@ -160,7 +165,7 @@ app/
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
 data/               local SQLite database (gitignored)
-tests/              pytest suite (243 tests)
+tests/              pytest suite (246 tests)
 ```
 
 ---

@@ -143,6 +143,11 @@ class PetWindow(QWidget):
         self.speech_bubble.setAttribute(Qt.WA_TranslucentBackground)
         self.speech_bubble.setStyleSheet(
             "background-color: rgba(255, 255, 255, 235);"
+            "color: #3a3350;"  # explicit dark text - without this the label
+            # inherited a light/white color from the OS or app palette on
+            # some systems, rendering near-invisible on its own light
+            # bubble background (and worse once it overlapped a light
+            # desktop/browser behind it).
             "border-radius: 10px; padding: 8px 12px; font-size: 12px;"
         )
         self.speech_bubble.setWordWrap(True)

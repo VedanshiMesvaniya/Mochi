@@ -67,6 +67,20 @@ def test_what_are_you_doing_is_not_confused_with_greeting():
     assert result.name == "what_doing"
 
 
+def test_identity_question_gets_a_clear_direct_answer():
+    result = detect_intent("are you cat?", now=NOW)
+    assert result.name == "identity"
+    assert "mochi" in result.response.lower()
+    assert "emo" not in result.response.lower()
+
+
+def test_what_are_you_doing_is_not_swallowed_by_identity_check():
+    """Regression: 'what are you' is a substring of 'what are you doing',
+    so identity detection must run after WHAT_DOING, not before it."""
+    result = detect_intent("what are you doing", now=NOW)
+    assert result.name == "what_doing"
+
+
 def test_unknown_message_still_reacts():
     result = detect_intent("asdkjaslkdj", now=NOW)
     assert result.name == "unknown"
