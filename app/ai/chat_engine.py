@@ -26,6 +26,7 @@ from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
 from app.core.config import settings
 from app.core.exceptions import MochiError
 from app.core.logger import get_logger
+from app.humor.trend_fetcher import pick_one_trend
 from app.memory import relationship
 from app.reminders import manager as reminder_manager
 from app.tasks import manager as task_manager
@@ -184,7 +185,14 @@ def handle_message(
     # if one isn't available (see app/ai/llm.py for why this is safe).
     if intent.name == "unknown":
         try:
-            llm_reply = ask_llm(text, familiarity=familiarity, history=history)
+            # pick_one_trend() is a cheap cache read (near-instant no-op
+            # unless settings.trend_awareness_enabled is on and something
+            # is already cached) - never fetches over the network here,
+            # only reads whatever the background job already cached. See
+            # app/humor/trend_fetcher.py.
+            llm_reply = ask_llm(
+                text, familiarity=familiarity, history=history, trend_topic=pick_one_trend()
+            )
             response = llm_reply["response"]
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])
             sound = EMOTION_PROFILE.get(emotion, {}).get("sound")

@@ -139,6 +139,15 @@ fresh one from a small no-auth joke API, falling back to a built-in
 offline list if that's unreachable or disabled
 (`MOCHI_HUMOR_ENABLED=false` in `.env` for a fully offline Mochi).
 
+Separately, and **off by default**, Mochi can also stay lightly aware of
+what's actually trending right now (`MOCHI_TREND_AWARENESS_ENABLED=true`
+in `.env`) — it periodically pulls a handful of general headlines,
+reduces each to a short paraphrased topic label (never the raw headline
+text), and its LLM chat replies may casually reference one if it
+naturally fits the conversation. This is separate from the joke API above
+and talks to the open internet (Google News' public RSS feed, no account
+or API key needed), which is why it isn't on by default.
+
 ---
 
 ## Running it

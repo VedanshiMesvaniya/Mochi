@@ -72,6 +72,20 @@ SCHEMA_STATEMENTS: list[str] = [
         value  TEXT NOT NULL
     );
     """,
+    """
+    -- Trend-awareness cache (opt-in, settings.trend_awareness_enabled) -
+    -- see app/humor/trend_fetcher.py. topic_label is always a short label
+    -- Mochi itself paraphrases from a fetched headline - never raw
+    -- scraped text. A small rolling cache, replaced wholesale on each
+    -- fetch rather than growing unbounded.
+    CREATE TABLE IF NOT EXISTS trend_cache (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic_label   TEXT NOT NULL,
+        fetched_at    TEXT NOT NULL,
+        expires_at    TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_trend_cache_expires ON trend_cache(expires_at);",
 ]
 
 

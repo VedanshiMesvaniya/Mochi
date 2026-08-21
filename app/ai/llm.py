@@ -68,8 +68,20 @@ personality flourish - don't deflect a genuine question back at the person.
 
 Reply with ONLY a single JSON object and nothing else - no markdown, no code fences,
 no extra commentary. Shape exactly:
-{"response": "<your in-character reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful>"}
+{"response": "<your in-character reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful, amused>"}
 """
+
+# Optional trend-flavor context (see app/humor/trend_fetcher.py, opt-in via
+# settings.trend_awareness_enabled) - injected into the prompt only when a
+# cached topic label is actually available. Deliberately phrased as
+# something Mochi may reference, not must - forcing a topic into every
+# reply would feel like a ticker, not a personality trait.
+_TREND_CONTEXT_TEMPLATE = (
+    "\nFor a bit of humor, you're vaguely aware this is trending right now: "
+    '"{topic}". You can reference it casually and in your own words if it '
+    "naturally fits what the person said - never force it in, never quote "
+    "or describe it in detail, and don't bring it up two replies in a row."
+)
 
 _FAMILIARITY_HINTS = {
     "new": "You just met this person - be curious and a little shy-excited.",
@@ -87,6 +99,7 @@ def ask(
     user_text: str,
     familiarity: str = "new",
     history: Optional[list[tuple[str, str]]] = None,
+    trend_topic: Optional[str] = None,
 ) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
     reply. Raises LLMUnavailable on any failure (connection refused, model
@@ -105,9 +118,15 @@ def ask(
     from what's shown on screen), but a tiny local model both has less use
     for very old context and gets slower/worse the more of it you feed in,
     so what's sent here is deliberately capped rather than unbounded.
+
+    `trend_topic` (opt-in, see app/humor/trend_fetcher.py) is an optional
+    short, already-paraphrased topic label the caller may have cached -
+    never raw scraped text, see that module for why. Purely a light
+    seasoning of the prompt; the model is explicitly told not to force it.
     """
 
     hint = _FAMILIARITY_HINTS.get(familiarity, _FAMILIARITY_HINTS["new"])
+    trend_context = _TREND_CONTEXT_TEMPLATE.format(topic=trend_topic) if trend_topic else ""
 
     conversation_block = ""
     if history:
@@ -116,7 +135,7 @@ def ask(
         conversation_block = "\nRecent conversation so far (oldest first):\n" + "\n".join(lines) + "\n"
 
     prompt = (
-        f"{SYSTEM_PROMPT}\n{hint}\n{conversation_block}"
+        f"{SYSTEM_PROMPT}\n{hint}{trend_context}\n{conversation_block}"
         f"\nUser message: {user_text}\nMochi (JSON only):"
     )
     payload = {

@@ -78,6 +78,10 @@ class Emotion(str, Enum):
     ANNOYED = "annoyed"
     SURPRISED = "surprised"
     PLAYFUL = "playful"
+    # Trend/joke-reaction emotion (see app/humor/trend_fetcher.py,
+    # app/ai/humor.py) - Mochi cracking a joke or reacting to a current
+    # trend topic, distinct from generic PLAYFUL/HAPPY.
+    AMUSED = "amused"
 
 
 # Emotion -> (animation folder, optional sound name) per spec section 9.
@@ -94,6 +98,11 @@ EMOTION_PROFILE = {
     Emotion.ANNOYED: {"animation": "angry", "sound": None},
     Emotion.SURPRISED: {"animation": "surprised", "sound": "surprised"},
     Emotion.PLAYFUL: {"animation": "excited", "sound": "purr"},
+    # No dedicated "amused" pixel-face expression yet (see
+    # app/character/pixel_face.py::FACE_EXPRESSIONS) - reuse "excited"
+    # rather than reference a face state that doesn't exist. Swap to a
+    # real amused face state if one gets added later.
+    Emotion.AMUSED: {"animation": "excited", "sound": "chirp"},
 }
 
 
