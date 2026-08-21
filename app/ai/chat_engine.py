@@ -18,6 +18,7 @@ available.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from app.ai.intent import DetectedIntent, detect_intent
 from app.ai.llm import LLMUnavailable, ask as ask_llm
@@ -25,6 +26,8 @@ from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
 from app.core.config import settings
 from app.core.exceptions import MochiError
 from app.core.logger import get_logger
+from app.humor.meme_fetcher import pick_one_meme
+from app.humor.trend_fetcher import pick_one_trend
 from app.memory import relationship
 from app.reminders import manager as reminder_manager
 from app.tasks import manager as task_manager
@@ -80,8 +83,85 @@ def _emotion_and_animation(name: str) -> tuple[Emotion, CharacterState]:
     return emotion, animation
 
 
-def handle_message(text: str) -> ChatReaction:
-    """Process one chat message end-to-end and return how Mochi should react."""
+def _list_tasks_reaction() -> "ChatReaction":
+    task_manager.ensure_ready()
+    tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
+    if not tasks:
+        return ChatReaction(
+            text="Nope, your task list is empty! Nothing hanging over you right now.",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+    shown = "; ".join(t.title for t in tasks[:5])
+    more = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
+    plural = "task" if len(tasks) == 1 else "tasks"
+    return ChatReaction(
+        text=f"You've got {len(tasks)} open {plural}: {shown}{more}.",
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+    )
+
+
+def _list_reminders_reaction() -> "ChatReaction":
+    reminder_manager.ensure_ready()
+    reminders = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+    if not reminders:
+        return ChatReaction(
+            text="You're all clear - no reminders waiting!",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+    shown = "; ".join(f"{r.title} at {r.due_at:%H:%M}" for r in reminders[:5])
+    more = f" (+{len(reminders) - 5} more)" if len(reminders) > 5 else ""
+    plural = "reminder" if len(reminders) == 1 else "reminders"
+    return ChatReaction(
+        text=f"You've got {len(reminders)} {plural}: {shown}{more}.",
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+    )
+
+
+# Read-only DB queries (spec: "it can not read db, make it read db so it
+# can answer") - handled entirely separately from _TOOL_MODULES below.
+# Those are fire-and-forget writes whose response text is authored ahead
+# of time in intent.py; these need to read the DB *first* and build the
+# reply from whatever's actually in it, so a small local LLM never gets a
+# chance to hallucinate an answer to a factual "what's in my database"
+# question (see the list_tasks/list_reminders DetectedIntents).
+_LIST_HANDLERS = {
+    "list_tasks": _list_tasks_reaction,
+    "list_reminders": _list_reminders_reaction,
+}
+
+
+def handle_message(
+    text: str, history: Optional[list[tuple[str, str]]] = None
+) -> ChatReaction:
+    """Process one chat message end-to-end and return how Mochi should react.
+
+    `history` (spec: "for chat it should store the current chat memory...
+    remember whole chat [until closed]") is the calling chat window's own
+    session-so-far as (role, text) pairs, oldest first - see
+    app/ui/chat_window.py, which owns and clears it. It's only actually
+    used for the open-ended LLM fallback below; deterministic intents
+    (reminders/tasks/etc.) don't need conversational context to act
+    correctly on a single, self-contained command.
+    """
+    intent: DetectedIntent = detect_intent(text)
+
+    if intent.name in _LIST_HANDLERS:
+        try:
+            return _LIST_HANDLERS[intent.name]()
+        except Exception:  # noqa: BLE001 - never let a bad DB read crash chat
+            logger.exception("Failed to read DB for intent '%s'", intent.name)
+            return ChatReaction(
+                text="Hmm, I couldn't check that just now.",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+
     try:
         interaction_count = relationship.record_interaction()
     except Exception:  # noqa: BLE001 - familiarity tracking must never break chat
@@ -89,7 +169,6 @@ def handle_message(text: str) -> ChatReaction:
         interaction_count = 0
     familiarity = relationship.level_for_count(interaction_count)
 
-    intent: DetectedIntent = detect_intent(text)
     response = intent.response
     emotion = intent.emotion
     animation = intent.animation
@@ -107,7 +186,18 @@ def handle_message(text: str) -> ChatReaction:
     # if one isn't available (see app/ai/llm.py for why this is safe).
     if intent.name == "unknown":
         try:
-            llm_reply = ask_llm(text, familiarity=familiarity)
+            # pick_one_meme()/pick_one_trend() are cheap cache reads (near-
+            # instant no-op unless settings.trend_awareness_enabled is on
+            # and something's already cached) - never fetch over the
+            # network here, only read whatever the background job already
+            # cached. See app/humor/meme_fetcher.py, app/humor/trend_fetcher.py.
+            llm_reply = ask_llm(
+                text,
+                familiarity=familiarity,
+                history=history,
+                trend_topic=pick_one_trend(),
+                meme_premise=pick_one_meme(),
+            )
             response = llm_reply["response"]
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])
             sound = EMOTION_PROFILE.get(emotion, {}).get("sound")

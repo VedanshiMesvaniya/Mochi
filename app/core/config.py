@@ -54,7 +54,14 @@ class Settings:
     """Typed, validated view over environment configuration."""
 
     # AI / LLM
-    llm_model: str = "qwen3:0.6b"
+    # qwen3:0.6b was chosen purely for footprint, but it's weak enough at
+    # following the structured-JSON-reply instruction (see app/ai/llm.py)
+    # that chat often fell back to the canned reply instead of a real
+    # answer - reading as "Mochi won't react". qwen2.5:1.5b is a
+    # meaningfully smarter step up (better instruction-following/JSON
+    # reliability) while still staying under a 1GB footprint. Still fully
+    # swappable via MOCHI_LLM_MODEL - see .env.example.
+    llm_model: str = "qwen2.5:1.5b"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 300
 
@@ -68,6 +75,23 @@ class Settings:
 
     # Calendar
     google_calendar_enabled: bool = False
+
+    # Humor (spec: "once in a while it should crawl internet and fetch...
+    # so it be more of sense of humor") - the one optional feature that
+    # reaches the open internet for something other than an explicit
+    # integration; see app/ai/humor.py. On by default since it's exactly
+    # what was asked for, but always degrades to a small offline joke
+    # list on any network failure, and is one env var away from fully off.
+    humor_enabled: bool = True
+
+    # Trend-awareness (opt-in, off by default): lets Mochi's LLM chat
+    # replies occasionally reference a real current general-interest topic
+    # for extra flavor, on top of the joke-list humor above - see
+    # app/humor/trend_fetcher.py. Off by default since, unlike the joke
+    # API, this fetches real headlines and paraphrases them, which is a
+    # bigger internet-dependency ask than a canned joke lookup.
+    trend_awareness_enabled: bool = False
+    trend_fetch_interval_hours: int = 6
 
     # General behavior
     start_with_windows: bool = False
@@ -104,7 +128,7 @@ class Settings:
             load_dotenv(env_path)
 
         return cls(
-            llm_model=os.getenv("MOCHI_LLM_MODEL", "qwen3:0.6b"),
+            llm_model=os.getenv("MOCHI_LLM_MODEL", "qwen2.5:1.5b"),
             llm_temperature=_float(os.getenv("MOCHI_LLM_TEMPERATURE"), 0.7),
             llm_max_tokens=_int(os.getenv("MOCHI_LLM_MAX_TOKENS"), 300),
             tts_enabled=_bool(os.getenv("MOCHI_TTS_ENABLED"), True),
@@ -115,6 +139,13 @@ class Settings:
             ),
             google_calendar_enabled=_bool(
                 os.getenv("MOCHI_GOOGLE_CALENDAR_ENABLED"), False
+            ),
+            humor_enabled=_bool(os.getenv("MOCHI_HUMOR_ENABLED"), True),
+            trend_awareness_enabled=_bool(
+                os.getenv("MOCHI_TREND_AWARENESS_ENABLED"), False
+            ),
+            trend_fetch_interval_hours=_int(
+                os.getenv("MOCHI_TREND_FETCH_INTERVAL_HOURS"), 6
             ),
             start_with_windows=_bool(os.getenv("MOCHI_START_WITH_WINDOWS"), False),
             always_on_top=_bool(os.getenv("MOCHI_ALWAYS_ON_TOP"), True),

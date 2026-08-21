@@ -7,6 +7,8 @@ modules (theme.py, lock_watcher.py) can't catch on their own.
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt
 
 from app.character.state_machine import CharacterState
@@ -128,6 +130,92 @@ def test_chat_reaction_expression_and_bubble_share_timing(qapp, temp_db):
     window.close()
 
 
+def test_speech_bubble_adapts_to_os_dark_mode(qapp, monkeypatch):
+    """spec: 'now you made font dark what if it's in dark background it
+    should be adaptive' - the bubble must switch to a light-on-dark
+    palette when the OS is in dark mode, not just always assume light."""
+    import app.character.pet as pet_module
+
+    bubble = pet_module._SpeechBubble()
+
+    monkeypatch.setattr(pet_module, "_is_dark_mode", lambda: False)
+    bubble.setText("light mode text")
+    assert bubble._dark is False
+
+    monkeypatch.setattr(pet_module, "_is_dark_mode", lambda: True)
+    bubble.setText("dark mode text")
+    assert bubble._dark is True
+    bubble.close()
+
+
+def test_is_dark_mode_never_raises(qapp):
+    """Theme detection must degrade to a safe default rather than crash
+    bubble rendering if styleHints()/colorScheme() misbehaves in some
+    environment."""
+    from app.character.pet import _is_dark_mode
+
+    assert _is_dark_mode() in (True, False)
+
+
+def test_bored_expression_can_trigger_a_joke(qapp, monkeypatch):
+    """spec: 'once in a while it should crawl internet and fetch...
+    so it be more of sense of humor' - wired into the bored self-play
+    tier: picking a new bored expression can (with some probability,
+    subject to a cooldown) fetch and show a joke."""
+    from app.character.pet import PetWindow
+    from app.character.state_machine import CharacterState
+
+    window = PetWindow()
+    # Force the roll to always succeed and the worker to run synchronously
+    # in spirit (we still go through the real QThread, just wait for it).
+    monkeypatch.setattr("app.character.pet.random.random", lambda: 0.0)
+    monkeypatch.setattr(
+        "app.ai.humor.get_joke", lambda: "test joke about cats"
+    )
+
+    window._apply_behavior_state(CharacterState.EXCITED)  # a real BORED_EXPRESSIONS member
+
+    assert window._humor_worker is not None
+    assert window._humor_worker.wait(3000)  # let the background fetch finish
+    # Process the queued joke_ready signal on the UI thread.
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._humor_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "test joke about cats" in window.speech_bubble.text()
+    window.close()
+
+
+def test_joke_respects_cooldown(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.character.state_machine import CharacterState
+
+    window = PetWindow()
+    monkeypatch.setattr("app.character.pet.random.random", lambda: 0.0)
+    window._last_joke_time = time.time()  # just told one
+
+    window._apply_behavior_state(CharacterState.EXCITED)
+
+    assert window._humor_worker is None  # cooldown blocked it
+    window.close()
+
+
+def test_joke_never_fires_outside_bored_expressions(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.character.state_machine import CharacterState
+
+    window = PetWindow()
+    monkeypatch.setattr("app.character.pet.random.random", lambda: 0.0)
+
+    window._apply_behavior_state(CharacterState.HAPPY)  # not a bored expression
+
+    assert window._humor_worker is None
+    window.close()
+
+
 def test_shake_triggers_dizzy_then_angry(qapp, temp_db):
     from app.character.pet import PetWindow
 
@@ -219,4 +307,68 @@ def test_shaking_the_window_via_real_mouse_events_triggers_dizzy(qapp, temp_db, 
         _move(x)
 
     assert window.state_machine.state == CharacterState.DIZZY
+    window.close()
+
+
+def test_refresh_trends_action_noops_when_disabled(qapp, monkeypatch):
+    """Manual 'Refresh trends & memes' menu action must not fire a network
+    call when the feature is off - respects the same opt-in gate as the
+    background job, even for an explicit manual request."""
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", False)
+
+    window._on_refresh_trends_requested()
+
+    assert window._refresh_trends_worker is None
+    assert "off right now" in window.speech_bubble.text()
+    window.close()
+
+
+def test_refresh_trends_action_runs_and_reports_counts(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 3)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 2)
+
+    window._on_refresh_trends_requested()
+    assert window._refresh_trends_worker is not None
+    assert window._refresh_trends_worker.wait(3000)
+
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._refresh_trends_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "3 trend(s) and 2 meme(s)" in window.speech_bubble.text()
+    window.close()
+
+
+def test_refresh_trends_action_reports_nothing_new(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 0)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 0)
+
+    window._on_refresh_trends_requested()
+    assert window._refresh_trends_worker.wait(3000)
+
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._refresh_trends_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "offline" in window.speech_bubble.text()
     window.close()

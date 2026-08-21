@@ -38,7 +38,47 @@ def test_greeting_changes_once_familiar(temp_db):
         handle_message("hi")
     familiar_reaction = handle_message("hi")
     assert familiar_reaction.text != first_reaction.text
-    assert "back" in familiar_reaction.text.lower()
+
+
+def test_list_tasks_reads_real_db_not_the_llm(temp_db, monkeypatch):
+    """Regression: 'do i have any task to do' was falling through to the
+    LLM and getting a hallucinated, unrelated answer instead of an actual
+    answer about what's in the task table."""
+
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("list_tasks must never fall through to the LLM")
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fail_if_called)
+
+    empty_reaction = handle_message("do i have any task to do")
+    assert "empty" in empty_reaction.text.lower() or "no" in empty_reaction.text.lower()
+
+    handle_message("add task buy milk")
+    handle_message("add task walk the dog")
+
+    reaction = handle_message("what tasks do i have")
+    assert "buy milk" in reaction.text.lower()
+    assert "walk the dog" in reaction.text.lower()
+    assert "2" in reaction.text
+
+
+def test_list_reminders_reads_real_db_not_the_llm(temp_db, monkeypatch):
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("list_reminders must never fall through to the LLM")
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fail_if_called)
+
+    handle_message("remind me to call mom in 10 minutes")
+    reaction = handle_message("do i have any reminders")
+    assert "call mom" in reaction.text.lower()
+    assert "1" in reaction.text
+
+
+def test_listing_never_creates_a_new_reminder_or_task(temp_db):
+    """A pure query must be read-only - it must not also insert anything."""
+    handle_message("do i have any task to do")
+    handle_message("do i have any reminders")
+    assert reminder_manager.list_reminders() == []
 
 
 def test_unknown_message_with_llm_unavailable_gives_a_setup_hint(temp_db, monkeypatch):

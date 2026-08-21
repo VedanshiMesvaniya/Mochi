@@ -10,15 +10,17 @@ app/main.py and app/ui/ so this widget stays reusable and testable.
 
 from __future__ import annotations
 
+import random
 import time
+from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QColor, QCursor, QMouseEvent, QAction, QPainter
+from PySide6.QtCore import Qt, QTimer, QPoint, QThread, Signal
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QMouseEvent, QAction, QPainter
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QMenu, QApplication, QLabel
 
 SPEECH_BUBBLE_DEFAULT_MS = 6000
 
-from app.character.behavior import BehaviorEngine
+from app.character.behavior import BORED_EXPRESSIONS, BehaviorEngine
 from app.character.lock_watcher import LockWatcher
 from app.character.movement import Mover, ScreenBounds
 from app.character.pixel_face import PixelFaceWidget
@@ -60,7 +62,96 @@ DEFAULT_REACTION_HOLD_MS = 3200
 SHAKE_DIZZY_MS = 1400
 SHAKE_ANGRY_HOLD_MS = 3200
 
+# "Sense of humor" (spec: "once in a while it should crawl internet and
+# fetch... so it be more of sense of humor") - piggybacks on the existing
+# bored self-play tier (see BORED_EXPRESSIONS/BehaviorEngine) rather than
+# its own separate timer: every time Mochi picks a new bored expression,
+# there's a small chance it also tells a joke. Both a minimum cooldown and
+# a low per-roll chance keep this to "once in a while", not "every time
+# it's bored" - it's a light seasoning, not a running commentary.
+HUMOR_MIN_INTERVAL_SECONDS = 900  # at most one joke per 15 minutes
+HUMOR_CHANCE_PER_BORED_TICK = 0.2
+
 logger = get_logger("mochi.pet")
+
+
+class _HumorWorker(QThread):
+    """Fetches one joke off the UI thread (see app/ai/humor.py) - a
+    network call, even a fast one, has no business running on the same
+    thread that's driving the character's animation timer."""
+
+    joke_ready = Signal(str)
+
+    def run(self) -> None:  # noqa: D102 - QThread override
+        from app.ai.humor import get_joke  # local import - keeps this
+        # network-adjacent module out of pet.py's always-loaded surface
+
+        try:
+            joke = get_joke()
+        except Exception:  # noqa: BLE001 - a joke must never crash the app
+            logger.exception("Humor fetch failed unexpectedly")
+            joke = "Hehe, I had a joke but I forgot it. Ask me later!"
+        self.joke_ready.emit(joke)
+
+
+class _RefreshTrendsWorker(QThread):
+    """Manual "Refresh trends & memes" action (right-click menu) - runs
+    app/humor/trend_fetcher.py + app/humor/meme_fetcher.py's network
+    fetches off the UI thread, same reasoning as _HumorWorker above.
+
+    This is the on-demand counterpart to whatever periodic background
+    schedule main.py sets up for these two modules (see the "Background
+    scheduling note" at the bottom of each) - lets the person force an
+    immediate re-crawl right before chatting, instead of waiting for the
+    next scheduled interval.
+    """
+
+    finished_ok = Signal(int, int)  # (trend_count, meme_count)
+    finished_error = Signal()
+
+    def run(self) -> None:  # noqa: D102 - QThread override
+        # Local imports - keeps these network-adjacent modules out of
+        # pet.py's always-loaded surface, same reasoning as _HumorWorker.
+        from app.humor.meme_fetcher import fetch_memes
+        from app.humor.trend_fetcher import fetch_trends
+
+        try:
+            trend_count = fetch_trends()
+            meme_count = fetch_memes()
+        except Exception:  # noqa: BLE001 - a manual refresh must never crash the app
+            logger.exception("Manual trend/meme refresh failed unexpectedly")
+            self.finished_error.emit()
+            return
+        self.finished_ok.emit(trend_count, meme_count)
+
+
+def _is_dark_mode() -> bool:
+    """Best-effort OS/desktop dark-mode detection (Qt6's cross-platform
+    color-scheme API - Windows, macOS, and most Linux desktop environments
+    that expose a preference). Used by _SpeechBubble to pick a palette
+    that's guaranteed readable either way (spec: "what if it's in dark
+    background it should be adaptive") rather than hardcoding one fixed
+    light-box/dark-text combo that only really suits a light desktop.
+
+    Defensive by design: styleHints()/colorScheme() can be unavailable in
+    some environments (e.g. a bare offscreen test platform) - fall back to
+    light mode rather than let a detection failure crash bubble rendering.
+    """
+    try:
+        hints = QGuiApplication.styleHints()
+        return hints is not None and hints.colorScheme() == Qt.ColorScheme.Dark
+    except Exception:  # noqa: BLE001 - never let theme detection break the UI
+        return False
+
+
+# Two guaranteed-readable palettes for _SpeechBubble - deliberately high
+# contrast box+text pairs, not a literal sample of whatever's behind the
+# widget (which would need screen-capture and is a lot more fragile);
+# "adaptive" here means "follows the OS's own light/dark preference".
+_BUBBLE_LIGHT_BG = QColor(255, 255, 255, 245)
+_BUBBLE_LIGHT_TEXT = "#3a3350"
+_BUBBLE_DARK_BG = QColor(28, 26, 36, 235)
+_BUBBLE_DARK_TEXT = "#f1edff"
 
 
 class _SpeechBubble(QWidget):
@@ -76,10 +167,16 @@ class _SpeechBubble(QWidget):
     desktop behind it with no box at all - exactly the "I can't read the
     reply, it's not adapting to my background" report. Painting the
     rounded background ourselves with QPainter is the reliable, portable
-    way to do a translucent top-level popup, and it also guarantees the
-    text stays readable against literally anything behind it (a photo, a
-    dark app, a bright one), rather than depending on the stylesheet
-    engine to composite correctly on a given machine.
+    way to do a translucent top-level popup.
+
+    On top of that, the palette itself now follows the OS's light/dark
+    setting (see _is_dark_mode) - re-checked every time new text is shown,
+    since a person could toggle OS theme while Mochi's running - so the
+    bubble stays high-contrast and readable in either case, not just
+    "always a light box" (which itself becomes a dark-background-adjacent
+    problem if the desktop theme, taskbar, and every app around it is
+    dark and a stark white popup looks/feels out of place - spec: "now you
+    made font dark what if it's in dark background it should be adaptive").
     """
 
     def __init__(self, parent=None) -> None:
@@ -90,13 +187,21 @@ class _SpeechBubble(QWidget):
         self._label = QLabel(self)
         self._label.setWordWrap(True)
         self._label.setMaximumWidth(220)
-        self._label.setStyleSheet("background: transparent; color: #3a3350; font-size: 12px;")
+        self._dark = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.addWidget(self._label)
+        self._apply_palette()
+
+    def _apply_palette(self) -> None:
+        self._dark = _is_dark_mode()
+        text_color = _BUBBLE_DARK_TEXT if self._dark else _BUBBLE_LIGHT_TEXT
+        self._label.setStyleSheet(f"background: transparent; color: {text_color}; font-size: 12px;")
+        self.update()
 
     def setText(self, text: str) -> None:
+        self._apply_palette()  # OS theme may have changed since last shown
         self._label.setText(text)
         self.adjustSize()
 
@@ -107,7 +212,7 @@ class _SpeechBubble(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 245))
+        painter.setBrush(_BUBBLE_DARK_BG if self._dark else _BUBBLE_LIGHT_BG)
         painter.drawRoundedRect(self.rect(), 10, 10)
         super().paintEvent(event)
 
@@ -133,6 +238,9 @@ class PetWindow(QWidget):
         self._task_window = None
         self._timer_window = None
         self._chat_window = None
+        self._humor_worker: Optional[_HumorWorker] = None
+        self._last_joke_time: float = 0.0
+        self._refresh_trends_worker: Optional[_RefreshTrendsWorker] = None
 
         self.lock_watcher = LockWatcher(parent=self)
 
@@ -194,14 +302,23 @@ class PetWindow(QWidget):
         self._speech_bubble_timer.timeout.connect(self.speech_bubble.hide)
 
     def _setup_tray_free_menu(self) -> None:
-        """Right-click context menu (spec section 13)."""
+        """Right-click context menu (spec section 13).
+
+        Reminders/Tasks/Timers/Calendar are deliberately NOT here anymore -
+        creating any of those is now handled "smartly" straight from chat
+        (e.g. "remind me to..." / "add task..." / "timer for...", see
+        app/ai/intent.py), and *checking* them is a chat query too ("do I
+        have any tasks?" - see app/ai/chat_engine.py's list_tasks/
+        list_reminders handling). A menu item whose only job was opening a
+        window to do that manually was redundant with something chat
+        already does end to end. The window classes themselves
+        (app/ui/reminder_window.py etc.) are untouched and still fully
+        working/tested - just not wired to this menu.
+        """
         self.context_menu = QMenu(self)
         self.action_chat = QAction("Chat", self)
-        self.action_reminders = QAction("Reminders", self)
-        self.action_tasks = QAction("Tasks", self)
-        self.action_timers = QAction("Timers", self)
-        self.action_calendar = QAction("Calendar", self)
         self.action_memories = QAction("Memories", self)
+        self.action_refresh_trends = QAction("Refresh trends && memes", self)
         self.action_settings = QAction("Settings", self)
         self.action_sleep = QAction("Sleep", self)
         self.action_exit = QAction("Exit", self)
@@ -211,17 +328,12 @@ class PetWindow(QWidget):
             lambda: self.state_machine.set_state(CharacterState.SLEEP)
         )
         self.action_chat.triggered.connect(self.on_open_chat_requested)
-        self.action_reminders.triggered.connect(self._open_reminder_window)
-        self.action_tasks.triggered.connect(self._open_task_window)
-        self.action_timers.triggered.connect(self._open_timer_window)
+        self.action_refresh_trends.triggered.connect(self._on_refresh_trends_requested)
 
         for action in (
             self.action_chat,
-            self.action_reminders,
-            self.action_tasks,
-            self.action_timers,
-            self.action_calendar,
             self.action_memories,
+            self.action_refresh_trends,
             self.action_settings,
             self.action_sleep,
             self.action_exit,
@@ -393,7 +505,82 @@ class PetWindow(QWidget):
     # ------------------------------------------------------------------
     def _on_behavior_tick(self) -> None:
         if not self._is_dragging:
-            self.behavior_engine.tick(self.state_machine.set_state)
+            self.behavior_engine.tick(self._apply_behavior_state)
+
+    def _apply_behavior_state(self, state: CharacterState) -> None:
+        self.state_machine.set_state(state)
+        if state in BORED_EXPRESSIONS:
+            self._maybe_tell_joke()
+
+    def _maybe_tell_joke(self) -> None:
+        """Occasionally, while genuinely bored and self-entertaining
+        (never otherwise - a joke mid-reminder or mid-chat would just be
+        noise), fetch and show a joke. See HUMOR_MIN_INTERVAL_SECONDS /
+        HUMOR_CHANCE_PER_BORED_TICK for how rarely this actually fires,
+        and Settings.humor_enabled for the network-vs-offline-only switch.
+        """
+        if self._humor_worker is not None:
+            return  # already fetching one
+        now = time.time()
+        if now - self._last_joke_time < HUMOR_MIN_INTERVAL_SECONDS:
+            return
+        if random.random() > HUMOR_CHANCE_PER_BORED_TICK:
+            return
+        self._last_joke_time = now
+        self._humor_worker = _HumorWorker(self)
+        self._humor_worker.joke_ready.connect(self._on_joke_ready)
+        self._humor_worker.start()
+
+    def _on_joke_ready(self, joke: str) -> None:
+        self.show_speech_bubble(f"Hehe~ {joke}", duration_ms=8000)
+        if self._humor_worker is not None:
+            self._humor_worker.deleteLater()
+            self._humor_worker = None
+
+    def _on_refresh_trends_requested(self) -> None:
+        """"Refresh trends & memes" menu action - manually force an
+        immediate re-crawl of app/humor/trend_fetcher.py +
+        app/humor/meme_fetcher.py rather than waiting for the next
+        scheduled background interval. No-ops (with an explanatory
+        speech bubble) if the feature is off entirely, since firing a
+        network call the person has explicitly disabled would be wrong
+        even on an explicit manual request.
+        """
+        if not settings.trend_awareness_enabled:
+            self.show_speech_bubble(
+                "Trend/meme awareness is off right now - "
+                "turn on MOCHI_TREND_AWARENESS_ENABLED to use this.",
+                duration_ms=6000,
+            )
+            return
+        if self._refresh_trends_worker is not None:
+            return  # already refreshing
+        self.show_speech_bubble("Crawling for what's new... give me a sec!", duration_ms=4000)
+        self._refresh_trends_worker = _RefreshTrendsWorker(self)
+        self._refresh_trends_worker.finished_ok.connect(self._on_refresh_trends_done)
+        self._refresh_trends_worker.finished_error.connect(self._on_refresh_trends_failed)
+        self._refresh_trends_worker.start()
+
+    def _on_refresh_trends_done(self, trend_count: int, meme_count: int) -> None:
+        if self._refresh_trends_worker is not None:
+            self._refresh_trends_worker.deleteLater()
+            self._refresh_trends_worker = None
+        if trend_count == 0 and meme_count == 0:
+            self.show_speech_bubble(
+                "Couldn't reach anything new just now - might be offline. I'll try again later!",
+                duration_ms=6000,
+            )
+            return
+        self.show_speech_bubble(
+            f"All caught up! Got {trend_count} trend(s) and {meme_count} meme(s) fresh.",
+            duration_ms=6000,
+        )
+
+    def _on_refresh_trends_failed(self) -> None:
+        if self._refresh_trends_worker is not None:
+            self._refresh_trends_worker.deleteLater()
+            self._refresh_trends_worker = None
+        self.show_speech_bubble("Hmm, that refresh didn't work. I'll try again later!", duration_ms=6000)
 
     # ------------------------------------------------------------------
     # Mouse interaction (spec section 13)
@@ -466,6 +653,11 @@ class PetWindow(QWidget):
 
     # ------------------------------------------------------------------
     # Reminders window (spec section 13/20 - V1)
+    #
+    # No longer reachable from the right-click menu (see
+    # _setup_tray_free_menu) - kept here, fully working, in case a future
+    # chat command wants to pop the visual list open ("let me see that")
+    # rather than just answering in text.
     # ------------------------------------------------------------------
     def _open_reminder_window(self) -> None:
         # Local import avoids a hard PySide6-widget dependency for anything
@@ -480,7 +672,8 @@ class PetWindow(QWidget):
         self._reminder_window.activateWindow()
 
     # ------------------------------------------------------------------
-    # Tasks window (V2)
+    # Tasks window (V2) - see _open_reminder_window's note above; same
+    # story, no longer on the right-click menu, kept for future reuse.
     # ------------------------------------------------------------------
     def _open_task_window(self) -> None:
         from app.ui.task_window import TaskWindow
@@ -493,7 +686,8 @@ class PetWindow(QWidget):
         self._task_window.activateWindow()
 
     # ------------------------------------------------------------------
-    # Timers window (V2)
+    # Timers window (V2) - see _open_reminder_window's note above; same
+    # story, no longer on the right-click menu, kept for future reuse.
     # ------------------------------------------------------------------
     def _open_timer_window(self) -> None:
         from app.ui.timer_window import TimerWindow

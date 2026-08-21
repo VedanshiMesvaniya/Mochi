@@ -43,6 +43,10 @@ OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 # the window either) but generous enough for a real reply to land.
 REQUEST_TIMEOUT_SECONDS = 30
 
+# How many of the most recent (role, text) turns from the chat window's
+# session history actually get sent to the model - see ask()'s docstring.
+_MAX_HISTORY_TURNS = 12
+
 SYSTEM_PROMPT = """You are Mochi: a small pixel-face cat character who lives
 on this person's desktop. Mochi is your own name and your whole identity -
 you are not a version, style, or reference to any other product, character,
@@ -62,10 +66,51 @@ replies to 1-2 short sentences. Answer direct questions (including "what/who
 are you" or "are you a cat/bot/AI") clearly and honestly before adding any
 personality flourish - don't deflect a genuine question back at the person.
 
+Sense of humor: you're extremely online, in a self-aware and funny way, not a
+try-hard way. When something's actually funny or relatable, lean into real
+internet/meme-brain phrasing and comic timing - dry understatement,
+deadpan overreaction, "no thoughts just vibes" energy, relatable
+"nobody: / me:"-style framing, calling something "unhinged" or "so real" or
+"the audacity" when it fits - rather than a generic chatbot chuckle. Never
+force a bit that doesn't land, never explain the joke, and never lean on a
+meme reference so hard it needs footnotes - if the person won't get it,
+don't use it. You're a cat with a chronically-online sense of humor, not a
+meme-generator reciting formats.
+
 Reply with ONLY a single JSON object and nothing else - no markdown, no code fences,
 no extra commentary. Shape exactly:
-{"response": "<your in-character reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful>"}
+{"response": "<your in-character reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful, amused>"}
 """
+
+# Optional meme-flavor context (see app/humor/meme_fetcher.py, opt-in via
+# settings.trend_awareness_enabled) - a short, already-paraphrased PREMISE
+# of a currently-trending meme, never the meme's actual title/caption.
+# Explicitly instructs the model to riff on the premise in its own voice
+# rather than reproduce or closely mirror anything - this is inspiration,
+# not source text. Preferred over the generic news-trend context below
+# when a meme premise is available, since it's a much better match for
+# "meme level" humor than a headline is.
+_MEME_CONTEXT_TEMPLATE = (
+    '\nFor extra meme-brain flavor, there\'s a meme going around right now '
+    'with roughly this premise: "{premise}". If - and only if - it actually '
+    "fits what the person just said, you can riff on that vibe in your own "
+    "original words (never describe or explain the actual meme, never say "
+    '"there\'s a meme about..." - just let the energy of it color your own '
+    "line). Skip it entirely if it doesn't naturally fit, and never use it "
+    "two replies in a row."
+)
+
+# Optional trend-flavor context (see app/humor/trend_fetcher.py, opt-in via
+# settings.trend_awareness_enabled) - injected into the prompt only when a
+# cached topic label is actually available. Deliberately phrased as
+# something Mochi may reference, not must - forcing a topic into every
+# reply would feel like a ticker, not a personality trait.
+_TREND_CONTEXT_TEMPLATE = (
+    "\nFor a bit of humor, you're vaguely aware this is trending right now: "
+    '"{topic}". You can reference it casually and in your own words if it '
+    "naturally fits what the person said - never force it in, never quote "
+    "or describe it in detail, and don't bring it up two replies in a row."
+)
 
 _FAMILIARITY_HINTS = {
     "new": "You just met this person - be curious and a little shy-excited.",
@@ -79,7 +124,13 @@ class LLMUnavailable(Exception):
     usable reply - callers must catch this and fall back gracefully."""
 
 
-def ask(user_text: str, familiarity: str = "new") -> dict:
+def ask(
+    user_text: str,
+    familiarity: str = "new",
+    history: Optional[list[tuple[str, str]]] = None,
+    trend_topic: Optional[str] = None,
+    meme_premise: Optional[str] = None,
+) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
     reply. Raises LLMUnavailable on any failure (connection refused, model
     not pulled, timeout, malformed output) - never raises anything else.
@@ -87,10 +138,47 @@ def ask(user_text: str, familiarity: str = "new") -> dict:
     `familiarity` (spec section 30, kept intentionally lightweight - see
     app/memory/relationship.py) nudges tone based on interaction count so
     far; it's a hint, not a memory of specific facts.
+
+    `history` is this chat WINDOW's own short-term memory (spec section
+    19 / "for chat it should store the current chat memory... it should
+    remember whole chat [until closed]") - a list of (role, text) pairs
+    ordered oldest-first, role being "user" or "mochi". Only the most
+    recent turns are actually sent to the model (see _MAX_HISTORY_TURNS):
+    the window itself remembers the whole session (nothing is discarded
+    from what's shown on screen), but a tiny local model both has less use
+    for very old context and gets slower/worse the more of it you feed in,
+    so what's sent here is deliberately capped rather than unbounded.
+
+    `meme_premise` (opt-in, see app/humor/meme_fetcher.py) is an optional
+    short, already-paraphrased meme PREMISE the caller may have cached -
+    never a verbatim meme title/caption. Takes priority over `trend_topic`
+    when both are present, since it's a closer match for "meme level"
+    humor than a generic headline.
+
+    `trend_topic` (opt-in, see app/humor/trend_fetcher.py) is an optional
+    short, already-paraphrased topic label the caller may have cached -
+    never raw scraped text, see that module for why. Purely a light
+    seasoning of the prompt; the model is explicitly told not to force it.
     """
 
     hint = _FAMILIARITY_HINTS.get(familiarity, _FAMILIARITY_HINTS["new"])
-    prompt = f"{SYSTEM_PROMPT}\n{hint}\n\nUser message: {user_text}\nMochi (JSON only):"
+    if meme_premise:
+        flavor_context = _MEME_CONTEXT_TEMPLATE.format(premise=meme_premise)
+    elif trend_topic:
+        flavor_context = _TREND_CONTEXT_TEMPLATE.format(topic=trend_topic)
+    else:
+        flavor_context = ""
+
+    conversation_block = ""
+    if history:
+        recent = history[-_MAX_HISTORY_TURNS:]
+        lines = [f"{'User' if role == 'user' else 'Mochi'}: {msg}" for role, msg in recent]
+        conversation_block = "\nRecent conversation so far (oldest first):\n" + "\n".join(lines) + "\n"
+
+    prompt = (
+        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}\n{conversation_block}"
+        f"\nUser message: {user_text}\nMochi (JSON only):"
+    )
     payload = {
         "model": settings.llm_model,
         "prompt": prompt,

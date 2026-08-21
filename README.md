@@ -107,10 +107,14 @@ it more — new, getting-to-know, and familiar.
 
 ## Reminders, tasks & timers
 
-All three are fully local, stored in SQLite, and manageable both by
-chatting ("remind me to call mom at 7pm", "set a timer for 10 minutes",
-"remember that I need to buy milk") and through dedicated windows from
-the right-click menu:
+All three are fully local, stored in SQLite, and handled entirely through
+chat — both creating them ("remind me to call mom at 7pm", "set a timer
+for 10 minutes", "remember that I need to buy milk") and checking them
+("do I have any tasks?", "what reminders do I have?", both answered from
+the real database, never guessed by the LLM). There's deliberately no
+separate right-click menu for any of this anymore — one consistent way in
+via chat, rather than a manual window duplicating what chat already does
+end to end.
 
 - **Reminders** — one-off or repeating (`DAILY`/`WEEKLY`/`MONTHLY`), with
   a background scheduler that checks for due reminders and surfaces them
@@ -118,6 +122,37 @@ the right-click menu:
   reminder is still pending several minutes later, Mochi reacts annoyed.
 - **Tasks** — a simple open/done checklist, no due date.
 - **Timers** — short countdowns that persist across restarts.
+
+---
+
+## Chat memory & humor
+
+Each chat window remembers the whole conversation for as long as it stays
+open — every reply that falls through to the local LLM (see below) gets
+the recent conversation as context, not just your latest message in
+isolation. Closing the chat window clears that session; opening it again
+starts fresh.
+
+Once in a while, if Mochi's been idle long enough to get bored (see
+below), it'll also crack a joke unprompted — by default this fetches a
+fresh one from a small no-auth joke API, falling back to a built-in
+offline list if that's unreachable or disabled
+(`MOCHI_HUMOR_ENABLED=false` in `.env` for a fully offline Mochi).
+
+Separately, and **off by default**, Mochi can also stay lightly aware of
+what's actually trending — and what's actually funny — right now
+(`MOCHI_TREND_AWARENESS_ENABLED=true` in `.env`). This pulls two things on
+a slow background timer: general headlines
+(`app/humor/trend_fetcher.py`) and, more importantly for "meme level"
+humor, real current meme post premises from general-audience meme
+subreddits (`app/humor/meme_fetcher.py`, no login/API key needed). Both
+get reduced to a short paraphrased label/premise before caching — Mochi
+never stores or repeats the actual headline or meme caption text, and
+never fetches meme images — and its LLM chat replies may riff on a cached
+one in its own voice if it naturally fits, with the meme premise
+preferred over a generic headline when both are available. Talks to the
+open internet (Google News' RSS feed + Reddit's public JSON endpoints),
+which is why it's opt-in rather than on by default.
 
 ---
 
@@ -165,7 +200,7 @@ app/
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
 data/               local SQLite database (gitignored)
-tests/              pytest suite (246 tests)
+tests/              pytest suite (268 tests)
 ```
 
 ---

@@ -31,15 +31,52 @@ CORNER_RADIUS = 22
 
 # Soft frosted-glass palette - a light lavender-to-sky gradient tint, echoing
 # Mochi's own cute-pastel character design rather than a generic dark panel.
-PANEL_GRADIENT = (
+_LIGHT_PANEL_GRADIENT = (
     "qlineargradient(x1:0, y1:0, x2:1, y2:1,"
     " stop:0 rgba(255, 255, 255, 215),"
     " stop:0.5 rgba(232, 226, 250, 200),"
     " stop:1 rgba(213, 232, 250, 205))"
 )
-BORDER_HIGHLIGHT = "rgba(255, 255, 255, 160)"
-TEXT_COLOR = "#3a3350"  # dark enough to read on light glass
-MUTED_TEXT_COLOR = "#6e6785"
+_LIGHT_BORDER_HIGHLIGHT = "rgba(255, 255, 255, 160)"
+_LIGHT_INPUT_BORDER = "rgba(255, 255, 255, 190)"
+_LIGHT_TEXT_COLOR = "#3a3350"  # dark enough to read on light glass
+_LIGHT_MUTED_TEXT_COLOR = "#6e6785"
+_LIGHT_INPUT_BG = "rgba(255, 255, 255, 130)"
+_LIGHT_BUTTON_BG = "rgba(255, 255, 255, 140)"
+_LIGHT_BUTTON_HOVER = "rgba(255, 255, 255, 190)"
+_LIGHT_BUTTON_PRESSED = "rgba(255, 255, 255, 100)"
+_LIGHT_BUTTON_DISABLED_TEXT = "rgba(58, 51, 80, 110)"
+
+# Dark counterpart (spec: "now you made font dark what if it's in dark
+# background it should be adaptive") - a light-on-dark version of the same
+# frosted-glass look, not a plain flat panel, so popups still read as
+# "Mochi's UI" rather than a generic dark-mode override. Same shape/values
+# as the light palette above so it's easy to keep the two in sync.
+_DARK_PANEL_GRADIENT = (
+    "qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+    " stop:0 rgba(40, 36, 58, 225),"
+    " stop:0.5 rgba(32, 29, 48, 220),"
+    " stop:1 rgba(26, 32, 46, 220))"
+)
+_DARK_BORDER_HIGHLIGHT = "rgba(255, 255, 255, 40)"
+_DARK_INPUT_BORDER = "rgba(255, 255, 255, 55)"
+_DARK_TEXT_COLOR = "#f1edff"
+_DARK_MUTED_TEXT_COLOR = "#b9b2d1"
+_DARK_INPUT_BG = "rgba(255, 255, 255, 22)"
+_DARK_BUTTON_BG = "rgba(255, 255, 255, 28)"
+_DARK_BUTTON_HOVER = "rgba(255, 255, 255, 50)"
+_DARK_BUTTON_PRESSED = "rgba(255, 255, 255, 16)"
+_DARK_BUTTON_DISABLED_TEXT = "rgba(241, 237, 255, 90)"
+
+# Kept as the original names for anything that still imports these
+# directly (e.g. other modules referencing base_window.TEXT_COLOR) - these
+# stay the light values; TranslucentDialog itself picks light-vs-dark
+# fresh at construction time via _current_palette() below, so it actually
+# adapts rather than being stuck on whichever of these was imported.
+PANEL_GRADIENT = _LIGHT_PANEL_GRADIENT
+BORDER_HIGHLIGHT = _LIGHT_BORDER_HIGHLIGHT
+TEXT_COLOR = _LIGHT_TEXT_COLOR
+MUTED_TEXT_COLOR = _LIGHT_MUTED_TEXT_COLOR
 
 # Header dots, macOS-style: recognizable close/minimize affordance, and a
 # third that's actually useful here (always-on-top) rather than decorative.
@@ -47,6 +84,48 @@ DOT_CLOSE = "#ff6b6b"
 DOT_MINIMIZE = "#ffd166"
 DOT_PIN = "#8ee6a3"
 DOT_PIN_ACTIVE = "#4fbf6b"
+
+
+def _current_palette() -> dict:
+    """Light or dark frosted-glass color set for right now, following the
+    OS/Qt dark-mode setting - reuses app.character.pet._is_dark_mode so
+    popups and Mochi's own speech bubble agree on "dark mode or not"
+    rather than each having their own detector. Imported lazily (function
+    body, not module level) to avoid a circular import, since
+    app.character.pet also imports from app.ui at various points.
+    """
+    try:
+        from app.character.pet import _is_dark_mode
+
+        dark = _is_dark_mode()
+    except Exception:  # noqa: BLE001 - theme detection must never break a popup
+        dark = False
+
+    if dark:
+        return {
+            "panel_gradient": _DARK_PANEL_GRADIENT,
+            "border_highlight": _DARK_BORDER_HIGHLIGHT,
+            "input_border": _DARK_INPUT_BORDER,
+            "text_color": _DARK_TEXT_COLOR,
+            "muted_text_color": _DARK_MUTED_TEXT_COLOR,
+            "input_bg": _DARK_INPUT_BG,
+            "button_bg": _DARK_BUTTON_BG,
+            "button_hover": _DARK_BUTTON_HOVER,
+            "button_pressed": _DARK_BUTTON_PRESSED,
+            "button_disabled_text": _DARK_BUTTON_DISABLED_TEXT,
+        }
+    return {
+        "panel_gradient": _LIGHT_PANEL_GRADIENT,
+        "border_highlight": _LIGHT_BORDER_HIGHLIGHT,
+        "input_border": _LIGHT_INPUT_BORDER,
+        "text_color": _LIGHT_TEXT_COLOR,
+        "muted_text_color": _LIGHT_MUTED_TEXT_COLOR,
+        "input_bg": _LIGHT_INPUT_BG,
+        "button_bg": _LIGHT_BUTTON_BG,
+        "button_hover": _LIGHT_BUTTON_HOVER,
+        "button_pressed": _LIGHT_BUTTON_PRESSED,
+        "button_disabled_text": _LIGHT_BUTTON_DISABLED_TEXT,
+    }
 
 
 class _DotButton(QPushButton):
@@ -88,6 +167,11 @@ class TranslucentDialog(QDialog):
         self._drag_offset: QPoint | None = None
         self._pinned = False
 
+        # Read fresh at construction time (not the module-level light
+        # defaults above) so every popup reflects the OS's actual current
+        # dark/light setting rather than whatever was true at import time.
+        palette = _current_palette()
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 18, 18, 18)  # room for the drop shadow
 
@@ -96,30 +180,30 @@ class TranslucentDialog(QDialog):
         self.panel.setStyleSheet(
             f"""
             QFrame#mochiPanel {{
-                background: {PANEL_GRADIENT};
+                background: {palette['panel_gradient']};
                 border-radius: {CORNER_RADIUS}px;
-                border: 1px solid {BORDER_HIGHLIGHT};
+                border: 1px solid {palette['border_highlight']};
             }}
-            QLabel {{ color: {TEXT_COLOR}; background: transparent; }}
+            QLabel {{ color: {palette['text_color']}; background: transparent; }}
             QLineEdit, QListWidget, QTextEdit, QComboBox, QDateTimeEdit, QSpinBox {{
-                background-color: rgba(255, 255, 255, 130);
-                color: {TEXT_COLOR};
-                border: 1px solid rgba(255, 255, 255, 190);
+                background-color: {palette['input_bg']};
+                color: {palette['text_color']};
+                border: 1px solid {palette['input_border']};
                 border-radius: 10px;
                 padding: 5px 8px;
                 selection-background-color: rgba(142, 156, 230, 150);
             }}
             QListWidget::item {{ padding: 3px 2px; }}
             QPushButton {{
-                background-color: rgba(255, 255, 255, 140);
-                color: {TEXT_COLOR};
-                border: 1px solid rgba(255, 255, 255, 190);
+                background-color: {palette['button_bg']};
+                color: {palette['text_color']};
+                border: 1px solid {palette['input_border']};
                 border-radius: 10px;
                 padding: 6px 12px;
             }}
-            QPushButton:hover {{ background-color: rgba(255, 255, 255, 190); }}
-            QPushButton:pressed {{ background-color: rgba(255, 255, 255, 100); }}
-            QPushButton:disabled {{ color: rgba(58, 51, 80, 110); }}
+            QPushButton:hover {{ background-color: {palette['button_hover']}; }}
+            QPushButton:pressed {{ background-color: {palette['button_pressed']}; }}
+            QPushButton:disabled {{ color: {palette['button_disabled_text']}; }}
             """
         )
         outer.addWidget(self.panel)
@@ -154,7 +238,7 @@ class TranslucentDialog(QDialog):
         header.addSpacing(8)
         self._title_label = QLabel(title)
         self._title_label.setStyleSheet(
-            f"font-weight: 600; font-size: 13px; color: {MUTED_TEXT_COLOR};"
+            f"font-weight: 600; font-size: 13px; color: {palette['muted_text_color']};"
         )
         header.addWidget(self._title_label)
         header.addStretch(1)
