@@ -43,6 +43,10 @@ OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 # the window either) but generous enough for a real reply to land.
 REQUEST_TIMEOUT_SECONDS = 30
 
+# How many of the most recent (role, text) turns from the chat window's
+# session history actually get sent to the model - see ask()'s docstring.
+_MAX_HISTORY_TURNS = 12
+
 SYSTEM_PROMPT = """You are Mochi: a small pixel-face cat character who lives
 on this person's desktop. Mochi is your own name and your whole identity -
 you are not a version, style, or reference to any other product, character,
@@ -79,7 +83,11 @@ class LLMUnavailable(Exception):
     usable reply - callers must catch this and fall back gracefully."""
 
 
-def ask(user_text: str, familiarity: str = "new") -> dict:
+def ask(
+    user_text: str,
+    familiarity: str = "new",
+    history: Optional[list[tuple[str, str]]] = None,
+) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
     reply. Raises LLMUnavailable on any failure (connection refused, model
     not pulled, timeout, malformed output) - never raises anything else.
@@ -87,10 +95,30 @@ def ask(user_text: str, familiarity: str = "new") -> dict:
     `familiarity` (spec section 30, kept intentionally lightweight - see
     app/memory/relationship.py) nudges tone based on interaction count so
     far; it's a hint, not a memory of specific facts.
+
+    `history` is this chat WINDOW's own short-term memory (spec section
+    19 / "for chat it should store the current chat memory... it should
+    remember whole chat [until closed]") - a list of (role, text) pairs
+    ordered oldest-first, role being "user" or "mochi". Only the most
+    recent turns are actually sent to the model (see _MAX_HISTORY_TURNS):
+    the window itself remembers the whole session (nothing is discarded
+    from what's shown on screen), but a tiny local model both has less use
+    for very old context and gets slower/worse the more of it you feed in,
+    so what's sent here is deliberately capped rather than unbounded.
     """
 
     hint = _FAMILIARITY_HINTS.get(familiarity, _FAMILIARITY_HINTS["new"])
-    prompt = f"{SYSTEM_PROMPT}\n{hint}\n\nUser message: {user_text}\nMochi (JSON only):"
+
+    conversation_block = ""
+    if history:
+        recent = history[-_MAX_HISTORY_TURNS:]
+        lines = [f"{'User' if role == 'user' else 'Mochi'}: {msg}" for role, msg in recent]
+        conversation_block = "\nRecent conversation so far (oldest first):\n" + "\n".join(lines) + "\n"
+
+    prompt = (
+        f"{SYSTEM_PROMPT}\n{hint}\n{conversation_block}"
+        f"\nUser message: {user_text}\nMochi (JSON only):"
+    )
     payload = {
         "model": settings.llm_model,
         "prompt": prompt,

@@ -29,7 +29,7 @@ def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text: ChatReaction(
+        lambda text, history=None: ChatReaction(
             text=f"echo: {text}", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY
         ),
     )
@@ -48,7 +48,7 @@ def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
 def test_chat_worker_falls_back_gracefully_on_exception(qapp, monkeypatch):
     from app.ui.chat_window import ChatWorker
 
-    def _boom(_text):
+    def _boom(_text, history=None):
         raise RuntimeError("simulated failure")
 
     monkeypatch.setattr("app.ui.chat_window.handle_message", _boom)
@@ -67,7 +67,7 @@ def test_chat_worker_falls_back_gracefully_on_exception(qapp, monkeypatch):
 def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text):
+    def _slow_reply(_text, history=None):
         time.sleep(0.3)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -108,7 +108,7 @@ def test_window_is_reshown_if_hidden_while_reply_pending(qapp, monkeypatch):
     no-ops on an already-hidden window)."""
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text):
+    def _slow_reply(_text, history=None):
         time.sleep(0.2)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -139,7 +139,7 @@ def test_typing_indicator_shows_while_waiting_and_clears_on_reply(qapp, monkeypa
     silently frozen or closed."""
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text):
+    def _slow_reply(_text, history=None):
         time.sleep(0.3)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -192,3 +192,63 @@ def test_chat_bubbles_are_not_selectable_list_items(qapp):
     item = window.message_log.item(window.message_log.count() - 1)
     assert item.flags() == Qt.NoItemFlags
     window.close()
+
+
+def test_session_history_accumulates_and_is_passed_to_handle_message(qapp, monkeypatch):
+    """spec: 'for chat it should store the current chat memory... it
+    should remember whole chat [until closed]' - every turn this session
+    must be forwarded to handle_message so the LLM fallback has real
+    conversational context, not just the latest isolated message."""
+    from app.ui.chat_window import ChatWindow
+
+    seen_histories = []
+
+    def _capture(text, history=None):
+        seen_histories.append(list(history or []))
+        return ChatReaction(text=f"reply to {text}", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
+
+    monkeypatch.setattr("app.ui.chat_window.handle_message", _capture)
+
+    def _send(window, text):
+        window.input_field.setText(text)
+        window._on_send_clicked()
+        deadline = time.time() + 5
+        while window._worker is not None and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+
+    window = ChatWindow()  # greeting already seeded into history
+
+    _send(window, "first message")
+    assert seen_histories[-1] == [("mochi", "Hehe, hi! What are we up to?")]
+
+    _send(window, "second message")
+    assert seen_histories[-1] == [
+        ("mochi", "Hehe, hi! What are we up to?"),
+        ("user", "first message"),
+        ("mochi", "reply to first message"),
+    ]
+    window.close()
+
+
+def test_session_history_is_cleared_on_close(qapp, monkeypatch):
+    from app.ui.chat_window import ChatWindow
+
+    monkeypatch.setattr(
+        "app.ui.chat_window.handle_message",
+        lambda text, history=None: ChatReaction(
+            text="ok", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY
+        ),
+    )
+
+    window = ChatWindow()
+    window.input_field.setText("remember this")
+    window._on_send_clicked()
+    deadline = time.time() + 5
+    while window._worker is not None and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert len(window._history) > 0
+
+    window.close()
+    assert window._history == []

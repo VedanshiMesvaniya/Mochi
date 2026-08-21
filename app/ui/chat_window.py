@@ -104,13 +104,14 @@ class ChatWorker(QThread):
 
     finished_reaction = Signal(object)  # emits a ChatReaction
 
-    def __init__(self, text: str, parent=None) -> None:
+    def __init__(self, text: str, history: Optional[list[tuple[str, str]]] = None, parent=None) -> None:
         super().__init__(parent)
         self._text = text
+        self._history = history
 
     def run(self) -> None:  # noqa: D102 - QThread override
         try:
-            reaction = handle_message(self._text)
+            reaction = handle_message(self._text, history=self._history)
         except Exception:  # noqa: BLE001 - chat must never crash the app
             logger.exception("Chat engine failed on message: %s", self._text)
             reaction = ChatReaction(
@@ -135,6 +136,15 @@ class ChatWindow(TranslucentDialog):
 
         self._worker: Optional[ChatWorker] = None
 
+        # Session memory (spec: "for chat it should store the current chat
+        # memory... it should remember whole chat [until closed]") - every
+        # message either side sends this session, oldest first. Passed to
+        # the LLM fallback as conversational context (see
+        # app/ai/llm.py's ask()); reset to empty on close so the *next*
+        # time chat is opened starts fresh rather than carrying old
+        # context forward indefinitely.
+        self._history: list[tuple[str, str]] = []
+
         # Typing indicator (spec: "chat looks closed/frozen while waiting").
         # The pet's face already changes state while a reply is pending,
         # but that's easy to miss when you're focused on this window, not
@@ -148,7 +158,9 @@ class ChatWindow(TranslucentDialog):
         self._typing_timer.timeout.connect(self._advance_typing_indicator)
 
         self._build_ui()
-        self._append("Mochi", "Hehe, hi! What are we up to?")
+        greeting = "Hehe, hi! What are we up to?"
+        self._append("Mochi", greeting)
+        self._history.append(("mochi", greeting))
 
     def _build_ui(self) -> None:
         self.message_log = QListWidget()
@@ -185,6 +197,7 @@ class ChatWindow(TranslucentDialog):
         self._typing_timer.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.wait(200)
+        self._history = []  # session memory ends when the window does
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -236,6 +249,7 @@ class ChatWindow(TranslucentDialog):
             return
         self.input_field.clear()
         self._append("You", text)
+        self._history.append(("user", text))
 
         if self._on_thinking is not None:
             self._on_thinking()
@@ -251,13 +265,14 @@ class ChatWindow(TranslucentDialog):
         self.send_button.setEnabled(False)
         self._start_typing_indicator()
 
-        self._worker = ChatWorker(text, self)
+        self._worker = ChatWorker(text, history=list(self._history[:-1]), parent=self)
         self._worker.finished_reaction.connect(self._on_reaction_ready)
         self._worker.start()
 
     def _on_reaction_ready(self, reaction: ChatReaction) -> None:
         self._stop_typing_indicator()
         self._append("Mochi", reaction.text)
+        self._history.append(("mochi", reaction.text))
         if self._on_reaction is not None:
             self._on_reaction(reaction)
 

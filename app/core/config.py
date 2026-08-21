@@ -69,6 +69,14 @@ class Settings:
     # Calendar
     google_calendar_enabled: bool = False
 
+    # Humor (spec: "once in a while it should crawl internet and fetch...
+    # so it be more of sense of humor") - the one optional feature that
+    # reaches the open internet for something other than an explicit
+    # integration; see app/ai/humor.py. On by default since it's exactly
+    # what was asked for, but always degrades to a small offline joke
+    # list on any network failure, and is one env var away from fully off.
+    humor_enabled: bool = True
+
     # General behavior
     start_with_windows: bool = False
     always_on_top: bool = True
@@ -116,6 +124,7 @@ class Settings:
             google_calendar_enabled=_bool(
                 os.getenv("MOCHI_GOOGLE_CALENDAR_ENABLED"), False
             ),
+            humor_enabled=_bool(os.getenv("MOCHI_HUMOR_ENABLED"), True),
             start_with_windows=_bool(os.getenv("MOCHI_START_WITH_WINDOWS"), False),
             always_on_top=_bool(os.getenv("MOCHI_ALWAYS_ON_TOP"), True),
             autonomous_behavior=_bool(os.getenv("MOCHI_AUTONOMOUS_BEHAVIOR"), True),

@@ -7,6 +7,8 @@ modules (theme.py, lock_watcher.py) can't catch on their own.
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt
 
 from app.character.state_machine import CharacterState
@@ -125,6 +127,92 @@ def test_chat_reaction_expression_and_bubble_share_timing(qapp, temp_db):
     assert window.speech_bubble.text() == "yay!"
     assert window._speech_bubble_timer.isActive()
     assert window._expression_hold_timer.isActive()
+    window.close()
+
+
+def test_speech_bubble_adapts_to_os_dark_mode(qapp, monkeypatch):
+    """spec: 'now you made font dark what if it's in dark background it
+    should be adaptive' - the bubble must switch to a light-on-dark
+    palette when the OS is in dark mode, not just always assume light."""
+    import app.character.pet as pet_module
+
+    bubble = pet_module._SpeechBubble()
+
+    monkeypatch.setattr(pet_module, "_is_dark_mode", lambda: False)
+    bubble.setText("light mode text")
+    assert bubble._dark is False
+
+    monkeypatch.setattr(pet_module, "_is_dark_mode", lambda: True)
+    bubble.setText("dark mode text")
+    assert bubble._dark is True
+    bubble.close()
+
+
+def test_is_dark_mode_never_raises(qapp):
+    """Theme detection must degrade to a safe default rather than crash
+    bubble rendering if styleHints()/colorScheme() misbehaves in some
+    environment."""
+    from app.character.pet import _is_dark_mode
+
+    assert _is_dark_mode() in (True, False)
+
+
+def test_bored_expression_can_trigger_a_joke(qapp, monkeypatch):
+    """spec: 'once in a while it should crawl internet and fetch...
+    so it be more of sense of humor' - wired into the bored self-play
+    tier: picking a new bored expression can (with some probability,
+    subject to a cooldown) fetch and show a joke."""
+    from app.character.pet import PetWindow
+    from app.character.state_machine import CharacterState
+
+    window = PetWindow()
+    # Force the roll to always succeed and the worker to run synchronously
+    # in spirit (we still go through the real QThread, just wait for it).
+    monkeypatch.setattr("app.character.pet.random.random", lambda: 0.0)
+    monkeypatch.setattr(
+        "app.ai.humor.get_joke", lambda: "test joke about cats"
+    )
+
+    window._apply_behavior_state(CharacterState.EXCITED)  # a real BORED_EXPRESSIONS member
+
+    assert window._humor_worker is not None
+    assert window._humor_worker.wait(3000)  # let the background fetch finish
+    # Process the queued joke_ready signal on the UI thread.
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._humor_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "test joke about cats" in window.speech_bubble.text()
+    window.close()
+
+
+def test_joke_respects_cooldown(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.character.state_machine import CharacterState
+
+    window = PetWindow()
+    monkeypatch.setattr("app.character.pet.random.random", lambda: 0.0)
+    window._last_joke_time = time.time()  # just told one
+
+    window._apply_behavior_state(CharacterState.EXCITED)
+
+    assert window._humor_worker is None  # cooldown blocked it
+    window.close()
+
+
+def test_joke_never_fires_outside_bored_expressions(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.character.state_machine import CharacterState
+
+    window = PetWindow()
+    monkeypatch.setattr("app.character.pet.random.random", lambda: 0.0)
+
+    window._apply_behavior_state(CharacterState.HAPPY)  # not a bored expression
+
+    assert window._humor_worker is None
     window.close()
 
 

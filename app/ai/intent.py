@@ -149,6 +149,25 @@ def _matches_any(text: str, phrases: tuple[str, ...]) -> bool:
 
 REMINDER_TRIGGER = re.compile(r"\bremind me\b", re.IGNORECASE)
 TIMER_TRIGGER = re.compile(r"\b(set a timer|start a timer|timer for)\b", re.IGNORECASE)
+# Listing/query phrasing, checked BEFORE the creation triggers above so
+# something like "remind me what tasks I have" (contains "remind me" but
+# is clearly a query, not a new reminder) still resolves correctly.
+# Deliberately its own local, deterministic DB read (see chat_engine.py)
+# rather than being left to the LLM - a factual "what's in my database"
+# question is exactly the kind of thing a small local model will
+# confidently hallucinate an answer to instead of admitting it doesn't
+# know (spec: "it can not read db, make it read db so it can answer").
+LIST_TASKS_TRIGGER = re.compile(
+    r"\b(do i have (any )?tasks?|what tasks?|list (my )?tasks?|show (me )?(my )?tasks?|"
+    r"any tasks?( to do)?|tasks? (for )?today)\b",
+    re.IGNORECASE,
+)
+LIST_REMINDERS_TRIGGER = re.compile(
+    r"\b(do i have (any )?reminders?|what reminders?|list (my )?reminders?|"
+    r"show (me )?(my )?reminders?|any reminders?|reminders? (for )?today|"
+    r"what(\'s| is) on my (reminders|schedule))\b",
+    re.IGNORECASE,
+)
 TASK_TRIGGER = re.compile(
     r"\b(remember (that )?i need to|add (a )?task|todo:?)\b", re.IGNORECASE
 )
@@ -247,6 +266,27 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
             response="Mrrp? Say something!",
+        )
+
+    # --- Task/reminder listing (a real DB read, see chat_engine.py) ---
+    # Checked first, before the creation triggers below, so query phrasing
+    # that happens to contain "remind me" (e.g. "remind me what tasks I
+    # have") still resolves as a listing request, not a new reminder.
+    if LIST_TASKS_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="list_tasks",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from the real task list
+            tool="list_tasks",
+        )
+    if LIST_REMINDERS_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="list_reminders",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from the real reminder list
+            tool="list_reminders",
         )
 
     # --- Reminders -------------------------------------------------
