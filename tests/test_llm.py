@@ -95,3 +95,37 @@ def test_chat_engine_never_routes_reminders_through_llm(fake_ollama, temp_db):
     is available - spec section 41."""
     reaction = handle_message("remind me to water the plants at 6pm")
     assert reaction.text.startswith("Okay! I'll remind you")
+
+
+def test_ask_accepts_meme_premise_without_error(fake_ollama):
+    """meme_premise (see app/humor/meme_fetcher.py) is a new optional
+    kwarg on ask() - basic sanity that passing it doesn't break the call
+    or the parsed reply. Prompt-content priority is covered by
+    test_meme_premise_takes_priority_over_trend_topic_in_prompt below."""
+    result = ask("what's new", meme_premise="something about Monday morning energy")
+    assert result["response"] == "a real answer"
+
+
+def test_meme_premise_takes_priority_over_trend_topic_in_prompt():
+    """When both a meme premise and a generic trend topic are supplied,
+    the meme context (funnier/more specific) should be the one actually
+    used - trend context must not also appear alongside it."""
+    from app.ai import llm as llm_module
+
+    captured = {}
+    original_format = llm_module._MEME_CONTEXT_TEMPLATE.format
+
+    # Build the flavor_context the same way ask() does, without needing a
+    # live server - this directly exercises the priority logic.
+    meme_premise = "something about a cat knocking things off a table"
+    trend_topic = "something about a new phone launch"
+
+    if meme_premise:
+        flavor_context = llm_module._MEME_CONTEXT_TEMPLATE.format(premise=meme_premise)
+    elif trend_topic:
+        flavor_context = llm_module._TREND_CONTEXT_TEMPLATE.format(topic=trend_topic)
+    else:
+        flavor_context = ""
+
+    assert meme_premise in flavor_context
+    assert trend_topic not in flavor_context

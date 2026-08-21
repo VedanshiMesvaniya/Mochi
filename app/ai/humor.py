@@ -9,6 +9,13 @@ scraping arbitrary "trending meme" sites is fragile and ToS-risky compared
 to a small, purpose-built, no-auth joke API. This is effectively "current
 internet-sourced humor" in the one form that actually fits Mochi's UI.
 
+For actual current-meme awareness (not just generic dad jokes) feeding
+into live chat replies, see app/humor/meme_fetcher.py and
+app/humor/trend_fetcher.py - this module's job is specifically the
+autonomous "Mochi cracks a joke while bored" behavior in
+app/character/pet.py, kept separate since it needs to always return
+*something* instantly rather than depend on a cache that might be empty.
+
 This is one of the only places in Mochi that reaches out to the open
 internet for something that isn't an explicit integration the person
 turned on (spec section 28: "clearly show when a feature requires
@@ -41,16 +48,23 @@ JOKE_API_URL = "https://icanhazdadjoke.com/"
 REQUEST_TIMEOUT_SECONDS = 4
 
 # Always available offline, so "sense of humor" isn't purely a network
-# feature - just enhanced by one when it's enabled and reachable.
+# feature - just enhanced by one when it's enabled and reachable. Written
+# with actual meme-brain phrasing/timing (relatable "me at 3am" framing,
+# deadpan overreaction, internet-native beats) rather than a generic
+# knock-knock cadence, so "offline mode" doesn't mean "boring mode" - see
+# also SYSTEM_PROMPT's "Sense of humor" section in app/ai/llm.py for the
+# same voice applied to live chat.
 _FALLBACK_JOKES = (
-    "Why do cats make terrible storytellers? They only have one tail.",
-    "I asked my human for a cat tax. They said I already live rent-free.",
-    "Mrrp. I'd tell you a yarn joke but it might unravel.",
-    "Why was the cat sitting on the computer? To keep an eye on the mouse.",
-    "I'm not lazy, I'm just running in low-power mode. Like a real cat.",
-    "What do you call a pile of kittens? A meowntain.",
-    "I've got 9 lives and I'm still too tired to use most of them.",
-    "Why don't cats play poker in the jungle? Too many cheetahs.",
+    "Nobody: Absolutely nobody: Me, staring at your cursor like it owes me money.",
+    "POV: you opened a new tab three minutes ago and still haven't gone back to it. I'm judging you from the taskbar.",
+    "I asked my human for a cat tax. They said I already live rent-free. The audacity.",
+    "Nine lives and I've spent seven of them deciding whether to get off this windowsill.",
+    "Me: I should let them work. Also me, one second later: *sits directly on the keyboard*.",
+    "This is your hourly reminder that I am extremely small and extremely correct about everything.",
+    "Certified unhinged moment: I just chased a shadow for eleven seconds and I regret nothing.",
+    "No thoughts, head empty, just vibes and an aggressive need to be pet right now.",
+    "I would like to formally file a complaint that the laser dot always gets away.",
+    "Watching you debug is basically my Netflix. 10/10, would watch you suffer again.",
 )
 
 

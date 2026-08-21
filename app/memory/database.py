@@ -86,6 +86,19 @@ SCHEMA_STATEMENTS: list[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_trend_cache_expires ON trend_cache(expires_at);",
+    """
+    -- Meme-awareness cache (opt-in, shares settings.trend_awareness_enabled
+    -- with trend_cache above) - see app/humor/meme_fetcher.py. premise is
+    -- always a short paraphrase Mochi itself derives from a real meme post
+    -- title - never the verbatim title/caption, and never an image.
+    CREATE TABLE IF NOT EXISTS meme_cache (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        premise       TEXT NOT NULL,
+        fetched_at    TEXT NOT NULL,
+        expires_at    TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_meme_cache_expires ON meme_cache(expires_at);",
 ]
 
 

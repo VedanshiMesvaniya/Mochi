@@ -140,13 +140,19 @@ offline list if that's unreachable or disabled
 (`MOCHI_HUMOR_ENABLED=false` in `.env` for a fully offline Mochi).
 
 Separately, and **off by default**, Mochi can also stay lightly aware of
-what's actually trending right now (`MOCHI_TREND_AWARENESS_ENABLED=true`
-in `.env`) — it periodically pulls a handful of general headlines,
-reduces each to a short paraphrased topic label (never the raw headline
-text), and its LLM chat replies may casually reference one if it
-naturally fits the conversation. This is separate from the joke API above
-and talks to the open internet (Google News' public RSS feed, no account
-or API key needed), which is why it isn't on by default.
+what's actually trending — and what's actually funny — right now
+(`MOCHI_TREND_AWARENESS_ENABLED=true` in `.env`). This pulls two things on
+a slow background timer: general headlines
+(`app/humor/trend_fetcher.py`) and, more importantly for "meme level"
+humor, real current meme post premises from general-audience meme
+subreddits (`app/humor/meme_fetcher.py`, no login/API key needed). Both
+get reduced to a short paraphrased label/premise before caching — Mochi
+never stores or repeats the actual headline or meme caption text, and
+never fetches meme images — and its LLM chat replies may riff on a cached
+one in its own voice if it naturally fits, with the meme premise
+preferred over a generic headline when both are available. Talks to the
+open internet (Google News' RSS feed + Reddit's public JSON endpoints),
+which is why it's opt-in rather than on by default.
 
 ---
 
