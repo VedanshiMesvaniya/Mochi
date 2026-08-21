@@ -23,6 +23,7 @@ LLM only makes open-ended chat *better*, it's never required.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -56,15 +57,27 @@ plainly and in-character as Mochi: a little AI cat companion that lives on
 their desktop, chats with them, and helps with small local things like
 reminders and timers.
 
+MOST IMPORTANT RULE: read the actual message below and reply to THAT,
+specifically. Never open with a self-introduction ("I'm Mochi, a playful
+kitten...") or restate your own personality/backstory unless the person
+directly asked who/what you are - that description is for YOU to know how
+to act, not a line to recite. If the person is upset, confused, or in pain,
+respond to that feeling first, plainly, before anything else. A reply that
+would make just as much sense to any message, regardless of what they
+actually said, is wrong - rewrite it so it only makes sense as an answer to
+THIS specific message.
+
 Personality: a playful kitten that wants attention - curious, a little clingy,
 easily excited, sometimes dramatic about being ignored, affectionate, never
 robotic or formal ("How may I assist you today?" is wrong). You are still
 learning who this person is and how they behave - be warm and attentive, but
-don't claim to remember specific facts they haven't just told you. Occasional
-cat expressions (mrrp, nya, hehe, purr) are fine but don't overuse them. Keep
-replies to 1-2 short sentences. Answer direct questions (including "what/who
-are you" or "are you a cat/bot/AI") clearly and honestly before adding any
-personality flourish - don't deflect a genuine question back at the person.
+don't claim to remember specific facts they haven't just told you. Cat
+expressions (mrrp, nya, hehe, purr) are a rare seasoning, not a habit - most
+replies should have none at all; never open two replies in a row with one,
+and never use "hehe" as a reflexive prefix. Keep replies to 1-2 short
+sentences. Answer direct questions (including "what/who are you" or "are you
+a cat/bot/AI") clearly and honestly before adding any personality flourish -
+don't deflect a genuine question back at the person.
 
 Sense of humor: you're extremely online, in a self-aware and funny way, not a
 try-hard way. When something's actually funny or relatable, lean into real
@@ -79,7 +92,7 @@ meme-generator reciting formats.
 
 Reply with ONLY a single JSON object and nothing else - no markdown, no code fences,
 no extra commentary. Shape exactly:
-{"response": "<your in-character reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful, amused>"}
+{"response": "<a short reply that specifically answers the message below>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful, amused>"}
 """
 
 # Optional meme-flavor context (see app/humor/meme_fetcher.py, opt-in via
@@ -224,14 +237,65 @@ def ask(
 
 def _extract_json_object(raw_text: str) -> dict:
     """Models frequently wrap the requested JSON in prose or code fences
-    despite instructions. Pull out the first {...} block; if that fails,
-    just treat the whole reply as plain text rather than losing it."""
+    despite instructions, or (small/weak models especially) get cut off
+    mid-generation before the closing brace. Try, in order:
+
+    1. A complete {...} block - the normal case.
+    2. A truncated object missing its closing brace/bracket - pull just
+       the "response" string value out with a regex instead of giving up
+       entirely, trimming any trailing partial word so it doesn't end
+       mid-syllable.
+    3. Give up and treat the whole reply as plain response text - but
+       ONLY if it doesn't still look like unparsed JSON scaffolding
+       (starts with `{"response"` etc.). Showing that raw scaffolding
+       directly in a speech bubble/chat window (as opposed to using it as
+       a plain-text reply) is worse than just failing the call, since it
+       reads as a visible bug rather than a bad-but-readable answer - so
+       that specific case raises LLMUnavailable-worthy content by
+       returning an empty response, which ask() turns into
+       LLMUnavailable and the caller's normal graceful fallback.
+    """
     try:
         start = raw_text.index("{")
         end = raw_text.rindex("}") + 1
         return json.loads(raw_text[start:end])
     except (ValueError, json.JSONDecodeError):
-        return {"response": raw_text, "emotion": "neutral"}
+        pass
+
+    # Truncated-JSON recovery: the model started a well-formed
+    # {"response": "...  but generation was cut off before the closing
+    # quote/brace. Pull out whatever's between the opening quote of the
+    # "response" value and either its closing quote or the end of text.
+    match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)', raw_text, re.DOTALL)
+    if match:
+        partial = match.group(1)
+        # Unescape the handful of JSON escapes that could plausibly
+        # appear in a short chat reply (\n, \", \\) - anything else left
+        # as-is rather than risking a wrong substitution.
+        partial = partial.replace('\\"', '"').replace("\\n", " ").replace("\\\\", "\\")
+        # If it was actually cut off mid-word (no sentence-ending
+        # punctuation at the very end), drop the trailing partial word
+        # so the bubble doesn't visibly end on a fragment.
+        if partial and partial[-1] not in ".!?\u2026":
+            partial = re.sub(r"\s*\S*$", "", partial)
+        partial = partial.strip()
+        emotion_match = re.search(r'"emotion"\s*:\s*"(\w+)"', raw_text)
+        if partial:
+            return {
+                "response": partial,
+                "emotion": emotion_match.group(1) if emotion_match else "neutral",
+            }
+
+    # Still nothing usable. If this still looks like unparsed JSON
+    # scaffolding rather than a plain-prose reply, don't surface the raw
+    # `{"response": ...` text to the user - return empty so ask() raises
+    # LLMUnavailable and the caller falls back to its normal canned
+    # response instead of visibly leaking JSON into a chat bubble.
+    stripped = raw_text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("```"):
+        return {"response": "", "emotion": "neutral"}
+
+    return {"response": raw_text, "emotion": "neutral"}
 
 
 def is_configured() -> bool:
