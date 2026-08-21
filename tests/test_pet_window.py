@@ -308,3 +308,67 @@ def test_shaking_the_window_via_real_mouse_events_triggers_dizzy(qapp, temp_db, 
 
     assert window.state_machine.state == CharacterState.DIZZY
     window.close()
+
+
+def test_refresh_trends_action_noops_when_disabled(qapp, monkeypatch):
+    """Manual 'Refresh trends & memes' menu action must not fire a network
+    call when the feature is off - respects the same opt-in gate as the
+    background job, even for an explicit manual request."""
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", False)
+
+    window._on_refresh_trends_requested()
+
+    assert window._refresh_trends_worker is None
+    assert "off right now" in window.speech_bubble.text()
+    window.close()
+
+
+def test_refresh_trends_action_runs_and_reports_counts(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 3)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 2)
+
+    window._on_refresh_trends_requested()
+    assert window._refresh_trends_worker is not None
+    assert window._refresh_trends_worker.wait(3000)
+
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._refresh_trends_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "3 trend(s) and 2 meme(s)" in window.speech_bubble.text()
+    window.close()
+
+
+def test_refresh_trends_action_reports_nothing_new(qapp, monkeypatch):
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 0)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 0)
+
+    window._on_refresh_trends_requested()
+    assert window._refresh_trends_worker.wait(3000)
+
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._refresh_trends_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "offline" in window.speech_bubble.text()
+    window.close()

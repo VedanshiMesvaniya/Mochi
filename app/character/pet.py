@@ -94,6 +94,37 @@ class _HumorWorker(QThread):
         self.joke_ready.emit(joke)
 
 
+class _RefreshTrendsWorker(QThread):
+    """Manual "Refresh trends & memes" action (right-click menu) - runs
+    app/humor/trend_fetcher.py + app/humor/meme_fetcher.py's network
+    fetches off the UI thread, same reasoning as _HumorWorker above.
+
+    This is the on-demand counterpart to whatever periodic background
+    schedule main.py sets up for these two modules (see the "Background
+    scheduling note" at the bottom of each) - lets the person force an
+    immediate re-crawl right before chatting, instead of waiting for the
+    next scheduled interval.
+    """
+
+    finished_ok = Signal(int, int)  # (trend_count, meme_count)
+    finished_error = Signal()
+
+    def run(self) -> None:  # noqa: D102 - QThread override
+        # Local imports - keeps these network-adjacent modules out of
+        # pet.py's always-loaded surface, same reasoning as _HumorWorker.
+        from app.humor.meme_fetcher import fetch_memes
+        from app.humor.trend_fetcher import fetch_trends
+
+        try:
+            trend_count = fetch_trends()
+            meme_count = fetch_memes()
+        except Exception:  # noqa: BLE001 - a manual refresh must never crash the app
+            logger.exception("Manual trend/meme refresh failed unexpectedly")
+            self.finished_error.emit()
+            return
+        self.finished_ok.emit(trend_count, meme_count)
+
+
 def _is_dark_mode() -> bool:
     """Best-effort OS/desktop dark-mode detection (Qt6's cross-platform
     color-scheme API - Windows, macOS, and most Linux desktop environments
@@ -209,6 +240,7 @@ class PetWindow(QWidget):
         self._chat_window = None
         self._humor_worker: Optional[_HumorWorker] = None
         self._last_joke_time: float = 0.0
+        self._refresh_trends_worker: Optional[_RefreshTrendsWorker] = None
 
         self.lock_watcher = LockWatcher(parent=self)
 
@@ -286,6 +318,7 @@ class PetWindow(QWidget):
         self.context_menu = QMenu(self)
         self.action_chat = QAction("Chat", self)
         self.action_memories = QAction("Memories", self)
+        self.action_refresh_trends = QAction("Refresh trends && memes", self)
         self.action_settings = QAction("Settings", self)
         self.action_sleep = QAction("Sleep", self)
         self.action_exit = QAction("Exit", self)
@@ -295,10 +328,12 @@ class PetWindow(QWidget):
             lambda: self.state_machine.set_state(CharacterState.SLEEP)
         )
         self.action_chat.triggered.connect(self.on_open_chat_requested)
+        self.action_refresh_trends.triggered.connect(self._on_refresh_trends_requested)
 
         for action in (
             self.action_chat,
             self.action_memories,
+            self.action_refresh_trends,
             self.action_settings,
             self.action_sleep,
             self.action_exit,
@@ -501,6 +536,51 @@ class PetWindow(QWidget):
         if self._humor_worker is not None:
             self._humor_worker.deleteLater()
             self._humor_worker = None
+
+    def _on_refresh_trends_requested(self) -> None:
+        """"Refresh trends & memes" menu action - manually force an
+        immediate re-crawl of app/humor/trend_fetcher.py +
+        app/humor/meme_fetcher.py rather than waiting for the next
+        scheduled background interval. No-ops (with an explanatory
+        speech bubble) if the feature is off entirely, since firing a
+        network call the person has explicitly disabled would be wrong
+        even on an explicit manual request.
+        """
+        if not settings.trend_awareness_enabled:
+            self.show_speech_bubble(
+                "Trend/meme awareness is off right now - "
+                "turn on MOCHI_TREND_AWARENESS_ENABLED to use this.",
+                duration_ms=6000,
+            )
+            return
+        if self._refresh_trends_worker is not None:
+            return  # already refreshing
+        self.show_speech_bubble("Crawling for what's new... give me a sec!", duration_ms=4000)
+        self._refresh_trends_worker = _RefreshTrendsWorker(self)
+        self._refresh_trends_worker.finished_ok.connect(self._on_refresh_trends_done)
+        self._refresh_trends_worker.finished_error.connect(self._on_refresh_trends_failed)
+        self._refresh_trends_worker.start()
+
+    def _on_refresh_trends_done(self, trend_count: int, meme_count: int) -> None:
+        if self._refresh_trends_worker is not None:
+            self._refresh_trends_worker.deleteLater()
+            self._refresh_trends_worker = None
+        if trend_count == 0 and meme_count == 0:
+            self.show_speech_bubble(
+                "Couldn't reach anything new just now - might be offline. I'll try again later!",
+                duration_ms=6000,
+            )
+            return
+        self.show_speech_bubble(
+            f"All caught up! Got {trend_count} trend(s) and {meme_count} meme(s) fresh.",
+            duration_ms=6000,
+        )
+
+    def _on_refresh_trends_failed(self) -> None:
+        if self._refresh_trends_worker is not None:
+            self._refresh_trends_worker.deleteLater()
+            self._refresh_trends_worker = None
+        self.show_speech_bubble("Hmm, that refresh didn't work. I'll try again later!", duration_ms=6000)
 
     # ------------------------------------------------------------------
     # Mouse interaction (spec section 13)
