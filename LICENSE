@@ -37,10 +37,6 @@ conditions:
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    SOFTWARE.
 
-This is a custom license and is not a Claude/lawyer-reviewed legal
-document - if you need enforceable legal certainty (e.g. for a
-commercial dispute), have it reviewed by an actual lawyer.
-
 ---
 
 This project uses third-party libraries and models, each under their own
