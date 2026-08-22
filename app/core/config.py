@@ -83,6 +83,16 @@ class Settings:
     # events yet - that's V4, and per spec section 23 will require
     # explicit per-action confirmation even once it lands.
     google_calendar_enabled: bool = False
+    # V4 (spec section 23, "Level 3 - Calendar control"): widens the
+    # requested OAuth scope from calendar.readonly to calendar.events so
+    # Mochi can create/update/delete events - but ONLY after the user
+    # explicitly confirms each individual action in chat (see
+    # app/ai/chat_engine.py's pending_action confirmation flow). This
+    # flag does not itself grant write access - it only changes what
+    # scope the *next* "connect my calendar" flow requests; an
+    # already-connected read-only token still can't write until the user
+    # reconnects (see app/calendar/google_calendar.py's capability check).
+    google_calendar_write_enabled: bool = False
     # OAuth 2.0 "installed app" client secret, downloaded from Google
     # Cloud Console (APIs & Services -> Credentials -> OAuth client ID ->
     # Desktop app) - see README's Calendar section for the one-time setup
@@ -166,6 +176,9 @@ class Settings:
             ),
             google_calendar_enabled=_bool(
                 os.getenv("MOCHI_GOOGLE_CALENDAR_ENABLED"), False
+            ),
+            google_calendar_write_enabled=_bool(
+                os.getenv("MOCHI_GOOGLE_CALENDAR_WRITE_ENABLED"), False
             ),
             google_client_secret_filename=os.getenv(
                 "MOCHI_GOOGLE_CLIENT_SECRET_FILENAME", "google_credentials.json"

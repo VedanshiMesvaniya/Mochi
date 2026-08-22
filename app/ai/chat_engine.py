@@ -18,6 +18,7 @@ available.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 from app.ai.intent import DetectedIntent, detect_intent
@@ -38,7 +39,7 @@ from app.memory import relationship
 from app.reminders import manager as reminder_manager
 from app.tasks import manager as task_manager
 from app.timers import manager as timer_manager
-from app.tools import reminder_tools, task_tools, timer_tools
+from app.tools import calendar_tools, reminder_tools, task_tools, timer_tools
 
 logger = get_logger("mochi.ai.chat_engine")
 
@@ -74,6 +75,15 @@ class ChatReaction:
     emotion: Emotion
     animation: CharacterState
     sound: str | None = None
+    # Spec section 23 (V4): a calendar write proposed but not yet
+    # confirmed - e.g. {"kind": "calendar_create", "title": ..., "start_iso": ...}
+    # or {"kind": "calendar_delete", "event_id": ..., "title": ...}. The
+    # calling chat window (app/ui/chat_window.py) is responsible for
+    # holding onto this between messages and passing it back into the
+    # next handle_message() call as `pending_action` - chat_engine itself
+    # is otherwise stateless between calls, same as everything else here.
+    # None means "nothing awaiting confirmation."
+    pending_action: Optional[dict] = None
 
 
 def _emotion_and_animation(name: str) -> tuple[Emotion, CharacterState]:
@@ -224,6 +234,169 @@ def _calendar_disconnect_reaction() -> "ChatReaction":
     return ChatReaction(text=text, emotion=Emotion.NEUTRAL, animation=CharacterState.IDLE)
 
 
+# ---------------------------------------------------------------------------
+# Google Calendar writes (spec section 23, V4) - propose, then confirm.
+#
+# Nothing here ever calls app/tools/calendar_tools.py's create_event/
+# update_event/delete_event with confirmed=True except _resolve_pending_action,
+# and that only runs once the user's *next* message is recognized as an
+# explicit "yes" (see _classify_confirmation) in response to a proposal
+# this module itself generated. A stray/hallucinated "create an event"
+# tool call from anywhere else in the app has no path to actually writing
+# anything - the confirmation gate lives here, not in the LLM's judgement.
+# ---------------------------------------------------------------------------
+
+# Deliberately short, exact-phrase matching (not substring/regex) - a
+# confirmation is a yes/no decision about something specific and
+# consequential (spec section 23), so it should require an unambiguous
+# reply rather than accidentally firing because "yes" appears inside a
+# longer, unrelated sentence.
+_CONFIRM_PHRASES = {
+    "yes", "yeah", "yep", "yup", "confirm", "sure", "ok", "okay",
+    "do it", "go ahead", "add it", "please do", "please", "confirmed",
+}
+_CANCEL_PHRASES = {
+    "no", "nope", "nah", "cancel", "never mind", "nevermind",
+    "don't", "dont", "stop", "no thanks",
+}
+
+
+def _classify_confirmation(text: str) -> Optional[bool]:
+    cleaned = text.strip().lower().strip(" .!?")
+    if cleaned in _CONFIRM_PHRASES:
+        return True
+    if cleaned in _CANCEL_PHRASES:
+        return False
+    return None
+
+
+def _describe_when(start_iso: str) -> str:
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+    except ValueError:
+        return start_iso
+    return start_dt.strftime("%a %b %d at %H:%M")
+
+
+def _calendar_create_proposal(tool_args: dict) -> "ChatReaction":
+    title = tool_args["title"]
+    start_iso = tool_args["start_iso"]
+    when = _describe_when(start_iso)
+    return ChatReaction(
+        text=(
+            f"I found this:\n\n{title}\n{when}\n\n"
+            "Add it to your Google Calendar? (yes/no)"
+        ),
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+        pending_action={"kind": "calendar_create", "title": title, "start_iso": start_iso},
+    )
+
+
+def _calendar_delete_proposal(tool_args: dict) -> "ChatReaction":
+    query = tool_args.get("query")
+    time_of_day = tool_args.get("time_of_day")
+    around = None
+    if time_of_day:
+        try:
+            around = datetime.strptime(time_of_day, "%H:%M")
+        except ValueError:
+            around = None
+
+    try:
+        matches = google_calendar.find_event(query=query, around=around)
+    except CalendarError as exc:
+        return _calendar_error_reaction(exc)
+
+    if not matches:
+        return ChatReaction(
+            text="I couldn't find a matching event on your calendar in the next couple of days.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    target = matches[0]
+    when = _format_event(target)
+    extra = (
+        f" (+{len(matches) - 1} other possible match"
+        f"{'es' if len(matches) > 2 else ''} - tell me if this isn't the right one)"
+        if len(matches) > 1
+        else ""
+    )
+    return ChatReaction(
+        text=f"I found: {when}.{extra}\n\nCancel this event? (yes/no)",
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+        pending_action={
+            "kind": "calendar_delete",
+            "event_id": target["id"],
+            "title": target["title"],
+        },
+    )
+
+
+# Same shape/reasoning as _LIST_HANDLERS below, but for intents that
+# *propose* a write instead of reading data - each of these returns a
+# ChatReaction carrying a fresh `pending_action` for the confirmation
+# flow above, rather than executing anything immediately.
+_PROPOSAL_HANDLERS = {
+    "calendar_create_event": _calendar_create_proposal,
+    "calendar_delete_event": _calendar_delete_proposal,
+}
+
+
+def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
+    """Called only after the user's message was classified as an explicit
+    confirmation (see _classify_confirmation) for a proposal this module
+    itself generated last turn. Always calls the calendar_tools write
+    function with confirmed=True - the one and only place in the whole
+    app that ever does."""
+    kind = pending_action.get("kind")
+
+    if kind == "calendar_create":
+        try:
+            calendar_tools.create_event(
+                pending_action["title"], pending_action["start_iso"], confirmed=True
+            )
+        except MochiError as exc:
+            return ChatReaction(
+                text=f"Hmm, I couldn't add that: {exc}",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        return ChatReaction(
+            text=f"Done! Added \"{pending_action['title']}\" to your calendar.",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+
+    if kind == "calendar_delete":
+        try:
+            calendar_tools.delete_event(pending_action["event_id"], confirmed=True)
+        except MochiError as exc:
+            return ChatReaction(
+                text=f"Hmm, I couldn't cancel that: {exc}",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        return ChatReaction(
+            text=f"Done! Cancelled \"{pending_action['title']}\".",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+        )
+
+    # Should be unreachable (every place that sets pending_action uses a
+    # known `kind`) - but per spec section 41/36, never silently no-op on
+    # something we don't recognize.
+    logger.warning("Unknown pending_action kind: %r", kind)
+    return ChatReaction(
+        text="Hmm, I lost track of what we were confirming. Could you try again?",
+        emotion=Emotion.CONFUSED,
+        animation=CharacterState.CONFUSED,
+    )
+
+
 # Read-only DB queries (spec: "it can not read db, make it read db so it
 # can answer") plus the Google Calendar read/connect/disconnect actions -
 # handled entirely separately from _TOOL_MODULES below. Those are
@@ -245,7 +418,9 @@ _LIST_HANDLERS = {
 
 
 def handle_message(
-    text: str, history: Optional[list[tuple[str, str]]] = None
+    text: str,
+    history: Optional[list[tuple[str, str]]] = None,
+    pending_action: Optional[dict] = None,
 ) -> ChatReaction:
     """Process one chat message end-to-end and return how Mochi should react.
 
@@ -256,18 +431,59 @@ def handle_message(
     used for the open-ended LLM fallback below; deterministic intents
     (reminders/tasks/etc.) don't need conversational context to act
     correctly on a single, self-contained command.
+
+    `pending_action` (spec section 23, V4) is a calendar write this
+    module proposed on a *previous* call and is still awaiting a yes/no
+    answer for - also owned by the calling chat window, which is expected
+    to pass back whatever the previous ChatReaction.pending_action was.
+    If the message is an unambiguous confirmation/cancellation, it's
+    resolved here before anything else runs; otherwise it's carried
+    forward unchanged in the returned ChatReaction so an unrelated
+    message in between doesn't silently drop it.
     """
+    if pending_action is not None:
+        confirmation = _classify_confirmation(text)
+        if confirmation is True:
+            return _resolve_pending_action(pending_action)
+        if confirmation is False:
+            return ChatReaction(
+                text="Okay, never mind!",
+                emotion=Emotion.NEUTRAL,
+                animation=CharacterState.IDLE,
+            )
+        # Anything else: not a clear yes/no, so fall through to normal
+        # handling below and keep waiting - the pending_action is carried
+        # forward at every return point past this one.
+
     intent: DetectedIntent = detect_intent(text)
 
     if intent.name in _LIST_HANDLERS:
         try:
-            return _LIST_HANDLERS[intent.name]()
+            reaction = _LIST_HANDLERS[intent.name]()
         except Exception:  # noqa: BLE001 - never let a bad DB read crash chat
             logger.exception("Failed to read DB for intent '%s'", intent.name)
-            return ChatReaction(
+            reaction = ChatReaction(
                 text="Hmm, I couldn't check that just now.",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
+            )
+        reaction.pending_action = pending_action
+        return reaction
+
+    if intent.name in _PROPOSAL_HANDLERS:
+        try:
+            # Proposal handlers always set their own fresh pending_action
+            # on the returned reaction - this deliberately replaces
+            # whatever was passed in, since starting a new write request
+            # supersedes an old unconfirmed one rather than stacking them.
+            return _PROPOSAL_HANDLERS[intent.name](intent.tool_args)
+        except Exception:  # noqa: BLE001 - never let a bad proposal crash chat
+            logger.exception("Failed to build proposal for intent '%s'", intent.name)
+            return ChatReaction(
+                text="Oops, something went wrong setting that up.",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+                pending_action=pending_action,
             )
 
     try:
@@ -343,6 +559,7 @@ def handle_message(
                     text=f"Hmm, I couldn't do that: {exc}",
                     emotion=Emotion.CONFUSED,
                     animation=CharacterState.CONFUSED,
+                    pending_action=pending_action,
                 )
             except Exception:  # noqa: BLE001 - never let a bad tool crash chat
                 logger.exception("Unexpected error running tool '%s'", intent.tool)
@@ -350,6 +567,13 @@ def handle_message(
                     text="Oops, something went wrong on my end.",
                     emotion=Emotion.CONFUSED,
                     animation=CharacterState.CONFUSED,
+                    pending_action=pending_action,
                 )
 
-    return ChatReaction(text=response, emotion=emotion, animation=animation, sound=sound)
+    return ChatReaction(
+        text=response,
+        emotion=emotion,
+        animation=animation,
+        sound=sound,
+        pending_action=pending_action,
+    )

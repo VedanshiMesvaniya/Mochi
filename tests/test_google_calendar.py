@@ -42,15 +42,27 @@ class _FakeCredentials:
 
     next_instance = None
 
-    def __init__(self, valid=True, expired=False, refresh_token="rt", raise_on_refresh=False):
+    def __init__(
+        self,
+        valid=True,
+        expired=False,
+        refresh_token="rt",
+        raise_on_refresh=False,
+        scopes=None,
+    ):
         self.valid = valid
         self.expired = expired
         self.refresh_token = refresh_token
         self._raise_on_refresh = raise_on_refresh
+        # Defaults to read-only - matches what V3's tests (which never
+        # touch settings.google_calendar_write_enabled) expect a
+        # connected token to have. V4 tests override this explicitly to
+        # exercise the read/write capability check.
+        self.scopes = scopes if scopes is not None else [google_calendar.SCOPE_READONLY]
         self.refreshed = False
 
     @classmethod
-    def from_authorized_user_file(cls, path, scopes):
+    def from_authorized_user_file(cls, path, scopes=None):
         if cls.next_instance is None:
             raise ValueError("no fake token configured")
         return cls.next_instance
@@ -74,12 +86,14 @@ class _FakeFlow:
     """Stands in for InstalledAppFlow."""
 
     last_secrets_path = None
+    last_scopes = None
     run_local_server_result = None
     run_local_server_raises = None
 
     @classmethod
     def from_client_secrets_file(cls, path, scopes):
         cls.last_secrets_path = path
+        cls.last_scopes = scopes
         return cls()
 
     def run_local_server(self, port=0, timeout_seconds=None):
@@ -104,9 +118,23 @@ class _FakeEventsResource:
         self._response = response
         self._raises = raises
         self.last_kwargs = None
+        self.last_call = None  # (method_name, kwargs) for insert/patch/delete assertions
 
     def list(self, **kwargs):
         self.last_kwargs = kwargs
+        self.last_call = ("list", kwargs)
+        return _FakeEventsList(self._response, self._raises)
+
+    def insert(self, **kwargs):
+        self.last_call = ("insert", kwargs)
+        return _FakeEventsList(self._response, self._raises)
+
+    def patch(self, **kwargs):
+        self.last_call = ("patch", kwargs)
+        return _FakeEventsList(self._response, self._raises)
+
+    def delete(self, **kwargs):
+        self.last_call = ("delete", kwargs)
         return _FakeEventsList(self._response, self._raises)
 
 
@@ -141,6 +169,7 @@ def _isolate(monkeypatch, temp_config_dir):
     google_calendar._service_cache = None
     _FakeCredentials.next_instance = None
     _FakeFlow.last_secrets_path = None
+    _FakeFlow.last_scopes = None
     _FakeFlow.run_local_server_result = None
     _FakeFlow.run_local_server_raises = None
     yield
@@ -394,3 +423,211 @@ def test_disconnect_clears_cached_service(enabled, monkeypatch):
     google_calendar.disconnect()
 
     assert google_calendar._service_cache is None
+
+
+# ---------------------------------------------------------------------------
+# V4: capability levels (read-only vs read+write scope)
+# ---------------------------------------------------------------------------
+
+
+def test_connect_requests_readonly_scope_by_default(enabled, monkeypatch):
+    monkeypatch.setattr(settings, "google_calendar_write_enabled", False)
+    _patch_libraries(monkeypatch)
+    settings.google_client_secret_path.write_text("{}", encoding="utf-8")
+    _FakeFlow.run_local_server_result = _FakeCredentials(valid=True)
+
+    google_calendar.connect()
+
+    assert _FakeFlow.last_scopes == [google_calendar.SCOPE_READONLY]
+
+
+def test_connect_requests_events_scope_when_write_enabled(enabled, monkeypatch):
+    monkeypatch.setattr(settings, "google_calendar_write_enabled", True)
+    _patch_libraries(monkeypatch)
+    settings.google_client_secret_path.write_text("{}", encoding="utf-8")
+    _FakeFlow.run_local_server_result = _FakeCredentials(valid=True)
+
+    google_calendar.connect()
+
+    assert _FakeFlow.last_scopes == [google_calendar.SCOPE_EVENTS]
+
+
+def test_readonly_token_insufficient_when_write_required(enabled, monkeypatch):
+    import datetime as dt
+
+    monkeypatch.setattr(settings, "google_calendar_write_enabled", True)
+    _patch_libraries(monkeypatch)
+    settings.google_token_path.write_text("{}", encoding="utf-8")
+    _FakeCredentials.next_instance = _FakeCredentials(
+        valid=True, scopes=[google_calendar.SCOPE_READONLY]
+    )
+
+    with pytest.raises(GoogleCalendarNotConnected, match="edit permission"):
+        google_calendar.create_event("Sync", dt.datetime(2026, 8, 15, 17, 0))
+
+
+def test_events_token_sufficient_when_write_required(enabled, monkeypatch):
+    import datetime as dt
+
+    monkeypatch.setattr(settings, "google_calendar_write_enabled", True)
+    service = _FakeService(response={"id": "abc", "summary": "Sync", "start": {"dateTime": "2026-08-15T17:00:00"}, "end": {"dateTime": "2026-08-15T18:00:00"}})
+    _patch_libraries(monkeypatch, build_fn=lambda *a, **k: service)
+    settings.google_token_path.write_text("{}", encoding="utf-8")
+    _FakeCredentials.next_instance = _FakeCredentials(
+        valid=True, scopes=[google_calendar.SCOPE_EVENTS]
+    )
+
+    event = google_calendar.create_event("Sync", dt.datetime(2026, 8, 15, 17, 0))
+
+    assert event["title"] == "Sync"
+
+
+def test_events_token_also_covers_reading_when_write_not_required(enabled, monkeypatch):
+    """A token connected with write scope should still work fine for plain
+    reads once write access is turned back off (calendar.events covers
+    viewing too - capability level 2 satisfies a required level of 1)."""
+    monkeypatch.setattr(settings, "google_calendar_write_enabled", False)
+    _connect_valid_token(monkeypatch, lambda *a, **k: _FakeService(response={"items": []}))
+    _FakeCredentials.next_instance.scopes = [google_calendar.SCOPE_EVENTS]
+
+    assert google_calendar.get_today_events() == []
+
+
+# ---------------------------------------------------------------------------
+# V4: create_event / update_event / delete_event / find_event
+# ---------------------------------------------------------------------------
+
+
+def _connect_write_token(monkeypatch, build_fn):
+    monkeypatch.setattr(settings, "google_calendar_write_enabled", True)
+    _patch_libraries(monkeypatch, build_fn=build_fn)
+    settings.google_token_path.write_text("{}", encoding="utf-8")
+    _FakeCredentials.next_instance = _FakeCredentials(
+        valid=True, scopes=[google_calendar.SCOPE_EVENTS]
+    )
+
+
+def test_create_event_sends_expected_body(enabled, monkeypatch):
+    import datetime as dt
+
+    service = _FakeService(
+        response={
+            "id": "abc",
+            "summary": "Sync",
+            "start": {"dateTime": "2026-08-15T17:00:00-07:00"},
+            "end": {"dateTime": "2026-08-15T18:00:00-07:00"},
+        }
+    )
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    event = google_calendar.create_event(
+        "Sync", dt.datetime(2026, 8, 15, 17, 0), location="Zoom"
+    )
+
+    assert event["id"] == "abc"
+    assert event["title"] == "Sync"
+    method, kwargs = service._events.last_call
+    assert method == "insert"
+    assert kwargs["body"]["summary"] == "Sync"
+    assert kwargs["body"]["location"] == "Zoom"
+    assert kwargs["body"]["start"]["dateTime"].startswith("2026-08-15T17:00:00")
+    # end defaults to start + 1 hour when not given
+    assert kwargs["body"]["end"]["dateTime"].startswith("2026-08-15T18:00:00")
+
+
+def test_create_event_all_day_uses_date_not_datetime(enabled, monkeypatch):
+    import datetime as dt
+
+    service = _FakeService(response={"id": "abc", "summary": "Holiday", "start": {"date": "2026-08-15"}, "end": {"date": "2026-08-16"}})
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    google_calendar.create_event(
+        "Holiday", dt.datetime(2026, 8, 15), all_day=True
+    )
+
+    method, kwargs = service._events.last_call
+    assert kwargs["body"]["start"] == {"date": "2026-08-15"}
+
+
+def test_create_event_http_error_wrapped(enabled, monkeypatch):
+    import datetime as dt
+
+    service = _FakeService(raises=_FakeHttpError("nope"))
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    with pytest.raises(CalendarError):
+        google_calendar.create_event("Sync", dt.datetime(2026, 8, 15, 17, 0))
+
+
+def test_update_event_only_sends_given_fields(enabled, monkeypatch):
+    service = _FakeService(response={"id": "evt1", "summary": "New title", "start": {}, "end": {}})
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    google_calendar.update_event("evt1", title="New title")
+
+    method, kwargs = service._events.last_call
+    assert method == "patch"
+    assert kwargs["eventId"] == "evt1"
+    assert kwargs["body"] == {"summary": "New title"}
+
+
+def test_update_event_with_nothing_to_update_raises(enabled, monkeypatch):
+    _connect_write_token(monkeypatch, lambda *a, **k: _FakeService())
+    with pytest.raises(CalendarError):
+        google_calendar.update_event("evt1")
+
+
+def test_delete_event_calls_delete_with_event_id(enabled, monkeypatch):
+    service = _FakeService(response={})
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    google_calendar.delete_event("evt1")
+
+    method, kwargs = service._events.last_call
+    assert method == "delete"
+    assert kwargs["eventId"] == "evt1"
+
+
+def test_delete_event_http_error_wrapped(enabled, monkeypatch):
+    service = _FakeService(raises=_FakeHttpError("nope"))
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    with pytest.raises(CalendarError):
+        google_calendar.delete_event("evt1")
+
+
+def test_find_event_filters_by_time_of_day(enabled, monkeypatch):
+    import datetime as dt
+
+    response = {
+        "items": [
+            {"id": "e1", "summary": "Standup", "start": {"dateTime": "2026-08-15T09:00:00-07:00"}, "end": {"dateTime": "2026-08-15T09:15:00-07:00"}},
+            {"id": "e2", "summary": "1:1", "start": {"dateTime": "2026-08-15T17:10:00-07:00"}, "end": {"dateTime": "2026-08-15T17:40:00-07:00"}},
+            {"id": "e3", "summary": "Lunch", "start": {"dateTime": "2026-08-15T12:00:00-07:00"}, "end": {"dateTime": "2026-08-15T13:00:00-07:00"}},
+        ]
+    }
+    _connect_valid_token(monkeypatch, lambda *a, **k: _FakeService(response=response))
+
+    matches = google_calendar.find_event(around=dt.datetime(2026, 1, 1, 17, 0))
+
+    assert [m["id"] for m in matches] == ["e2"]
+
+
+def test_find_event_without_around_returns_everything_in_window(enabled, monkeypatch):
+    response = {"items": [{"id": "e1", "summary": "Standup", "start": {"dateTime": "2026-08-15T09:00:00-07:00"}, "end": {}}]}
+    _connect_valid_token(monkeypatch, lambda *a, **k: _FakeService(response=response))
+
+    matches = google_calendar.find_event()
+
+    assert len(matches) == 1
+
+
+def test_find_event_ignores_all_day_events_when_matching_time(enabled, monkeypatch):
+    import datetime as dt
+
+    response = {"items": [{"id": "e1", "summary": "Holiday", "start": {"date": "2026-08-15"}, "end": {"date": "2026-08-16"}}]}
+    _connect_valid_token(monkeypatch, lambda *a, **k: _FakeService(response=response))
+
+    matches = google_calendar.find_event(around=dt.datetime(2026, 1, 1, 17, 0))
+
+    assert matches == []

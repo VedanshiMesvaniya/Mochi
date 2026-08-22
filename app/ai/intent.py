@@ -212,6 +212,33 @@ CALENDAR_UPCOMING_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 
+# --- Google Calendar writes (spec section 23, V4: create/cancel events,
+# both requiring confirmation - see app/ai/chat_engine.py's
+# propose-then-confirm flow, which is the only place either of these
+# DetectedIntents' tool_args actually get executed). Checked after the
+# read-only calendar triggers above so e.g. "what's on my calendar" is
+# never misread as a create/delete request.
+CALENDAR_CREATE_TRIGGER = re.compile(
+    r"\b(?:add|create|schedule|book) (?:a |an |the )?(meeting|event|appointment|call)\b",
+    re.IGNORECASE,
+)
+# Lookahead rather than requiring the noun immediately after the verb -
+# spec example "Cancel my 5 PM meeting" has the time-of-day sitting
+# between them, so "cancel" + noun just need to both appear within a
+# short span, not be adjacent. Zero-width match (ends right after the
+# verb) so downstream code can search the *entire* remaining message
+# (verb onward) for both the time-of-day and the noun itself, since
+# either can appear on either side of the other ("cancel my 5pm meeting"
+# vs "cancel my meeting with Devika").
+CALENDAR_DELETE_TRIGGER = re.compile(
+    r"\b(?:cancel|delete|remove)\b(?=.{0,40}?\b(?:meeting|event|appointment|call)\b)",
+    re.IGNORECASE,
+)
+# Bare time-of-day like "5 pm" / "5:30pm" - used to figure out *which*
+# event a delete command means (spec example: "Cancel my 5 PM meeting"),
+# distinct from TIME_AT above since that one requires the word "at".
+CALENDAR_DELETE_TIME = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", re.IGNORECASE)
+
 TIME_AT = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 TIME_IN = re.compile(
     r"\bin\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b", re.IGNORECASE
@@ -371,6 +398,88 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=CharacterState.THINKING,
             response="",
             tool="calendar_upcoming",
+        )
+
+    # --- Google Calendar writes (spec section 23, V4) -------------------
+    # Matched against `text` (not `lowered`) like the reminder-parsing
+    # block below, since group text here needs to preserve the original
+    # casing for the title (e.g. "Devika", not "devika").
+    create_match = CALENDAR_CREATE_TRIGGER.search(text)
+    if create_match:
+        noun = create_match.group(1).capitalize()
+        body = text[create_match.end():].strip()
+        due = _parse_absolute_time(body, now)
+        minutes = _parse_relative_minutes(body)
+        if due is None and minutes is not None:
+            due = now + timedelta(minutes=minutes)
+
+        # Build a title from whatever's left after stripping the time
+        # clause, e.g. "schedule a meeting with Devika tomorrow at 5pm"
+        # -> noun="Meeting", suffix="with Devika" -> "Meeting with Devika".
+        suffix = TIME_AT.sub("", body)
+        suffix = TIME_IN.sub("", suffix)
+        suffix = re.sub(r"\btomorrow\b", "", suffix, flags=re.IGNORECASE)
+        suffix = suffix.strip(" ,.!")
+        title = f"{noun} {suffix}" if suffix else noun
+        title = title[:1].upper() + title[1:]
+
+        if due is None:
+            return DetectedIntent(
+                name="calendar_create_needs_time",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+                response=(
+                    f"Got it - \"{title}\" - but when? Try "
+                    "\"tomorrow at 5pm\" or \"in 2 hours\"."
+                ),
+            )
+        return DetectedIntent(
+            name="calendar_create_event",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine builds the confirmation prompt
+            tool="calendar_create_event",
+            tool_args={"title": title, "start_iso": due.isoformat()},
+        )
+
+    delete_match = CALENDAR_DELETE_TRIGGER.search(text)
+    if delete_match:
+        body = text[delete_match.end():].strip()
+        time_match = CALENDAR_DELETE_TIME.search(body)
+        query = None
+        time_of_day = None
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2) or 0)
+            meridiem = time_match.group(3).lower()
+            if meridiem == "pm" and hour != 12:
+                hour += 12
+            elif meridiem == "am" and hour == 12:
+                hour = 0
+            time_of_day = f"{hour:02d}:{minute:02d}"
+        else:
+            # e.g. "cancel my meeting with Devika" -> search by title
+            # text: drop the noun itself ("meeting") plus filler words,
+            # leaving just the identifying part ("Devika").
+            noun_match = re.search(
+                r"\b(meeting|event|appointment|call)\b", body, re.IGNORECASE
+            )
+            cleaned = body
+            if noun_match:
+                cleaned = body[: noun_match.start()] + " " + body[noun_match.end():]
+            cleaned = re.sub(r"^\s*(my|the)\s+", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(
+                r"^(with|called|titled|about)\s+", "", cleaned, flags=re.IGNORECASE
+            )
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.!")
+            query = cleaned or None
+        return DetectedIntent(
+            name="calendar_delete_event",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine builds the confirmation prompt
+            tool="calendar_delete_event",
+            tool_args={"query": query, "time_of_day": time_of_day},
         )
 
     # --- Reminders -------------------------------------------------

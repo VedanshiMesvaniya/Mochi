@@ -208,3 +208,169 @@ def test_calendar_disconnect_reports_success(temp_db, monkeypatch):
     )
     reaction = handle_message("disconnect my calendar")
     assert "forgotten" in reaction.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar writes (spec section 23, V4: create/cancel, both requiring
+# explicit user confirmation)
+# ---------------------------------------------------------------------------
+
+
+def test_create_event_proposes_and_waits_for_confirmation(temp_db):
+    """The very first response to 'schedule a meeting...' must NOT create
+    anything yet - only propose it and wait."""
+    reaction = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    assert reaction.pending_action is not None
+    assert reaction.pending_action["kind"] == "calendar_create"
+    assert "devika" in reaction.pending_action["title"].lower()
+    assert "add it to your google calendar" in reaction.text.lower()
+
+
+def test_create_event_needs_time_asks_for_one(temp_db):
+    reaction = handle_message("schedule a meeting with Devika")
+    assert reaction.pending_action is None
+    assert "when" in reaction.text.lower()
+
+
+def test_create_event_never_falls_through_to_llm(temp_db, monkeypatch):
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("calendar create proposals must never reach the LLM")
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fail_if_called)
+    reaction = handle_message("add a meeting tomorrow at 5pm")
+    assert reaction.pending_action is not None
+
+
+def test_confirming_create_event_calls_calendar_tools_with_confirmed_true(
+    temp_db, monkeypatch
+):
+    calls = []
+
+    def _fake_create(title, start_iso, confirmed=False):
+        calls.append((title, start_iso, confirmed))
+        return {"id": "abc", "title": title}
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _fake_create)
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    pending = proposal.pending_action
+    assert pending is not None
+
+    reaction = handle_message("yes", pending_action=pending)
+
+    assert len(calls) == 1
+    assert calls[0][2] is True  # confirmed=True
+    assert reaction.pending_action is None
+    assert "added" in reaction.text.lower() or "done" in reaction.text.lower()
+    assert reaction.emotion == Emotion.HAPPY
+
+
+def test_declining_create_event_never_calls_calendar_tools(temp_db, monkeypatch):
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("declined action must never be executed")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _fail_if_called)
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    reaction = handle_message("no", pending_action=proposal.pending_action)
+
+    assert reaction.pending_action is None
+    assert "never mind" in reaction.text.lower()
+
+
+def test_ambiguous_reply_keeps_pending_action_alive(temp_db, monkeypatch):
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("must not execute on an ambiguous reply")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _fail_if_called)
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    pending = proposal.pending_action
+
+    reaction = handle_message("what time was that again?", pending_action=pending)
+
+    assert reaction.pending_action == pending  # still waiting
+
+
+def test_create_event_failure_after_confirmation_reports_error(temp_db, monkeypatch):
+    from app.core.exceptions import GoogleCalendarNotConnected
+
+    def _raise(title, start_iso, confirmed=False):
+        raise GoogleCalendarNotConnected("not connected")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _raise)
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    reaction = handle_message("yes", pending_action=proposal.pending_action)
+
+    assert "couldn't add" in reaction.text.lower()
+    assert reaction.emotion == Emotion.CONFUSED
+
+
+def test_delete_event_finds_match_and_proposes_cancellation(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.find_event",
+        lambda query=None, around=None, days_ahead=2: [
+            {
+                "id": "evt1",
+                "title": "Standup",
+                "start": "2026-08-14T17:00:00-07:00",
+                "all_day": False,
+            }
+        ],
+    )
+    reaction = handle_message("cancel my 5 PM meeting")
+    assert reaction.pending_action == {
+        "kind": "calendar_delete",
+        "event_id": "evt1",
+        "title": "Standup",
+    }
+    assert "cancel this event" in reaction.text.lower()
+
+
+def test_delete_event_no_match_found(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.find_event",
+        lambda query=None, around=None, days_ahead=2: [],
+    )
+    reaction = handle_message("cancel my 5 PM meeting")
+    assert reaction.pending_action is None
+    assert "couldn't find" in reaction.text.lower()
+
+
+def test_confirming_delete_event_calls_calendar_tools_with_confirmed_true(
+    temp_db, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.find_event",
+        lambda query=None, around=None, days_ahead=2: [
+            {"id": "evt1", "title": "Standup", "start": "2026-08-14T17:00:00-07:00", "all_day": False}
+        ],
+    )
+    calls = []
+
+    def _fake_delete(event_id, confirmed=False):
+        calls.append((event_id, confirmed))
+        return {"event_id": event_id, "deleted": True}
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.delete_event", _fake_delete)
+
+    proposal = handle_message("cancel my 5 PM meeting")
+    reaction = handle_message("yes", pending_action=proposal.pending_action)
+
+    assert calls == [("evt1", True)]
+    assert reaction.pending_action is None
+    assert "cancelled" in reaction.text.lower()
+
+
+def test_unrelated_query_while_pending_action_open_keeps_it_alive(temp_db, monkeypatch):
+    """A pending calendar confirmation shouldn't block an unrelated
+    message (e.g. checking reminders) from working normally, and
+    shouldn't be silently dropped either."""
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    pending = proposal.pending_action
+
+    reaction = handle_message("do i have any reminders", pending_action=pending)
+
+    assert reaction.pending_action == pending
+    assert reaction.text  # the reminders query still answered normally
