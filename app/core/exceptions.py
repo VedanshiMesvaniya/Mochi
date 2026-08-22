@@ -47,6 +47,19 @@ class CalendarError(MochiError):
     """Raised on local or Google calendar failures."""
 
 
+class GoogleCalendarNotConfigured(CalendarError):
+    """Raised when Google Calendar is disabled, or its optional client
+    libraries / OAuth client secret aren't set up. Distinct from
+    `GoogleCalendarNotConnected` so callers (chat_engine) can point the
+    user at the right fix - install/enable vs. connect."""
+
+
+class GoogleCalendarNotConnected(CalendarError):
+    """Raised when Google Calendar is enabled and configured, but the
+    user hasn't completed the one-time OAuth consent flow yet (or the
+    stored token was revoked/expired and refresh failed)."""
+
+
 class ToolValidationError(MochiError):
     """
     Raised when an LLM-proposed tool call/action fails schema or permission

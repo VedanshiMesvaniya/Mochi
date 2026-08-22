@@ -22,9 +22,15 @@ from typing import Optional
 
 from app.ai.intent import DetectedIntent, detect_intent
 from app.ai.llm import LLMUnavailable, ask as ask_llm
+from app.calendar import google_calendar
 from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
 from app.core.config import settings
-from app.core.exceptions import MochiError
+from app.core.exceptions import (
+    CalendarError,
+    GoogleCalendarNotConfigured,
+    GoogleCalendarNotConnected,
+    MochiError,
+)
 from app.core.logger import get_logger
 from app.humor.meme_fetcher import pick_one_meme
 from app.humor.trend_fetcher import pick_one_trend
@@ -123,16 +129,118 @@ def _list_reminders_reaction() -> "ChatReaction":
     )
 
 
+def _format_event(event: dict) -> str:
+    if event["all_day"]:
+        return event["title"]
+    start = event["start"] or ""
+    # start is an RFC3339 datetime like '2026-08-13T17:00:00-07:00' for
+    # timed events (all-day events use the plain-date branch above) -
+    # HH:MM is everything a spoken/chat reply needs, so avoid pulling in
+    # a full datetime-parsing dependency just to reformat it.
+    time_part = start[11:16] if len(start) >= 16 else start
+    return f"{event['title']} at {time_part}" if time_part else event["title"]
+
+
+def _events_reaction(events: list[dict], empty_text: str, label: str) -> "ChatReaction":
+    if not events:
+        return ChatReaction(
+            text=empty_text,
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+    shown = "; ".join(_format_event(e) for e in events[:5])
+    more = f" (+{len(events) - 5} more)" if len(events) > 5 else ""
+    plural = "thing" if len(events) == 1 else "things"
+    return ChatReaction(
+        text=f"You've got {len(events)} {plural} {label}: {shown}{more}.",
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+    )
+
+
+# Friendly, specific messages per failure mode (spec section 36: degrade
+# gracefully, section 23: never silently pretend a calendar action
+# happened). GoogleCalendarNotConnected/NotConfigured are both already
+# actionable ("say 'connect my calendar'" / "enable X in .env") - their
+# own message is used verbatim; only a genuinely unexpected CalendarError
+# (e.g. a live API/network failure) gets a generic wrapper here.
+def _calendar_error_reaction(exc: CalendarError) -> "ChatReaction":
+    if isinstance(exc, (GoogleCalendarNotConfigured, GoogleCalendarNotConnected)):
+        text = str(exc)
+    else:
+        text = f"Hmm, I couldn't check your calendar: {exc}"
+    return ChatReaction(text=text, emotion=Emotion.CONFUSED, animation=CharacterState.CONFUSED)
+
+
+def _calendar_today_reaction() -> "ChatReaction":
+    try:
+        events = google_calendar.get_today_events()
+    except CalendarError as exc:
+        return _calendar_error_reaction(exc)
+    return _events_reaction(events, "You're all clear today - nothing on your calendar!", "today")
+
+
+def _calendar_tomorrow_reaction() -> "ChatReaction":
+    try:
+        events = google_calendar.get_tomorrow_events()
+    except CalendarError as exc:
+        return _calendar_error_reaction(exc)
+    return _events_reaction(
+        events, "Nothing on your calendar tomorrow - a free day!", "tomorrow"
+    )
+
+
+def _calendar_upcoming_reaction() -> "ChatReaction":
+    try:
+        events = google_calendar.get_upcoming_events(days=7)
+    except CalendarError as exc:
+        return _calendar_error_reaction(exc)
+    return _events_reaction(
+        events, "Nothing coming up in the next week!", "coming up"
+    )
+
+
+def _calendar_connect_reaction() -> "ChatReaction":
+    try:
+        google_calendar.connect()
+    except CalendarError as exc:
+        return _calendar_error_reaction(exc)
+    return ChatReaction(
+        text="Connected! I can check your Google Calendar now.",
+        emotion=Emotion.EXCITED,
+        animation=CharacterState.EXCITED,
+        sound="chirp",
+    )
+
+
+def _calendar_disconnect_reaction() -> "ChatReaction":
+    had_connection = google_calendar.disconnect()
+    text = (
+        "Okay, I've forgotten your Google Calendar sign-in."
+        if had_connection
+        else "Your calendar wasn't connected, so there's nothing to undo."
+    )
+    return ChatReaction(text=text, emotion=Emotion.NEUTRAL, animation=CharacterState.IDLE)
+
+
 # Read-only DB queries (spec: "it can not read db, make it read db so it
-# can answer") - handled entirely separately from _TOOL_MODULES below.
-# Those are fire-and-forget writes whose response text is authored ahead
-# of time in intent.py; these need to read the DB *first* and build the
-# reply from whatever's actually in it, so a small local LLM never gets a
-# chance to hallucinate an answer to a factual "what's in my database"
-# question (see the list_tasks/list_reminders DetectedIntents).
+# can answer") plus the Google Calendar read/connect/disconnect actions -
+# handled entirely separately from _TOOL_MODULES below. Those are
+# fire-and-forget writes whose response text is authored ahead of time in
+# intent.py; everything in this dict needs to read a DB/live API *first*
+# and build the reply from whatever's actually there, so a small local
+# LLM never gets a chance to hallucinate an answer to a factual "what's
+# on my calendar" question (see the list_tasks/list_reminders/calendar_*
+# DetectedIntents, all of which carry an empty `response`).
 _LIST_HANDLERS = {
     "list_tasks": _list_tasks_reaction,
     "list_reminders": _list_reminders_reaction,
+    "calendar_today": _calendar_today_reaction,
+    "calendar_tomorrow": _calendar_tomorrow_reaction,
+    "calendar_upcoming": _calendar_upcoming_reaction,
+    "calendar_connect": _calendar_connect_reaction,
+    "calendar_disconnect": _calendar_disconnect_reaction,
 }
 
 

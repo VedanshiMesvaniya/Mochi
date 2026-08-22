@@ -73,8 +73,27 @@ class Settings:
     memory_enabled: bool = True
     conversation_history_length: int = 20
 
-    # Calendar
+    # Calendar (spec section 22/23 - Mode B, optional Google Calendar
+    # integration; Mode A, the fully-local calendar, doesn't need any of
+    # this). Off by default - Mochi never talks to Google unless this is
+    # explicitly turned on, per spec section 27 (Privacy).
+    #
+    # V3 scope is read-only (spec: "Google Calendar read access"): Mochi
+    # can answer "what's on my calendar" but cannot create/modify/delete
+    # events yet - that's V4, and per spec section 23 will require
+    # explicit per-action confirmation even once it lands.
     google_calendar_enabled: bool = False
+    # OAuth 2.0 "installed app" client secret, downloaded from Google
+    # Cloud Console (APIs & Services -> Credentials -> OAuth client ID ->
+    # Desktop app) - see README's Calendar section for the one-time setup
+    # steps. Never committed (see .gitignore).
+    google_client_secret_filename: str = "google_credentials.json"
+    # Where the OAuth token (access + refresh token) is cached locally
+    # after the one-time browser consent flow, so Mochi doesn't need to
+    # re-prompt every run. Also never committed. Deleting this file (or
+    # saying "disconnect my calendar") revokes local access without
+    # touching the Google account's actual grant.
+    google_token_filename: str = "token.json"
 
     # Humor (spec: "once in a while it should crawl internet and fetch...
     # so it be more of sense of humor") - the one optional feature that
@@ -121,6 +140,14 @@ class Settings:
     def database_path(self) -> Path:
         return self.data_dir / "mochi.db"
 
+    @property
+    def google_client_secret_path(self) -> Path:
+        return self.config_dir / self.google_client_secret_filename
+
+    @property
+    def google_token_path(self) -> Path:
+        return self.config_dir / self.google_token_filename
+
     @classmethod
     def load(cls) -> "Settings":
         env_path = PROJECT_ROOT / ".env"
@@ -139,6 +166,12 @@ class Settings:
             ),
             google_calendar_enabled=_bool(
                 os.getenv("MOCHI_GOOGLE_CALENDAR_ENABLED"), False
+            ),
+            google_client_secret_filename=os.getenv(
+                "MOCHI_GOOGLE_CLIENT_SECRET_FILENAME", "google_credentials.json"
+            ),
+            google_token_filename=os.getenv(
+                "MOCHI_GOOGLE_TOKEN_FILENAME", "token.json"
             ),
             humor_enabled=_bool(os.getenv("MOCHI_HUMOR_ENABLED"), True),
             trend_awareness_enabled=_bool(
