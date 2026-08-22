@@ -174,7 +174,9 @@ app/
 │   ├── task_tools.py            this is the validation boundary between
 │   ├── timer_tools.py           "the chat layer said so" and "it happened"
 │   └── calendar_tools.py         (Google Calendar: read/connect/disconnect
-│                                 only - no create/update/delete yet, see §9)
+│                                 + confirmed writes - create/update/delete
+│                                 events, all gated by a required
+│                                 `confirmed=True` - see §9)
 │
 └── ui/                          Qt windows/dialogs
     ├── base_window.py            Shared frameless/translucent/rounded dialog
@@ -342,7 +344,7 @@ offscreen mode.
 
 ---
 
-## 9. Calendar: Google Calendar (read-only, V3)
+## 9. Calendar: Google Calendar (V3 read + V4 confirmed writes)
 
 ```text
 "what's on my calendar today?"
@@ -357,7 +359,7 @@ app/ai/chat_engine.py — _calendar_today_reaction()
 app/calendar/google_calendar.py — get_today_events()
       │
       ├─ not enabled/configured ──► GoogleCalendarNotConfigured
-      ├─ not connected yet ────────► GoogleCalendarNotConnected
+      ├─ not connected yet ───────► GoogleCalendarNotConnected
       └─ configured + connected ──► loads cached OAuth token
                                        (config/token.json), refreshing
                                        it if expired, then calls
@@ -365,18 +367,18 @@ app/calendar/google_calendar.py — get_today_events()
 ```
 
 Same "deterministic first" principle as §5: every calendar query/action
-Mochi can perform (today/tomorrow/upcoming/search, connect, disconnect)
-is matched by a fixed regex in `app/ai/intent.py`, never inferred by the
-LLM — a hallucinated calendar answer is worse than a hallucinated
-reminder, since it's about the user's real external commitments. The LLM
-chat path can talk *about* calendars in casual conversation, but it can
-never be the thing that actually reads or touches one.
+Mochi can perform (today/tomorrow/upcoming/search, connect, disconnect,
+create, cancel) is matched by a fixed regex in `app/ai/intent.py`, never
+inferred by the LLM — a hallucinated calendar answer is worse than a
+hallucinated reminder, since it's about the user's real external
+commitments. The LLM chat path can talk *about* calendars in casual
+conversation, but it can never be the thing that actually reads or
+touches one.
 
-Three things make this safe to ship as read-only-only for now:
+Three things make read access (V3) safe to ship as its own smaller step:
 
-1. **Narrowest possible scope.** Only `calendar.readonly` is requested -
-   the OAuth consent screen itself tells the user exactly that, and the
-   code has no code path capable of calling a write endpoint.
+1. **Narrowest possible scope by default.** Only `calendar.readonly` is
+   requested unless write access (below) is explicitly turned on.
 2. **Optional at every layer.** `MOCHI_GOOGLE_CALENDAR_ENABLED=false` by
    default; the Google client libraries live in `requirements-calendar.txt`,
    not `requirements.txt`, and are imported lazily inside
@@ -390,16 +392,93 @@ Three things make this safe to ship as read-only-only for now:
 
 Connecting (`connect()`) blocks on a local OAuth callback server while
 the user completes Google's consent screen in their browser, bounded by
-a 5-minute timeout - safe to do off the UI thread because, per §5's
+a 5-minute timeout — safe to do off the UI thread because, per §5's
 chat_window.py note, every chat message (not just LLM-fallback ones)
 already runs on a background `ChatWorker` thread.
 
-**What's intentionally NOT here yet:** creating, updating, or deleting
-events (spec section 23 - V4). When that lands, it needs the broader
-`calendar` scope and, per spec, an explicit per-action confirmation step
-(propose → show the user what would be created → they confirm → then and
-only then call the write endpoint) - the same "LLM proposes, Python
-disposes, user confirms anything destructive/external" shape used
-everywhere else in this codebase, just with an extra confirmation gate
-`app/core/events.py`'s `Events.CALENDAR_CONFIRMATION_REQUIRED` already
-has a name reserved for.
+### V4: write access (create/cancel events), gated by explicit confirmation
+
+`MOCHI_GOOGLE_CALENDAR_WRITE_ENABLED=true` widens the requested OAuth
+scope from `calendar.readonly` to `calendar.events` ("view and edit
+events on all your calendars" — deliberately narrower than the full
+`calendar` scope, which also covers creating/deleting calendars
+themselves). `google_calendar.py` tracks two capability levels (0 = none,
+1 = read, 2 = read+write) and compares the *actually granted* scope on
+the saved token against what the current setting requires
+(`_capability_level`/`_required_level`) — so turning write access on
+doesn't retroactively grant it to an already-connected read-only token;
+Google enforces the real grant regardless of `.env`, and this module
+mirrors that check locally so a stale-scope token fails fast with a
+"reconnect with edit access" message instead of a confusing live 403.
+
+Every write is proposed, then confirmed, then executed — never in one
+step:
+
+```text
+"schedule a meeting with Devika tomorrow at 5pm"
+      │
+      ▼
+app/ai/intent.py — CALENDAR_CREATE_TRIGGER extracts a title + time,
+                    returns DetectedIntent("calendar_create_event",
+                    tool_args={title, start_iso}) — no write yet
+      │
+      ▼
+app/ai/chat_engine.py — _calendar_create_proposal() builds a
+                          human-readable summary and returns it as
+                          ChatReaction.pending_action, e.g.
+                          {"kind": "calendar_create", "title": ...,
+                           "start_iso": ...}
+      │
+      ▼
+app/ui/chat_window.py stores pending_action, passes it back into the
+*next* handle_message() call
+      │
+      ▼
+User replies "yes"
+      │
+      ▼
+app/ai/chat_engine.py — _classify_confirmation() recognizes it,
+                          _resolve_pending_action() calls
+                          app/tools/calendar_tools.create_event(...,
+                          confirmed=True) — the ONLY call site in the
+                          app that ever passes confirmed=True
+      │
+      ▼
+app/calendar/google_calendar.py — create_event() actually calls
+                                    Google's events().insert()
+```
+
+`app/ai/chat_engine.ChatReaction.pending_action` is how this confirmation
+state survives across the two chat turns — `app/ui/chat_window.py` owns
+it exactly the same way it already owns `_history` (spec's "remember
+whole chat until closed"): read back into the next `handle_message()`
+call, reset to `None` on window close. A reply that isn't a clear
+yes/no (see `_classify_confirmation`'s exact-phrase matching) leaves the
+proposal alive rather than silently dropping it, so the user can ask an
+unrelated question in between and still say "yes" afterward.
+
+Cancelling an existing event ("cancel my 5 PM meeting") goes through the
+same propose-then-confirm shape, but the "propose" step first has to
+*find* the right event: `google_calendar.find_event()` does a
+client-side time-of-day match (Google's API has no "same time of day,
+any date" filter) or an exact-title text search over the next couple of
+days, and only the best match becomes the proposal.
+
+**Confirmation is enforced at two independent layers**, not just by
+chat_engine's own calling convention:
+
+- `app/tools/calendar_tools.py`'s `create_event`/`update_event`/
+  `delete_event` all require `confirmed=True` and raise
+  `ConfirmationRequiredError` (see app/core/exceptions.py) otherwise —
+  this holds regardless of what calls into that module, not only the
+  chat flow above.
+- `google_calendar.py`'s capability check (above) independently blocks
+  any write attempt whose underlying token doesn't actually carry write
+  scope, regardless of what the local `confirmed` flag says.
+
+`update_event` (rescheduling/retitling an existing event) exists at the
+`google_calendar`/`calendar_tools` layer with the same confirmation
+requirement, but isn't yet wired to a chat trigger in `app/ai/intent.py`
+— only create and cancel are reachable from chat today, matching the two
+literal examples in the spec ("Mochi, add a meeting..." / "Cancel my 5
+PM meeting").

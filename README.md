@@ -160,10 +160,9 @@ which is why it's opt-in rather than on by default.
 
 Say things like *"what's on my calendar today?"*, *"anything tomorrow?"*,
 or *"what's coming up?"* and Mochi answers from your real Google
-Calendar — read-only for now (creating/editing events is a future
-addition; see `PROJECT_ARCHITECTURE.md`). This is the one integration
-that's off by default and reaches an actual external service rather than
-your own machine, so it's entirely opt-in:
+Calendar. This is the one integration that's off by default and reaches
+an actual external service rather than your own machine, so it's
+entirely opt-in:
 
 1. `pip install -r requirements-calendar.txt`
 2. In [Google Cloud Console](https://console.cloud.google.com/), create
@@ -178,10 +177,45 @@ your own machine, so it's entirely opt-in:
    [Google's own permissions page](https://myaccount.google.com/permissions)
    if you want to fully revoke it).
 
-Only the narrow `calendar.readonly` scope is requested — Mochi cannot
-create, edit, or delete anything on your calendar. If it's disabled, not
-yet set up, or the sign-in expires, Mochi says so directly (e.g. *"say
-'connect my calendar' to set it up"*) instead of guessing or pretending.
+By default only the narrow `calendar.readonly` scope is requested —
+Mochi cannot create, edit, or delete anything on your calendar. Set
+`MOCHI_GOOGLE_CALENDAR_WRITE_ENABLED=true` to also let Mochi create and
+cancel events (widens the scope to `calendar.events`, which still can't
+touch calendars themselves, only events on your primary one). If you
+already connected in read-only mode, turning this on means saying
+"connect my calendar" again so the reconnect actually grants the wider
+permission — Google enforces whatever scope was granted at consent time,
+regardless of what's in `.env`.
+
+With write access on, Mochi never creates or cancels anything
+immediately — every request is proposed first and only acted on after
+you explicitly confirm:
+
+```
+You:   schedule a meeting with Devika tomorrow at 5pm
+Mochi: I found this:
+
+       Meeting with Devika
+       Tue Aug 25 at 17:00
+
+       Add it to your Google Calendar? (yes/no)
+You:   yes
+Mochi: Done! Added "Meeting with Devika" to your calendar.
+```
+
+```
+You:   cancel my 5 PM meeting
+Mochi: I found: Standup at 17:00.
+
+       Cancel this event? (yes/no)
+You:   yes
+Mochi: Done! Cancelled "Standup".
+```
+
+If it's disabled, not yet set up, or the sign-in has expired/lacks the
+right permission, Mochi says so directly (e.g. *"say 'connect my
+calendar' to reconnect with edit access"*) instead of guessing or
+pretending.
 
 ---
 

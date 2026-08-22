@@ -24,6 +24,11 @@ window's own log (see `_start_typing_indicator`/`_stop_typing_indicator`).
 Without it, the only feedback during a slow reply was the character's face
 changing state elsewhere on the desktop - easy to miss if you're looking at
 this window, and it reads as the chat having silently stalled or closed.
+
+Also owns `_pending_action` (spec section 23, V4): a Google Calendar
+write chat_engine proposed but that's still awaiting a yes/no reply,
+carried across messages within this session the same way `_history` is -
+both reset to nothing when the window closes.
 """
 
 from __future__ import annotations
@@ -104,14 +109,23 @@ class ChatWorker(QThread):
 
     finished_reaction = Signal(object)  # emits a ChatReaction
 
-    def __init__(self, text: str, history: Optional[list[tuple[str, str]]] = None, parent=None) -> None:
+    def __init__(
+        self,
+        text: str,
+        history: Optional[list[tuple[str, str]]] = None,
+        pending_action: Optional[dict] = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._text = text
         self._history = history
+        self._pending_action = pending_action
 
     def run(self) -> None:  # noqa: D102 - QThread override
         try:
-            reaction = handle_message(self._text, history=self._history)
+            reaction = handle_message(
+                self._text, history=self._history, pending_action=self._pending_action
+            )
         except Exception:  # noqa: BLE001 - chat must never crash the app
             logger.exception("Chat engine failed on message: %s", self._text)
             reaction = ChatReaction(
@@ -144,6 +158,14 @@ class ChatWindow(TranslucentDialog):
         # time chat is opened starts fresh rather than carrying old
         # context forward indefinitely.
         self._history: list[tuple[str, str]] = []
+
+        # Calendar write confirmation state (spec section 23, V4) - a
+        # proposed create/delete Mochi is waiting on a yes/no for (see
+        # app/ai/chat_engine.py's pending_action). Same lifetime as
+        # _history above: lives only for this open session, cleared on
+        # close so a stale unconfirmed proposal never lingers into a
+        # future chat session.
+        self._pending_action: Optional[dict] = None
 
         # Typing indicator (spec: "chat looks closed/frozen while waiting").
         # The pet's face already changes state while a reply is pending,
@@ -198,6 +220,7 @@ class ChatWindow(TranslucentDialog):
         if self._worker is not None and self._worker.isRunning():
             self._worker.wait(200)
         self._history = []  # session memory ends when the window does
+        self._pending_action = None  # ...and so does any unconfirmed calendar action
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -265,7 +288,12 @@ class ChatWindow(TranslucentDialog):
         self.send_button.setEnabled(False)
         self._start_typing_indicator()
 
-        self._worker = ChatWorker(text, history=list(self._history[:-1]), parent=self)
+        self._worker = ChatWorker(
+            text,
+            history=list(self._history[:-1]),
+            pending_action=self._pending_action,
+            parent=self,
+        )
         self._worker.finished_reaction.connect(self._on_reaction_ready)
         self._worker.start()
 
@@ -273,6 +301,7 @@ class ChatWindow(TranslucentDialog):
         self._stop_typing_indicator()
         self._append("Mochi", reaction.text)
         self._history.append(("mochi", reaction.text))
+        self._pending_action = reaction.pending_action
         if self._on_reaction is not None:
             self._on_reaction(reaction)
 

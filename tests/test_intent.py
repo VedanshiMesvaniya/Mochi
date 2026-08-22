@@ -185,3 +185,61 @@ def test_calendar_connect_is_not_shadowed_by_upcoming_trigger():
 def test_calendar_today_takes_priority_over_upcoming():
     result = detect_intent("what's on my calendar for today", now=NOW)
     assert result.name == "calendar_today"
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar writes (spec section 23, V4)
+# ---------------------------------------------------------------------------
+
+
+def test_calendar_create_with_absolute_time():
+    result = detect_intent("schedule a meeting with Devika tomorrow at 5pm", now=NOW)
+    assert result.name == "calendar_create_event"
+    assert result.tool == "calendar_create_event"
+    assert "Devika" in result.tool_args["title"]
+    assert result.tool_args["start_iso"] == "2026-08-15T17:00:00"
+
+
+def test_calendar_create_add_a_meeting():
+    result = detect_intent("add a meeting tomorrow at 5 PM", now=NOW)
+    assert result.name == "calendar_create_event"
+    assert result.tool_args["title"] == "Meeting"
+
+
+def test_calendar_create_without_time_asks_for_one():
+    result = detect_intent("schedule a meeting with Devika", now=NOW)
+    assert result.name == "calendar_create_needs_time"
+    assert result.tool is None
+
+
+def test_calendar_create_book_an_appointment():
+    result = detect_intent("book an appointment at 3pm", now=NOW)
+    assert result.name == "calendar_create_event"
+
+
+def test_calendar_delete_by_time():
+    result = detect_intent("cancel my 5 PM meeting", now=NOW)
+    assert result.name == "calendar_delete_event"
+    assert result.tool == "calendar_delete_event"
+    assert result.tool_args["time_of_day"] == "17:00"
+    assert result.tool_args["query"] is None
+
+
+def test_calendar_delete_by_title():
+    result = detect_intent("cancel my meeting with Devika", now=NOW)
+    assert result.name == "calendar_delete_event"
+    assert result.tool_args["time_of_day"] is None
+    assert "devika" in result.tool_args["query"].lower()
+
+
+def test_calendar_delete_does_not_shadow_create():
+    result = detect_intent("add a meeting tomorrow at 5pm", now=NOW)
+    assert result.name == "calendar_create_event"
+
+
+def test_calendar_create_does_not_shadow_task_creation():
+    """'add task X' must still create a task, not a calendar event -
+    CALENDAR_CREATE_TRIGGER requires an event-ish noun (meeting/event/
+    appointment/call) that 'task' isn't."""
+    result = detect_intent("add task buy milk", now=NOW)
+    assert result.name == "create_task"
