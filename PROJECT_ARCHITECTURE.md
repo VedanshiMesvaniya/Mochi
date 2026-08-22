@@ -143,11 +143,6 @@ app/
 │   └── settings_store.py         Tiny SQLite key-value store for small
 │                                 persisted preferences (currently: glow theme)
 │
-├── tools/                      JSON-in/JSON-out functions the intent layer
-│   ├── reminder_tools.py        calls to actually create/modify data -
-│   ├── task_tools.py            this is the validation boundary between
-│   └── timer_tools.py           "the chat layer said so" and "it happened"
-│
 ├── reminders/                  Local reminder engine
 │   ├── manager.py                CRUD over the `reminders` table + repeat rules
 │   ├── scheduler.py               QTimer polling for due reminders (~15s)
@@ -162,6 +157,24 @@ app/
 │   ├── manager.py                 CRUD over the `timers` table
 │   ├── scheduler.py                QTimer polling for finished timers (~1s)
 │   └── notifications.py            Finished timer → reaction/sound/speech/OS toast
+│
+├── calendar/                   Google Calendar integration - read-only,
+│   └── google_calendar.py       opt-in (spec §22/23, V3). OAuth "installed
+│                                 app" flow via google-auth-oauthlib,
+│                                 read-only `calendar.readonly` scope,
+│                                 cached token at config/token.json. No
+│                                 scheduler/polling - purely on-demand,
+│                                 queried straight from chat. Optional
+│                                 client libraries are imported lazily
+│                                 (never at module import time) so nothing
+│                                 else in the app pays for their absence.
+│
+├── tools/                      JSON-in/JSON-out functions the intent layer
+│   ├── reminder_tools.py        calls to actually create/modify data -
+│   ├── task_tools.py            this is the validation boundary between
+│   ├── timer_tools.py           "the chat layer said so" and "it happened"
+│   └── calendar_tools.py         (Google Calendar: read/connect/disconnect
+│                                 only - no create/update/delete yet, see §9)
 │
 └── ui/                          Qt windows/dialogs
     ├── base_window.py            Shared frameless/translucent/rounded dialog
@@ -179,19 +192,21 @@ app/
 ### Dependency direction
 
 `core` depends on nothing else in the app. `character`, `memory`,
-`reminders`, `tasks`, `timers` depend only on `core`. `tools` depends on
-`core` + the relevant subsystem (`reminders`/`tasks`/`timers`). `ai`
-depends on `core`, `memory`, and `tools`, and calls into `character`'s
-state/emotion types to describe a reaction — it never imports Qt directly.
-`ui` and `main.py` are the only layers allowed to wire multiple subsystems
-together.
+`reminders`, `tasks`, `timers`, `calendar` depend only on `core`. `tools`
+depends on `core` + the relevant subsystem (`reminders`/`tasks`/`timers`/
+`calendar`). `ai` depends on `core`, `memory`, `tools`, and `calendar`
+(for its own read-only chat handlers — see §9), and calls into
+`character`'s state/emotion types to describe a reaction — it never
+imports Qt directly. `ui` and `main.py` are the only layers allowed to
+wire multiple subsystems together.
 
 ```text
-core  ←  character, memory, reminders, tasks, timers, ai
+core  ←  character, memory, reminders, tasks, timers, calendar, ai
 core + memory  ←  reminders, tasks, timers
-core + memory + reminders/tasks/timers  ←  tools
-core + memory + tools + character(types only)  ←  ai
-core + character + ai + reminders + tasks + timers  ←  ui, main.py
+core  ←  calendar
+core + memory + reminders/tasks/timers/calendar  ←  tools
+core + memory + tools + calendar + character(types only)  ←  ai
+core + character + ai + reminders + tasks + timers + calendar  ←  ui, main.py
 ```
 
 This keeps every subsystem testable without a running Qt app or a live
@@ -314,8 +329,77 @@ running Qt app window or a live Ollama server:
   `test_reminder_notifications.py`, and the equivalent `test_task_*` /
   `test_timer_*` files — CRUD, repeat rules, the JSON tool wrappers, and
   due/ignored-reminder reactions
+- `test_google_calendar.py` / `test_calendar_tools.py` — OAuth/token
+  state handling and event listing against a fake `googleapiclient`
+  service object (no real Google API/network call is ever made in
+  tests); skipped automatically if the optional Google client libraries
+  aren't installed (`pytest.importorskip`)
 - `test_movement.py` — screen-bounds math used when dragging the window
 
 `pixel_face.py` and `chat_window.py` tests that need a real `QWidget` use
 a session-scoped `qapp` fixture (`tests/conftest.py`) running Qt in
 offscreen mode.
+
+---
+
+## 9. Calendar: Google Calendar (read-only, V3)
+
+```text
+"what's on my calendar today?"
+      │
+      ▼
+app/ai/intent.py — CALENDAR_TODAY_TRIGGER (deterministic, no LLM)
+      │
+      ▼
+app/ai/chat_engine.py — _calendar_today_reaction()
+      │
+      ▼
+app/calendar/google_calendar.py — get_today_events()
+      │
+      ├─ not enabled/configured ──► GoogleCalendarNotConfigured
+      ├─ not connected yet ────────► GoogleCalendarNotConnected
+      └─ configured + connected ──► loads cached OAuth token
+                                       (config/token.json), refreshing
+                                       it if expired, then calls
+                                       Google's Calendar API
+```
+
+Same "deterministic first" principle as §5: every calendar query/action
+Mochi can perform (today/tomorrow/upcoming/search, connect, disconnect)
+is matched by a fixed regex in `app/ai/intent.py`, never inferred by the
+LLM — a hallucinated calendar answer is worse than a hallucinated
+reminder, since it's about the user's real external commitments. The LLM
+chat path can talk *about* calendars in casual conversation, but it can
+never be the thing that actually reads or touches one.
+
+Three things make this safe to ship as read-only-only for now:
+
+1. **Narrowest possible scope.** Only `calendar.readonly` is requested -
+   the OAuth consent screen itself tells the user exactly that, and the
+   code has no code path capable of calling a write endpoint.
+2. **Optional at every layer.** `MOCHI_GOOGLE_CALENDAR_ENABLED=false` by
+   default; the Google client libraries live in `requirements-calendar.txt`,
+   not `requirements.txt`, and are imported lazily inside
+   `google_calendar.py` (see `_import_google_libraries()`) so their
+   absence never affects any other subsystem, including at import time.
+3. **Specific, actionable failures.** `GoogleCalendarNotConfigured` /
+   `GoogleCalendarNotConnected` (both subclasses of the existing
+   `CalendarError`) each carry a message that tells the user exactly what
+   to do next (enable the setting / install the package / say "connect
+   my calendar"), rather than a generic error.
+
+Connecting (`connect()`) blocks on a local OAuth callback server while
+the user completes Google's consent screen in their browser, bounded by
+a 5-minute timeout - safe to do off the UI thread because, per §5's
+chat_window.py note, every chat message (not just LLM-fallback ones)
+already runs on a background `ChatWorker` thread.
+
+**What's intentionally NOT here yet:** creating, updating, or deleting
+events (spec section 23 - V4). When that lands, it needs the broader
+`calendar` scope and, per spec, an explicit per-action confirmation step
+(propose → show the user what would be created → they confirm → then and
+only then call the write endpoint) - the same "LLM proposes, Python
+disposes, user confirms anything destructive/external" shape used
+everywhere else in this codebase, just with an extra confirmation gate
+`app/core/events.py`'s `Events.CALENDAR_CONFIRMATION_REQUIRED` already
+has a name reserved for.

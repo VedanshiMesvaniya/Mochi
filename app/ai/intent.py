@@ -172,6 +172,46 @@ TASK_TRIGGER = re.compile(
     r"\b(remember (that )?i need to|add (a )?task|todo:?)\b", re.IGNORECASE
 )
 
+# --- Google Calendar (spec sections 22-24, V3: read-only) --------------
+# Checked before the small-talk/fallback bucket but after reminders/
+# timers/tasks, same reasoning as LIST_REMINDERS_TRIGGER above: these are
+# read-only DB/API queries handled deterministically in chat_engine.py,
+# never left to the LLM (spec section 41 - and doubly true here, since a
+# hallucinated calendar answer is worse than a hallucinated reminder).
+CALENDAR_CONNECT_TRIGGER = re.compile(
+    r"\b(connect|link|set ?up) (my |google )*calendar\b", re.IGNORECASE
+)
+CALENDAR_DISCONNECT_TRIGGER = re.compile(
+    r"\b(disconnect|unlink|remove) (my |google )*calendar\b", re.IGNORECASE
+)
+# "today"/"tomorrow" are each their own trigger (rather than folding into
+# UPCOMING) so "what's on my calendar today" gets today's actual events
+# instead of a generic 7-day lookahead answer. Order matters where these
+# overlap - detect_intent() checks TODAY and TOMORROW before the more
+# general UPCOMING, same reasoning as LIST_REMINDERS_TRIGGER above.
+CALENDAR_TODAY_TRIGGER = re.compile(
+    r"\b(what(?:'s| is) on my calendar( for)? today"
+    r"|do i have (anything|any events?|any meetings?) today"
+    r"|what (do i have|am i doing) today"
+    r"|today'?s (events?|schedule|meetings?))\b",
+    re.IGNORECASE,
+)
+CALENDAR_TOMORROW_TRIGGER = re.compile(
+    r"\b(what(?:'s| is) on my calendar( for)? tomorrow"
+    r"|do i have (anything|any events?|any meetings?) tomorrow"
+    r"|what (do i have|am i doing) tomorrow"
+    r"|tomorrow'?s (events?|schedule|meetings?))\b",
+    re.IGNORECASE,
+)
+CALENDAR_UPCOMING_TRIGGER = re.compile(
+    r"\b(what(?:'s| is) on my calendar"
+    r"|what(?:'s| is) coming up"
+    r"|upcoming (events?|meetings?)"
+    r"|when(?:'s| is) my next (meeting|event)"
+    r"|what am i doing this week)\b",
+    re.IGNORECASE,
+)
+
 TIME_AT = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 TIME_IN = re.compile(
     r"\bin\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b", re.IGNORECASE
@@ -287,6 +327,50 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=CharacterState.THINKING,
             response="",  # chat_engine fills this in from the real reminder list
             tool="list_reminders",
+        )
+
+    # --- Google Calendar (spec sections 22-24, V3: read-only) -----------
+    # Connect/disconnect checked first - "connect my calendar" would
+    # otherwise also satisfy the looser UPCOMING phrasing below.
+    if CALENDAR_CONNECT_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="calendar_connect",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in (success/failure)
+            tool="calendar_connect",
+        )
+    if CALENDAR_DISCONNECT_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="calendar_disconnect",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+            response="",
+            tool="calendar_disconnect",
+        )
+    if CALENDAR_TODAY_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="calendar_today",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from a live API read
+            tool="calendar_today",
+        )
+    if CALENDAR_TOMORROW_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="calendar_tomorrow",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",
+            tool="calendar_tomorrow",
+        )
+    if CALENDAR_UPCOMING_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="calendar_upcoming",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",
+            tool="calendar_upcoming",
         )
 
     # --- Reminders -------------------------------------------------

@@ -126,3 +126,62 @@ def test_unknown_message_still_reacts():
 def test_empty_message():
     result = detect_intent("   ", now=NOW)
     assert result.name == "empty"
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar (spec sections 22-24, V3: read-only)
+# ---------------------------------------------------------------------------
+
+
+def test_calendar_today_query():
+    result = detect_intent("what's on my calendar today?", now=NOW)
+    assert result.name == "calendar_today"
+    assert result.response == ""  # chat_engine fills this in from a live read
+
+
+def test_calendar_today_alternate_phrasing():
+    result = detect_intent("do i have any meetings today", now=NOW)
+    assert result.name == "calendar_today"
+
+
+def test_calendar_tomorrow_query():
+    result = detect_intent("what's on my calendar tomorrow?", now=NOW)
+    assert result.name == "calendar_tomorrow"
+
+
+def test_calendar_upcoming_query():
+    result = detect_intent("what's coming up?", now=NOW)
+    assert result.name == "calendar_upcoming"
+
+
+def test_calendar_next_meeting_query():
+    result = detect_intent("when is my next meeting", now=NOW)
+    assert result.name == "calendar_upcoming"
+
+
+def test_calendar_connect_command():
+    result = detect_intent("connect my calendar", now=NOW)
+    assert result.name == "calendar_connect"
+
+
+def test_calendar_connect_google_phrasing():
+    result = detect_intent("connect google calendar", now=NOW)
+    assert result.name == "calendar_connect"
+
+
+def test_calendar_disconnect_command():
+    result = detect_intent("disconnect my calendar", now=NOW)
+    assert result.name == "calendar_disconnect"
+
+
+def test_calendar_connect_is_not_shadowed_by_upcoming_trigger():
+    """'connect my calendar' also loosely resembles the general 'what's on
+    my calendar' phrasing family - connect/disconnect must win since
+    they're checked first (see app/ai/intent.py)."""
+    result = detect_intent("connect my calendar please", now=NOW)
+    assert result.name == "calendar_connect"
+
+
+def test_calendar_today_takes_priority_over_upcoming():
+    result = detect_intent("what's on my calendar for today", now=NOW)
+    assert result.name == "calendar_today"

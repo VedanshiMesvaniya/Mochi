@@ -156,6 +156,35 @@ which is why it's opt-in rather than on by default.
 
 ---
 
+## Calendar
+
+Say things like *"what's on my calendar today?"*, *"anything tomorrow?"*,
+or *"what's coming up?"* and Mochi answers from your real Google
+Calendar — read-only for now (creating/editing events is a future
+addition; see `PROJECT_ARCHITECTURE.md`). This is the one integration
+that's off by default and reaches an actual external service rather than
+your own machine, so it's entirely opt-in:
+
+1. `pip install -r requirements-calendar.txt`
+2. In [Google Cloud Console](https://console.cloud.google.com/), create
+   an OAuth client ID of type **Desktop app** and download its client
+   secret JSON. Save it as `config/google_credentials.json`.
+3. Set `MOCHI_GOOGLE_CALENDAR_ENABLED=true` in `.env`.
+4. Say **"connect my calendar"** to Mochi. A browser window opens for a
+   one-time Google consent screen; once approved, the resulting token is
+   cached locally at `config/token.json` so this only happens once.
+   **"disconnect my calendar"** deletes that local token again (it does
+   *not* revoke the grant on your Google account — do that from
+   [Google's own permissions page](https://myaccount.google.com/permissions)
+   if you want to fully revoke it).
+
+Only the narrow `calendar.readonly` scope is requested — Mochi cannot
+create, edit, or delete anything on your calendar. If it's disabled, not
+yet set up, or the sign-in expires, Mochi says so directly (e.g. *"say
+'connect my calendar' to set it up"*) instead of guessing or pretending.
+
+---
+
 ## Running it
 
 ```bash
@@ -196,11 +225,13 @@ app/
 ├── reminders/         local reminder engine (manager, scheduler, notifications)
 ├── tasks/             local to-do list
 ├── timers/            local countdown timers (manager, scheduler, notifications)
+├── calendar/          Google Calendar integration (read-only, opt-in)
 ├── tools/             JSON-in/JSON-out functions chat's intent layer calls
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
+config/             OAuth client secret + token cache (gitignored, calendar only)
 data/               local SQLite database (gitignored)
-tests/              pytest suite (268 tests)
+tests/              pytest suite
 ```
 
 ---
@@ -208,12 +239,17 @@ tests/              pytest suite (268 tests)
 ## Privacy
 
 - No cloud AI, no conversation upload, no remote database.
-- The only network-capable feature is the optional local-LLM chat
-  fallback, and that talks to Ollama on `localhost` — not a hosted API.
+- The only network-capable features are the optional local-LLM chat
+  fallback (talks to Ollama on `localhost` — not a hosted API) and the
+  optional, off-by-default Google Calendar integration (see above) —
+  everything else works fully offline.
 - Chat can never directly execute an action: the LLM/intent layer only
   proposes an action, and Python validates and runs it (see
-  `PROJECT_ARCHITECTURE.md §5`).
-- No paid APIs, no subscriptions, no API keys required for normal use.
+  `PROJECT_ARCHITECTURE.md §5`); calendar reads/connects are handled the
+  same deterministic way, never left to the LLM.
+- No paid APIs, no subscriptions, no API keys required for normal use —
+  Google Calendar needs a one-time free OAuth client ID, not a key or a
+  subscription.
 
 ---
 

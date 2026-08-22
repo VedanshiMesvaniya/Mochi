@@ -35,3 +35,12 @@ def temp_db(tmp_path, monkeypatch):
     a fresh, isolated SQLite file."""
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     yield tmp_path
+
+
+@pytest.fixture()
+def temp_config_dir(tmp_path, monkeypatch):
+    """Redirect settings.config_dir to a temp directory so calendar tests
+    never touch a real (or gitignored-but-present) config/google_credentials.json
+    / config/token.json on the developer's machine."""
+    monkeypatch.setattr(settings, "config_dir", tmp_path)
+    yield tmp_path
