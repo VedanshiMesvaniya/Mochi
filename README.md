@@ -289,6 +289,11 @@ tests/              pytest suite
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE). Third-party dependencies (PySide6/Qt,
-Ollama-served models) carry their own licenses — check before
+Custom attribution-required license — see [`LICENSE`](./LICENSE).
+Copyright stays with Vedanshi Mesvaniya as the original author; others
+may use, modify, and distribute the project provided they credit the
+original author and don't claim it or a derivative as their own
+original work. Not a lawyer-reviewed document — see the LICENSE file's
+own note. Third-party dependencies (PySide6/Qt, Ollama-served models,
+Google API client libraries) carry their own licenses — check before
 distributing a packaged build.

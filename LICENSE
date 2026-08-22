@@ -1,28 +1,51 @@
-MIT License
+Project Mochi License (Attribution Required, No Misrepresentation)
+Copyright (c) 2026 Vedanshi Mesvaniya. All original rights reserved.
 
-Copyright (c) 2026 Vedanshi Mesvaniya
+This license applies to Project Mochi and all of its original source
+code, documentation, and associated assets (the "Software"). Vedanshi
+Mesvaniya is and remains the original author and copyright holder of
+the Software.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of the Software to use, copy, modify, merge, publish, and
+distribute copies of the Software, subject to ALL of the following
+conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. Attribution required. Any use, copy, modification, or distribution
+   of the Software, in whole or in part, must retain this copyright
+   notice and clearly credit Vedanshi Mesvaniya as the original author
+   of Project Mochi - in source headers, an "About"/credits section, a
+   README, or other similarly visible place in the distributed work.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. No misrepresentation of authorship or ownership. No person or
+   entity may claim to be the original creator or owner of Project
+   Mochi, or present a copy, fork, or derivative of it as their own
+   original work. Any fork or derivative must clearly and
+   prominently state that it is based on / derived from Project Mochi
+   by Vedanshi Mesvaniya.
+
+3. Notice preserved. This copyright notice, the attribution
+   requirement above, and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+4. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+   ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+   WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE
+   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+This is a custom license and is not a Claude/lawyer-reviewed legal
+document - if you need enforceable legal certainty (e.g. for a
+commercial dispute), have it reviewed by an actual lawyer.
 
 ---
 
 This project uses third-party libraries and models, each under their own
 license (e.g. PySide6/Qt under LGPL/GPL options, Ollama-served models under
 their respective model licenses, Piper voices under their individual voice
-licenses). Check each dependency's license before distribution.
+licenses, Google API client libraries under Apache 2.0). Those
+dependencies are NOT covered by the terms above and remain under their
+own respective licenses - check each one before distribution.
