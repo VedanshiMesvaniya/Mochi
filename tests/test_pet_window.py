@@ -1,8 +1,13 @@
 """
 Smoke tests for app/character/pet.py's PetWindow - mainly to catch wiring
-mistakes (missing attributes, bad signal connections) in the theme-menu
-and lock-screen-easter-egg integration that unit tests of the individual
-modules (theme.py, lock_watcher.py) can't catch on their own.
+mistakes (missing attributes, bad signal connections) in the
+lock-screen-easter-egg integration that unit tests of the individual
+modules (lock_watcher.py) can't catch on their own.
+
+Note: PetWindow used to also own a right-click "Theme" submenu (4
+selectable glow palettes, persisted via settings_store.KEY_GLOW_THEME).
+That's gone - see app/character/theme.py - so there's nothing theme-menu
+related left to smoke-test here.
 """
 
 from __future__ import annotations
@@ -20,32 +25,6 @@ def test_pet_window_constructs_without_error(qapp, temp_db):
     window = PetWindow()
     assert window.face is not None
     window.close()
-
-
-def test_theme_menu_has_four_options_and_defaults_to_purple(qapp, temp_db):
-    from app.character.pet import PetWindow
-
-    window = PetWindow()
-    assert set(window._theme_actions.keys()) == {"purple", "blue", "mint", "rose"}
-    assert window._theme_actions["purple"].isChecked() is True
-    assert window.face._theme.key == "purple"
-    window.close()
-
-
-def test_selecting_theme_persists_and_reapplies_on_restart(qapp, temp_db):
-    from app.character.pet import PetWindow
-
-    window = PetWindow()
-    window._set_theme("rose")
-    assert window.face._theme.key == "rose"
-    assert window._theme_actions["rose"].isChecked() is True
-    assert window._theme_actions["purple"].isChecked() is False
-    window.close()
-
-    # Simulate a restart - a fresh PetWindow should pick up the saved theme.
-    window2 = PetWindow()
-    assert window2.face._theme.key == "rose"
-    window2.close()
 
 
 def test_lock_signal_closes_eyes_and_unlock_wakes_excited(qapp, temp_db):

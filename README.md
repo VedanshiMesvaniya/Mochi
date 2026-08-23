@@ -19,31 +19,45 @@ opt-in Google Calendar connection (see below), which is off by default.
 ## What Mochi looks like
 
 A ~180×180px frameless, translucent window: a dark rounded square with
-small triangular ears and a few whiskers, glowing pixel eyes and mouth in
-your choice of four color themes. It blinks on its own, has a faint idle
-"breathing" glow, and its pupils drift toward your mouse cursor while
-idle. Every expression change eases and bounces into place through a
-small spring-physics layer rather than snapping instantly — that's the
-main thing that makes it read as alive rather than a slideshow of static
+small triangular ears and a few whiskers, and a glowing pixel face on top.
+There's one unified casing look (no user-selectable palette) — instead,
+the **glow color itself changes per expression**, like an LED status
+light: idle is calm violet, happy is emerald green, angry is deep
+crimson, and so on. It blinks on its own, has a faint idle "breathing"
+glow, and its pupils drift toward your mouse cursor while idle. Every
+expression change eases and bounces into place through a small
+spring-physics layer rather than snapping instantly — that's the main
+thing that makes it read as alive rather than a slideshow of static
 faces.
-
-**Glow theme:** Purple (default), Blue, Mint, or Rose — pick one from
-right-click → Theme. Purely cosmetic (expression geometry never changes
-between themes, only the color), persisted locally in SQLite so it's
-remembered across restarts.
-
-![Mochi's four glow themes: Purple, Blue, Mint, and Rose](./assets/readme/themes.png)
 
 **Expressions (16):** idle, happy, sad, angry, confused, surprised,
 thinking, sleepy, sleeping, talking, excited, alert, blush, shy, heart,
 wink — all drawn programmatically (no image assets), so every expression
 is just numbers (eye openness, pupil offset, mouth shape, brow angle,
-blush/heart-eyes flags), not artwork. Chat reactions pick between these
-organically — a mild compliment gets a shy blush, "I love you" gets
-heart-eyes, and an ignored-too-long attention ping alternates between an
-alert pulse and a playful wink.
+color) plus a handful of dedicated shapes for a few states: angry draws
+crossed "X" eyes, confused shows a small floating "?", shy closes its
+eyes into a soft upward curve, and alert runs a six-phase
+detect → flash-on → peak → flash-off → flash-on → return pulse (with a
+tiny vibration at its peak) instead of a static glow. Chat reactions pick
+between these organically — a mild compliment gets a shy blush, "I love
+you" gets heart-eyes, and an ignored-too-long attention ping alternates
+between an alert pulse and a playful wink.
 
 ![All 16 of Mochi's expressions](./assets/readme/expressions.png)
+
+**LED color map** — one canonical color per expression (see
+`app/character/theme.py`):
+
+| Expression | Hex | Expression | Hex |
+|---|---|---|---|
+| Idle | `#8A2BE2` | Talking | `#34D399` |
+| Happy | `#00FF66` | Excited | `#FF007F` |
+| Sad | `#00D2FF` | Alert | `#FF1744` |
+| Angry | `#D50000` | Blush | `#FF6B8B` |
+| Confused | `#FFB300` | Shy | `#F472B6` |
+| Surprised | `#00E5FF` | Heart | `#FF1493` |
+| Thinking | `#A855F7` | Wink | `#00F0FF` |
+| Sleepy | `#6A608A` | Sleeping | `#312E81` |
 
 **Sleep:** eyes close and a small cartoon-style "Zzz" floats up and fades
 near the ear, looping, always contained within the window's own bounds.

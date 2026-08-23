@@ -26,7 +26,14 @@ Personality touches baked into the renderer itself (not just state swaps):
   - a cartoon-style floating "Zzz" while SLEEPING - multiple glyphs rise,
     drift, and fade in a loop, contained within the widget's own bounds
     (never drawn outside the visible frame)
-  - four selectable glow-color themes (see app/character/theme.py)
+  - one unified casing look, with the glow color itself changing per
+    expression (angry glows crimson, happy glows green, etc - see
+    app/character/theme.py's EXPRESSION_COLORS); a few expressions also
+    get a dedicated draw path instead of just a recolor: ANGRY draws
+    crossed "X" eyes, ALERT runs a six-phase detect/flash/peak/flash/
+    return pulse sequence with a small vibration at its peak, SHY draws
+    closed upward-curved "happy" eyes, and CONFUSED shows a small
+    floating "?" above one eye
 """
 
 from __future__ import annotations
@@ -42,7 +49,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
 from app.character.state_machine import CharacterState
-from app.character.theme import DEFAULT_THEME_KEY, Theme, get_theme
+from app.character.theme import CASING, Theme, get_expression_color
 
 
 class MouthType(str, Enum):
@@ -75,6 +82,10 @@ class Expression:
     blush: bool = False            # soft cheek color (blush/shy)
     heart_eyes: bool = False       # draw heart-shaped eyes instead of rounded rects
     spin_eyes: bool = False        # draw rotating spiral eyes (dizzy/shaken)
+    angry_eyes: bool = False       # draw crossed "X" eyes instead of rounded rects
+    shy_eyes: bool = False         # draw closed, upward-curved "happy" eyes
+    show_question_mark: bool = False  # floating "?" above the face (confused)
+    alert_flash: bool = False      # run the 6-phase detect/flash/peak/return pulse
 
 
 # The 16-expression reference sheet, plus a Locked state for the
@@ -85,18 +96,18 @@ FACE_EXPRESSIONS: dict[CharacterState, Expression] = {
     CharacterState.IDLE: Expression(eye_open=1.0, mouth=MouthType.FLAT, cursor_follow=True, glow=0.55),
     CharacterState.HAPPY: Expression(eye_open=0.75, mouth=MouthType.SMILE, glow=0.75),
     CharacterState.SAD: Expression(eye_open=0.6, eye_offset_y=0.25, brow_angle=-12, mouth=MouthType.FROWN, glow=0.35),
-    CharacterState.ANGRY: Expression(eye_open=0.45, brow_angle=18, mouth=MouthType.ANGRY_V, glow=0.8),
-    CharacterState.CONFUSED: Expression(eye_open=0.85, eye_open_right=0.5, brow_angle=10, mouth=MouthType.WAVY, glow=0.55),
+    CharacterState.ANGRY: Expression(eye_open=0.7, brow_angle=18, mouth=MouthType.ANGRY_V, glow=0.8, angry_eyes=True),
+    CharacterState.CONFUSED: Expression(eye_open=0.85, eye_open_right=0.5, brow_angle=10, mouth=MouthType.WAVY, glow=0.55, show_question_mark=True),
     CharacterState.SURPRISED: Expression(eye_open=1.35, mouth=MouthType.O, glow=0.9),
     CharacterState.THINKING: Expression(eye_open=0.8, eye_offset_y=-0.5, look_up_fixed=True, mouth=MouthType.FLAT, glow=0.5),
     CharacterState.SLEEPY: Expression(eye_open=0.25, eye_offset_y=0.15, mouth=MouthType.FLAT, glow=0.3),
     CharacterState.SLEEP: Expression(eye_open=0.0, mouth=MouthType.NONE, glow=0.2, show_zzz=True),
     CharacterState.TALKING: Expression(eye_open=0.9, mouth=MouthType.TALK_OPEN, glow=0.65, cursor_follow=True),
     CharacterState.EXCITED: Expression(eye_open=1.1, mouth=MouthType.BIG_SMILE, glow=0.95),
-    CharacterState.ALERT: Expression(eye_open=1.25, mouth=MouthType.O, glow=0.85, cursor_follow=True),
+    CharacterState.ALERT: Expression(eye_open=1.25, mouth=MouthType.O, glow=0.85, cursor_follow=True, alert_flash=True),
     # --- the four "pending" expressions from the reference sheet ---
     CharacterState.BLUSH: Expression(eye_open=0.8, mouth=MouthType.SMILE, glow=0.7, blush=True),
-    CharacterState.SHY: Expression(eye_open=0.35, eye_offset_y=0.3, mouth=MouthType.FLAT, glow=0.4, blush=True),
+    CharacterState.SHY: Expression(eye_open=0.35, eye_offset_y=0.3, mouth=MouthType.SMILE, glow=0.5, blush=True, shy_eyes=True),
     CharacterState.HEART: Expression(eye_open=1.0, mouth=MouthType.BIG_SMILE, glow=0.95, heart_eyes=True),
     CharacterState.WINK: Expression(eye_open=1.0, eye_open_right=0.05, mouth=MouthType.SMILE, glow=0.75),
     # --- lock-screen easter egg ---
@@ -164,12 +175,12 @@ class PixelFaceWidget(QWidget):
     animation and re-render.
     """
 
-    def __init__(self, parent=None, theme_key: str = DEFAULT_THEME_KEY) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._state = CharacterState.IDLE
         self._expr = FACE_EXPRESSIONS[CharacterState.IDLE]
-        self._theme: Theme = get_theme(theme_key)
+        self._casing: Theme = CASING
 
         self._clock = 0.0
         self._next_blink_at = _BLINK_INTERVAL_MIN_S
@@ -198,6 +209,11 @@ class PixelFaceWidget(QWidget):
         self._peek_until: Optional[float] = None
         self._peek_side = 1
 
+        # ALERT's six-phase pulse sequence (Detect -> Flash On -> Peak ->
+        # Flash Off -> Flash On -> Return), looped for as long as ALERT is
+        # active - see _alert_phase().
+        self._alert_clock = 0.0
+
         self._rng = random.Random()
 
     # ------------------------------------------------------------------
@@ -206,12 +222,7 @@ class PixelFaceWidget(QWidget):
         self._expr = FACE_EXPRESSIONS.get(state, FACE_EXPRESSIONS[CharacterState.IDLE])
         self._talk_frame_index = 0
         self._talk_clock = 0.0
-
-    def set_theme(self, theme_key: str) -> None:
-        """Swap the glow-color palette (spec: 4 selectable themes). Purely
-        cosmetic - never changes expression geometry."""
-        self._theme = get_theme(theme_key)
-        self.update()
+        self._alert_clock = 0.0
 
     def set_cursor_hint(self, dx_norm: Optional[float], dy_norm: Optional[float]) -> None:
         """dx/dy are the cursor's offset from the widget's center, already
@@ -248,6 +259,10 @@ class PixelFaceWidget(QWidget):
                     self._next_blink_at = self._rng.uniform(
                         _BLINK_INTERVAL_MIN_S, _BLINK_INTERVAL_MAX_S
                     )
+
+        # ALERT's 6-phase pulse - see _alert_phase().
+        if self._expr.alert_flash:
+            self._alert_clock += dt_seconds
 
         # Talking mouth cycle
         if self._state == CharacterState.TALKING:
@@ -346,10 +361,47 @@ class PixelFaceWidget(QWidget):
         return QPointF(self._s_pupil_x, self._s_pupil_y)
 
     def _render_glow(self) -> float:
-        return self._s_glow
+        base = self._s_glow
+        if self._expr.alert_flash:
+            mult, _jitter = self._alert_phase()
+            return max(0.0, min(1.4, base * mult))
+        return base
 
     def _render_brow_angle(self) -> float:
         return self._s_brow
+
+    def _current_color(self) -> QColor:
+        """The glow color for whatever expression is currently active -
+        angry glows crimson, happy glows green, etc. See
+        app/character/theme.py's EXPRESSION_COLORS; this is the only
+        thing that changes per expression, not the casing."""
+        return get_expression_color(self._state)
+
+    # ALERT phase timing (seconds), in order: Detect, Flash On, Peak,
+    # Flash Off, Flash On, Return - matches the 6-step reference sequence.
+    _ALERT_PHASES = (
+        ("detect", 0.30, 0.85),
+        ("flash_on", 0.16, 1.30),
+        ("peak", 0.18, 1.40),
+        ("flash_off", 0.16, 0.95),
+        ("flash_on_2", 0.16, 1.30),
+        ("return", 0.34, 0.85),
+    )
+    _ALERT_PERIOD = sum(seg[1] for seg in _ALERT_PHASES)
+
+    def _alert_phase(self) -> tuple[float, float]:
+        """Returns (glow_multiplier, jitter_amount) for the current point
+        in ALERT's looping 6-phase pulse. jitter_amount is only non-zero
+        during "Peak" (max brightness + a tiny vibration), same as the
+        reference sequence's step 3."""
+        t = self._alert_clock % self._ALERT_PERIOD
+        elapsed = 0.0
+        for name, duration, level in self._ALERT_PHASES:
+            if t < elapsed + duration:
+                jitter = 1.0 if name == "peak" else 0.0
+                return level, jitter
+            elapsed += duration
+        return self._ALERT_PHASES[0][2], 0.0
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -360,34 +412,50 @@ class PixelFaceWidget(QWidget):
         # Screen sits inset from the widget's full bounds, leaving room
         # above for cat ears and to the sides for whiskers - both drawn
         # outside the screen itself, like a physical device's casing.
-        ear_room = full_rect.height() * 0.16
-        whisker_room = full_rect.width() * 0.12
+        # Proportions matched to the Image 1 reference scale: a slightly
+        # smaller ear/whisker margin than earlier so the screen (and the
+        # face on it) reads a touch bigger relative to the whole widget.
+        ear_room = full_rect.height() * 0.13
+        whisker_room = full_rect.width() * 0.10
         rect = QRectF(
             full_rect.left() + whisker_room,
             full_rect.top() + ear_room,
             full_rect.width() - whisker_room * 2,
             full_rect.height() - ear_room - full_rect.height() * 0.04,
         )
-        radius = min(rect.width(), rect.height()) * 0.22
+
+        # ALERT's "Peak" phase adds a tiny vibration - a few px of jitter
+        # on the whole screen rect, same idea as step 3 of the reference
+        # sequence ("Max Brightness + Vibration").
+        if self._expr.alert_flash:
+            _mult, jitter_on = self._alert_phase()
+            if jitter_on:
+                jitter_px = rect.width() * 0.012
+                dx = math.sin(self._clock * 90.0) * jitter_px
+                dy = math.cos(self._clock * 73.0) * jitter_px
+                rect = rect.translated(dx, dy)
+
+        radius = min(rect.width(), rect.height()) * 0.24
 
         self._draw_ears(painter, rect)
 
         # Screen body
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
-        painter.fillPath(path, self._theme.screen)
-        edge_pen = QPen(self._theme.edge)
+        painter.fillPath(path, self._casing.screen)
+        edge_pen = QPen(self._casing.edge)
         edge_pen.setWidthF(max(1.0, rect.width() * 0.006))
         painter.setPen(edge_pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
         painter.setPen(Qt.NoPen)
 
-        # Soft "breathing" glow behind the face - part of the idle-alive feel.
+        # Soft "breathing" glow behind the face - part of the idle-alive
+        # feel. Halo hue follows the active expression's color.
         pulse = 0.5 + 0.5 * math.sin((self._clock / _PULSE_PERIOD_S) * 2 * math.pi)
         glow_amount = self._render_glow()
         glow_alpha = int(30 + 40 * glow_amount * pulse)
-        halo = self._theme.glow_halo
+        halo = self._current_color()
         glow = QRadialGradient(rect.center(), rect.width() * 0.55)
         glow.setColorAt(0.0, QColor(halo.red(), halo.green(), halo.blue(), glow_alpha))
         glow.setColorAt(1.0, QColor(halo.red(), halo.green(), halo.blue(), 0))
@@ -410,10 +478,10 @@ class PixelFaceWidget(QWidget):
         ear_h = screen_rect.height() * 0.26
         inset = screen_rect.width() * 0.08
 
-        pen = QPen(self._theme.edge)
+        pen = QPen(self._casing.edge)
         pen.setWidthF(max(1.0, screen_rect.width() * 0.006))
         painter.setPen(pen)
-        painter.setBrush(self._theme.ear)
+        painter.setBrush(self._casing.ear)
         for side in (-1, 1):
             base_x = (
                 screen_rect.left() + inset
@@ -433,7 +501,7 @@ class PixelFaceWidget(QWidget):
         """A few thin lines poking out either side, filling the margin
         left between the screen and the widget's outer edge - decorative
         only, sized to reliably read at small window sizes."""
-        pen = QPen(self._theme.whisker)
+        pen = QPen(self._casing.whisker)
         pen.setWidthF(max(1.6, screen_rect.width() * 0.01))
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
@@ -456,7 +524,7 @@ class PixelFaceWidget(QWidget):
 
     def _draw_face(self, painter: QPainter, rect: QRectF) -> None:
         w, h = rect.width(), rect.height()
-        eye_color = self._theme.glow
+        eye_color = self._current_color()
         cx = rect.center().x()
         cy = rect.center().y() - h * 0.05
 
@@ -482,14 +550,21 @@ class PixelFaceWidget(QWidget):
                 self._draw_spiral(painter, eye_rect.center(), eye_w * 0.62, spin_angle)
             elif self._expr.heart_eyes and open_amount > 0.15:
                 self._draw_heart(painter, eye_rect.center(), eye_w * 1.05)
+            elif self._expr.angry_eyes and open_amount > 0.15:
+                self._draw_x_eye(painter, eye_rect.center(), eye_w * 0.62, eye_color)
+            elif self._expr.shy_eyes:
+                self._draw_closed_happy_eye(painter, eye_rect.center(), eye_w * 0.7, eye_color)
             else:
                 painter.drawRoundedRect(eye_rect, eye_w * 0.4, eye_w * 0.4)
 
         brow_angle = self._render_brow_angle()
-        if abs(brow_angle) > 0.5:
-            self._draw_brows(painter, eye_centers, cy - eye_max_h * 0.75, eye_w, w, brow_angle, self._theme.glow)
+        if abs(brow_angle) > 0.5 and not self._expr.angry_eyes:
+            self._draw_brows(painter, eye_centers, cy - eye_max_h * 0.75, eye_w, w, brow_angle, eye_color)
 
-        mouth_color = self._theme.glow
+        if self._expr.show_question_mark:
+            self._draw_question_mark(painter, eye_centers, cy - eye_max_h * 1.05, eye_color)
+
+        mouth_color = eye_color
         mouth_y = cy + h * 0.24
         mouth_w = w * 0.22
         painter.setPen(Qt.NoPen)
@@ -566,7 +641,7 @@ class PixelFaceWidget(QWidget):
                 start_x + seg_w * (i + 1), y,
             )
         pen = painter.pen()
-        painter.setPen(self._theme.glow)
+        painter.setPen(self._current_color())
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
         painter.setPen(pen)
@@ -614,11 +689,63 @@ class PixelFaceWidget(QWidget):
         path.closeSubpath()
         painter.drawPath(path)
 
+    @staticmethod
+    def _draw_x_eye(painter: QPainter, center: QPointF, size: float, color: QColor) -> None:
+        """A sharp crossed "X" eye (spec: Angry, matching the reference
+        image's fierce >< eyes) instead of the usual rounded-rect eye -
+        reads as aggressive/hostile at a glance, no brows needed."""
+        prior_brush = painter.brush()
+        pen = QPen(color)
+        pen.setWidthF(max(1.6, size * 0.32))
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(pen)
+        half = size * 0.55
+        painter.drawLine(QPointF(center.x() - half, center.y() - half), QPointF(center.x() + half, center.y() + half))
+        painter.drawLine(QPointF(center.x() - half, center.y() + half), QPointF(center.x() + half, center.y() - half))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(prior_brush)
+
+    @staticmethod
+    def _draw_closed_happy_eye(painter: QPainter, center: QPointF, size: float, color: QColor) -> None:
+        """A closed, upward-curved "^" eye (spec: Shy, matching the
+        reference image's soft closed-eye smile) instead of a rounded
+        rect - reads as bashful/content rather than alert."""
+        prior_brush = painter.brush()
+        pen = QPen(color)
+        pen.setWidthF(max(1.6, size * 0.24))
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(pen)
+        path = QPainterPath()
+        path.moveTo(center.x() - size * 0.5, center.y() + size * 0.12)
+        path.quadTo(center.x(), center.y() - size * 0.55, center.x() + size * 0.5, center.y() + size * 0.12)
+        painter.drawPath(path)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(prior_brush)
+
+    def _draw_question_mark(self, painter: QPainter, eye_centers: list, y: float, color: QColor) -> None:
+        """A small floating "?" above the face (spec: Confused, matching
+        the reference image's puzzled question-mark bubble). Bobs gently
+        so it doesn't look like a static UI badge."""
+        if not eye_centers:
+            return
+        eye_gap = abs(eye_centers[-1] - eye_centers[0]) or 20.0
+        x = eye_centers[-1] + eye_gap * 0.35
+        bob = math.sin(self._clock * 2.6) * eye_gap * 0.03
+        painter.setPen(color)
+        font = painter.font()
+        font.setBold(True)
+        font.setPointSizeF(max(7.0, eye_gap * 0.32))
+        painter.setFont(font)
+        painter.drawText(QPointF(x, y + bob), "?")
+        painter.setPen(Qt.NoPen)
+
     def _draw_blush(self, painter: QPainter, eye_centers: list, cy: float, eye_max_h: float) -> None:
-        """Soft cheek color under each eye (spec: pending BLUSH/SHY
-        expressions). A fixed warm tint reads as "blushing" clearly
-        against any of the four glow themes, so this deliberately doesn't
-        use self._theme.glow."""
+        """Soft cheek color under each eye (spec: BLUSH/SHY expressions).
+        A fixed warm tint reads as "blushing" clearly regardless of which
+        expression color the eyes/mouth are drawn in, so this
+        deliberately doesn't use the expression's own glow color."""
         blush_color = QColor(255, 140, 170, 110)
         painter.setBrush(blush_color)
         painter.setPen(Qt.NoPen)
@@ -632,7 +759,7 @@ class PixelFaceWidget(QWidget):
         each rising and fading before the next spawns underneath it -
         deliberately sized/positioned to always stay inside `full_rect`
         (the widget's own bounds), never clipped off the visible frame."""
-        glow = self._theme.glow
+        glow = self._current_color()
         base_x = full_rect.right() - full_rect.width() * 0.26
         base_y = full_rect.top() + full_rect.height() * 0.30
         travel_y = full_rect.height() * 0.16

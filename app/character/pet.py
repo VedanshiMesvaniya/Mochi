@@ -26,7 +26,6 @@ from app.character.movement import Mover, ScreenBounds
 from app.character.pixel_face import PixelFaceWidget
 from app.character.shake_detector import ShakeDetector
 from app.character.state_machine import CharacterState, CharacterStateMachine
-from app.character.theme import THEME_ORDER, THEMES
 from app.core.config import settings
 from app.core.events import Events, event_bus
 from app.core.logger import get_logger
@@ -264,11 +263,9 @@ class PetWindow(QWidget):
         self._setup_window()
         self._setup_ui()
         self._setup_tray_free_menu()
-        self._setup_theme_menu()
         self._setup_timers()
         self._place_on_screen()
         self._subscribe_to_events()
-        self._load_theme()
         self._subscribe_to_lock_watcher()
         self.lock_watcher.start()
 
@@ -339,21 +336,6 @@ class PetWindow(QWidget):
             self.action_exit,
         ):
             self.context_menu.addAction(action)
-
-    def _setup_theme_menu(self) -> None:
-        """Glow-color theme picker (spec: 4 selectable options, persisted
-        locally). Inserted into the right-click menu next to Settings,
-        since there's no full settings window yet."""
-        self.theme_menu = QMenu("Theme", self)
-        self._theme_actions: dict[str, QAction] = {}
-        for key in THEME_ORDER:
-            theme = THEMES[key]
-            action = QAction(theme.label, self, checkable=True)
-            action.triggered.connect(lambda _checked, k=key: self._set_theme(k))
-            self.theme_menu.addAction(action)
-            self._theme_actions[key] = action
-        # Inserted before Settings so the menu reads: ... Memories, Theme, Settings, ...
-        self.context_menu.insertMenu(self.action_settings, self.theme_menu)
 
     def _setup_timers(self) -> None:
         # Face animation tick - blink/pulse/talk-frame advance + redraw.
@@ -429,20 +411,6 @@ class PetWindow(QWidget):
             self.state_machine.set_state(self.behavior_engine.default_expression())
         self._held_state = None
         self._shake_active = False
-
-    # ------------------------------------------------------------------
-    # Glow theme (spec: 4 selectable options, persisted locally)
-    # ------------------------------------------------------------------
-    def _load_theme(self) -> None:
-        saved_key = settings_store.get_setting(settings_store.KEY_GLOW_THEME)
-        self._set_theme(saved_key or "purple", persist=False)
-
-    def _set_theme(self, key: str, persist: bool = True) -> None:
-        self.face.set_theme(key)
-        for action_key, action in getattr(self, "_theme_actions", {}).items():
-            action.setChecked(action_key == key)
-        if persist:
-            settings_store.set_setting(settings_store.KEY_GLOW_THEME, key)
 
     # ------------------------------------------------------------------
     # Lock-screen easter egg (just for fun - spec: eyes close on lock,
