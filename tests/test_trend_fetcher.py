@@ -22,9 +22,26 @@ def test_fetch_trends_noop_when_disabled(monkeypatch, temp_db):
 
 
 def test_fetch_trends_handles_network_failure_gracefully(monkeypatch, temp_db):
-    """Feature enabled but network unreachable in the test environment -
-    must degrade to 'no trends' rather than raising."""
+    """Feature enabled but the network call fails - must degrade to 'no
+    trends' rather than raising.
+
+    Regression note: this used to call fetch_trends() with nothing
+    mocked and just assert 0, relying on the *test environment itself*
+    having no network access to make the real request fail. That's not
+    guaranteed - CI runners generally do have real internet access, so
+    the real Google News RSS fetch would actually succeed there and
+    return a nonzero count, failing this assertion for a reason that has
+    nothing to do with the code under test. Directly raising the same
+    exception fetch_trends() is documented to catch makes this
+    deterministic regardless of what network access happens to be
+    available wherever the suite runs."""
     monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+
+    def _unreachable(limit: int = 8):
+        raise trend_fetcher.urllib.error.URLError("simulated: network unreachable")
+
+    monkeypatch.setattr(trend_fetcher, "_fetch_raw_headlines", _unreachable)
+
     assert trend_fetcher.fetch_trends() == 0
     assert trend_fetcher.get_recent_trends() == []
 
