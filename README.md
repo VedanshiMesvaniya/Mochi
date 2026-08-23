@@ -1,5 +1,7 @@
 # 🐱 Mochi
 
+[![CI](https://github.com/VedanshiMesvaniya/Mochi/actions/workflows/ci.yml/badge.svg)](https://github.com/VedanshiMesvaniya/Mochi/actions/workflows/ci.yml)
+
 Mochi is a small, local-first desktop companion: a black rounded "screen"
 with cat ears and whiskers that sits on your desktop and shows an
 expressive pixel face — no body, no walking, just a face that
@@ -8,8 +10,9 @@ tasks, and timers, answer open-ended questions through an optional local
 LLM, and remembers roughly how often you've talked to it.
 
 Nothing leaves your machine unless you explicitly turn on an integration
-that needs the network (there currently isn't one wired up — chat's
-optional LLM step talks to a locally-running Ollama, not the cloud).
+that needs the network. Chat's optional LLM step talks to a
+locally-running Ollama, not the cloud; the one exception is the fully
+opt-in Google Calendar connection (see below), which is off by default.
 
 ---
 
@@ -241,6 +244,22 @@ Ollama is running — Mochi will start using it automatically.
 pip install -r requirements-dev.txt
 pytest
 ```
+
+Also install `requirements-calendar.txt` first if you want the Google
+Calendar-specific tests exercised against the real optional client
+libraries too (they pass either way - see `tests/test_google_calendar.py`).
+
+### Linting
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+```
+
+CI (`.github/workflows/ci.yml`) runs this plus the full test suite
+across Python 3.10-3.12 on every push/PR, once with the optional
+calendar dependencies installed and once without, so a normal
+(fully-local) install and a calendar-enabled one both stay green.
 
 ---
 

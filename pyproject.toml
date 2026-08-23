@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Deliberately narrow for a first CI pass on an existing codebase: F
+# (pyflakes - unused imports/variables, undefined names, etc.) and E9
+# (genuine syntax errors) catch real bugs without forcing an unrelated
+# full-repo style rewrite (import order, line length, docstring
+# conventions, ...) as a side effect of "add CI". Widening this (e.g.
+# adding `I` for import sorting, `UP` for pyupgrade, `B` for bugbear) is
+# a deliberate, separate follow-up - not something CI should silently
+# start enforcing.
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files intentionally shadow fixture/parameter names sometimes and
+# use star-ish patterns pytest expects - nothing in the F/E9 set above
+# actually needs a test-specific exception yet, but this is here so one
+# can be added without re-deriving where per-file config goes.
+"tests/*" = []
