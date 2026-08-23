@@ -1,7 +1,5 @@
 # 🐱 Mochi
 
-[![CI](https://github.com/VedanshiMesvaniya/Mochi/actions/workflows/ci.yml/badge.svg)](https://github.com/VedanshiMesvaniya/Mochi/actions/workflows/ci.yml)
-
 Mochi is a small, local-first desktop companion: a black rounded "screen"
 with cat ears and whiskers that sits on your desktop and shows an
 expressive pixel face — no body, no walking, just a face that
@@ -270,8 +268,8 @@ pip install -r requirements-dev.txt
 ruff check .
 ```
 
-CI (`.github/workflows/ci.yml`) runs this plus the full test suite
-across Python 3.10-3.12 on every push/PR, once with the optional
+There is no CI pipeline for this project - run `ruff check .` and the
+test suite locally before opening a PR, ideally once with the optional
 calendar dependencies installed and once without, so a normal
 (fully-local) install and a calendar-enabled one both stay green.
 
