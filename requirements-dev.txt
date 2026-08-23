@@ -1,1 +1,6 @@
 pytest>=7.4.0
+
+# Linting (see pyproject.toml's [tool.ruff] for the rule set CI runs -
+# deliberately narrow: unused-import/variable and syntax-error checks
+# only, not a full style enforcer).
+ruff>=0.6.0

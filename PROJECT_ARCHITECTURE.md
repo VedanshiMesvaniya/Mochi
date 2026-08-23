@@ -332,15 +332,27 @@ running Qt app window or a live Ollama server:
   `test_timer_*` files — CRUD, repeat rules, the JSON tool wrappers, and
   due/ignored-reminder reactions
 - `test_google_calendar.py` / `test_calendar_tools.py` — OAuth/token
-  state handling and event listing against a fake `googleapiclient`
-  service object (no real Google API/network call is ever made in
-  tests); skipped automatically if the optional Google client libraries
-  aren't installed (`pytest.importorskip`)
+  state handling and event listing/creation/deletion against a fake
+  `googleapiclient` service object (no real Google API/network call is
+  ever made in tests). These mock `google_calendar._import_google_libraries()`
+  directly rather than the real Google client libraries, so they run
+  identically whether or not `requirements-calendar.txt` is installed -
+  CI (below) exercises both states anyway, but a contributor without
+  those optional packages still gets full coverage locally.
 - `test_movement.py` — screen-bounds math used when dragging the window
 
 `pixel_face.py` and `chat_window.py` tests that need a real `QWidget` use
 a session-scoped `qapp` fixture (`tests/conftest.py`) running Qt in
 offscreen mode.
+
+**CI** (`.github/workflows/ci.yml`) runs `ruff check .` (a narrow
+pyflakes/syntax-error rule set - see `pyproject.toml`'s `[tool.ruff]`
+comment for why it's not a full style enforcer) plus this entire test
+suite on every push/PR, across Python 3.10-3.12, with one matrix leg
+also installing `requirements-calendar.txt` so the "optional Google
+libraries present" path gets exercised too - not just the "absent" path
+every other leg runs. No live network calls or real Google/Ollama
+services are needed for any of it.
 
 ---
 

@@ -147,9 +147,6 @@ def test_meme_premise_takes_priority_over_trend_topic_in_prompt():
     used - trend context must not also appear alongside it."""
     from app.ai import llm as llm_module
 
-    captured = {}
-    original_format = llm_module._MEME_CONTEXT_TEMPLATE.format
-
     # Build the flavor_context the same way ask() does, without needing a
     # live server - this directly exercises the priority logic.
     meme_premise = "something about a cat knocking things off a table"
