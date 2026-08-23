@@ -14,9 +14,10 @@ on:
 
 # checks: write is needed by the test-reporter step below, which
 # publishes JUnit results as annotations on the run (see that step's own
-# comment for why this exists).
+# comment for why this exists). contents: write is needed by the
+# temporary diagnostics step further down.
 permissions:
-  contents: read
+  contents: write
   checks: write
 
 jobs:
@@ -107,9 +108,11 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: xcb
-        run: >-
-          xvfb-run -a pytest -v
-          --junitxml=junit-${{ matrix.python-version }}-${{ matrix.calendar-extras }}.xml
+        run: |
+          set -o pipefail
+          xvfb-run -a pytest -v \
+            --junitxml=junit-${{ matrix.python-version }}-${{ matrix.calendar-extras }}.xml \
+            2>&1 | tee pytest-output.log
 
       # Publishes the JUnit results as a Check Run with per-test
       # annotations, visible directly on the PR/commit in GitHub's UI -
@@ -126,3 +129,20 @@ jobs:
           path: "junit-*.xml"
           reporter: java-junit
           fail-on-error: "false"
+
+      # TEMPORARY: the raw step log above is only reachable via a
+      # signed Azure Blob Storage URL that isn't reachable from where
+      # this is being debugged, so this posts the actual pytest failure
+      # output somewhere that IS reachable through the plain GitHub API
+      # (a commit comment, via GET /repos/{repo}/commits/{sha}/comments)
+      # instead of the log. Remove this step and
+      # .github/scripts/post_failure_comment.py once CI is green again -
+      # this is a one-off debugging aid, not a permanent part of the
+      # pipeline.
+      - name: Post failure diagnostics as a commit comment (temporary)
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MATRIX_PYTHON_VERSION: ${{ matrix.python-version }}
+          MATRIX_CALENDAR_EXTRAS: ${{ matrix.calendar-extras }}
+        run: python3 .github/scripts/post_failure_comment.py
