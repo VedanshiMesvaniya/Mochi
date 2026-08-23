@@ -2,7 +2,7 @@ import pytest
 
 from app.character.pixel_face import FACE_EXPRESSIONS, PixelFaceWidget
 from app.character.state_machine import CharacterState
-from app.character.theme import THEME_ORDER
+from app.character.theme import EXPRESSION_COLORS, get_expression_color
 
 REQUIRED_STATES = [
     CharacterState.IDLE,
@@ -151,15 +151,32 @@ def test_peek_one_eye_opens_an_eye_while_locked(qapp):
     assert right == pytest.approx(0.0, abs=0.001)
 
 
-@pytest.mark.parametrize("theme_key", THEME_ORDER)
 @pytest.mark.parametrize("state", REQUIRED_STATES + PENDING_STATES)
-def test_every_theme_renders_every_state_without_crashing(qapp, theme_key, state):
-    widget = PixelFaceWidget(theme_key=theme_key)
+def test_every_state_renders_without_crashing_and_uses_its_own_color(qapp, state):
+    widget = PixelFaceWidget()
     widget.resize(140, 140)
     widget.set_state(state)
     widget.tick(0.05)
-    assert widget._theme.key == theme_key
+    assert widget._current_color() == get_expression_color(state)
     widget.grab()  # must not raise
+
+
+def test_angry_and_alert_have_their_updated_colors():
+    assert EXPRESSION_COLORS[CharacterState.ANGRY].name().upper() == "#D50000"
+    assert EXPRESSION_COLORS[CharacterState.ALERT].name().upper() == "#FF1744"
+
+
+def test_alert_phase_cycles_through_six_named_segments():
+    widget = PixelFaceWidget()
+    widget.set_state(CharacterState.ALERT)
+    seen = set()
+    for _ in range(200):
+        widget.tick(0.02)
+        mult, _jitter = widget._alert_phase()
+        seen.add(round(mult, 2))
+    # Detect/Flash On/Peak/Flash Off/Flash On(2)/Return -> 4 distinct levels
+    # (the two Flash On segments share a level, same as the reference).
+    assert len(seen) >= 4
 
 
 def test_zzz_particles_stay_within_widget_bounds(qapp):

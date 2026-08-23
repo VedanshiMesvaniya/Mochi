@@ -87,20 +87,28 @@ app/
 │   ├── pet.py                 PySide6 transparent/frameless/draggable window;
 │   │                           owns the state machine, behavior engine, and
 │   │                           the face widget; wires chat/reminder/task
-│   │                           reactions, the theme menu, and the lock-screen
-│   │                           watcher into visible state changes
+│   │                           reactions and the lock-screen watcher into
+│   │                           visible state changes
 │   ├── pixel_face.py           Programmatic EMO-style face renderer - eyes,
 │   │                           mouth, brows, ears, whiskers, blink/pulse/
 │   │                           talk-cycle animation, cursor-following pupils,
 │   │                           a spring-physics smoothing layer so expression
 │   │                           changes bounce into place instead of snapping,
-│   │                           and a cartoon multi-glyph "Zzz" while asleep.
-│   │                           No image assets; every expression is a small
-│   │                           dataclass of numbers (FACE_EXPRESSIONS table,
-│   │                           16 expressions total)
-│   ├── theme.py                 Four selectable glow-color palettes (Purple/
-│   │                            Blue/Mint/Rose) - cosmetic only, never touches
-│   │                            expression geometry
+│   │                           a cartoon multi-glyph "Zzz" while asleep, and a
+│   │                           few dedicated draw paths layered on top of the
+│   │                           usual recolor: angry's crossed "X" eyes,
+│   │                           confused's floating "?", shy's closed
+│   │                           upward-curved eyes, and alert's six-phase
+│   │                           detect/flash/peak/flash/return pulse (with a
+│   │                           small vibration at its peak). No image assets;
+│   │                           every expression is a small dataclass of
+│   │                           numbers + flags (FACE_EXPRESSIONS table, 16
+│   │                           expressions total)
+│   ├── theme.py                 One unified casing look (CASING) plus
+│   │                            EXPRESSION_COLORS: a single canonical LED
+│   │                            hex per expression (angry = crimson, happy =
+│   │                            green, ...) - not user-selectable, and never
+│   │                            touches expression geometry, only color
 │   ├── lock_watcher.py           Windows-only (ctypes) OS lock-state polling
 │   │                             for the lock-screen easter egg; injectable
 │   │                             probe for testing, safe no-op elsewhere
@@ -141,7 +149,7 @@ app/
 │   │                             flavors greetings/LLM tone as familiarity
 │   │                             grows (new / getting_to_know / familiar)
 │   └── settings_store.py         Tiny SQLite key-value store for small
-│                                 persisted preferences (currently: glow theme)
+│                                 persisted preferences
 │
 ├── reminders/                  Local reminder engine
 │   ├── manager.py                CRUD over the `reminders` table + repeat rules
