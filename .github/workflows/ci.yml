@@ -68,7 +68,12 @@ jobs:
       # tests/conftest.py, which sets QT_QPA_PLATFORM=offscreen before
       # anything imports PySide6) - GitHub's ubuntu-latest runner doesn't
       # ship them by default. No virtual display (Xvfb) is needed since
-      # nothing here ever renders to a real screen.
+      # nothing here ever renders to a real screen; this was confirmed
+      # working end-to-end (all 383 tests) once the actual cause of an
+      # earlier round of CI failures - two tests that assumed the network
+      # would be unreachable rather than mocking it, see
+      # tests/test_trend_fetcher.py / tests/test_meme_fetcher.py - was
+      # fixed.
       - name: Install system Qt runtime dependencies
         run: |
           sudo apt-get update

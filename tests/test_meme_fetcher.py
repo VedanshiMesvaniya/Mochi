@@ -20,9 +20,23 @@ def test_fetch_memes_noop_when_disabled(monkeypatch, temp_db):
 
 
 def test_fetch_memes_handles_network_failure_gracefully(monkeypatch, temp_db):
-    """Feature enabled but Reddit unreachable in the test environment -
-    must degrade to 'no meme' rather than raising."""
+    """Feature enabled but the network call fails - must degrade to 'no
+    meme' rather than raising.
+
+    Regression note: same fix as test_trend_fetcher.py's identically-named
+    test - this used to rely on the ambient test environment actually
+    having no network access, which broke on any CI runner with real
+    internet access (it would successfully fetch real Reddit posts
+    instead of hitting the 'unreachable' path this test means to cover).
+    Directly raising the exception fetch_memes() is documented to catch
+    makes this deterministic everywhere."""
     monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+
+    def _unreachable(limit: int = 8):
+        raise meme_fetcher.urllib.error.URLError("simulated: network unreachable")
+
+    monkeypatch.setattr(meme_fetcher, "_fetch_raw_titles", _unreachable)
+
     assert meme_fetcher.fetch_memes() == 0
     assert meme_fetcher.get_recent_memes() == []
 
