@@ -17,10 +17,13 @@ palettes). That's gone along with the multi-theme system itself - see
 app/character/theme.py - so there's only one sheet to produce now, and
 each tile picks up its expression's own signature color automatically.
 
-The renderer itself (PixelFaceWidget) now draws onto a tiny low-res
-buffer and scales it up with nearest-neighbor sampling for a chunky
-pixel-art look (see app/character/pixel_face.py's _PIXEL_BUFFER_SIZE) -
-so this script's PNG output is blocky by design, not a rendering bug.
+The renderer itself (PixelFaceWidget) draws fully antialiased at its real
+resolution - an earlier revision rendered to a tiny low-res buffer and
+nearest-neighbor-upscaled it for a "pixel art" look, but that produced
+jagged, ugly edges and was reverted. "Pixel" describes the blocky/
+geometric shape language (rounded-rect eyes, hard-edged mouths), not
+literal rasterization - so this script's PNG output should look smooth,
+not jagged.
 """
 
 from __future__ import annotations

@@ -98,19 +98,23 @@ app/
 │   │                           asleep, and a few dedicated draw paths layered
 │   │                           on top of the usual recolor: angry's sharply
 │   │                           furrowed frown brows, confused's floating "?",
-│   │                           shy's closed upward-curved eyes, and alert's
-│   │                           six-phase detect/flash/peak/flash/return pulse
-│   │                           (with a small vibration at its peak, held long
-│   │                           enough via pet.py's REACTION_HOLD_MS to
-│   │                           actually finish before reverting). No image
-│   │                           assets; every expression is a small dataclass
-│   │                           of numbers + flags (FACE_EXPRESSIONS table, 16
-│   │                           expressions total). The whole face renders
-│   │                           onto a tiny fixed-resolution buffer with
-│   │                           antialiasing off, then scales up with
-│   │                           nearest-neighbor sampling for a genuine
-│   │                           chunky pixel-art look (_PIXEL_BUFFER_SIZE)
-│   │                           rather than a smooth vector blob
+│   │                           shy's closed upward-curved eyes, sad's small
+│   │                           falling tear, excited's twinkling sparkle, and
+│   │                           alert's six-phase detect/flash/peak/flash/
+│   │                           return pulse (with a small vibration at its
+│   │                           peak, held long enough via pet.py's
+│   │                           REACTION_HOLD_MS to actually finish before
+│   │                           reverting). No image assets; every expression
+│   │                           is a small dataclass of numbers + flags
+│   │                           (FACE_EXPRESSIONS table, 16 expressions
+│   │                           total). Rendered fully antialiased at the
+│   │                           widget's real resolution - "pixel" describes
+│   │                           the blocky/geometric shape language (rounded-
+│   │                           rect eyes, hard-edged mouths), not literal
+│   │                           rasterization (an earlier revision tried
+│   │                           rendering to a tiny buffer and nearest-
+│   │                           neighbor-upscaling it; that just looked
+│   │                           jagged and was reverted)
 │   ├── theme.py                 One unified casing look (CASING) plus
 │   │                            EXPRESSION_COLORS: a single canonical LED
 │   │                            hex per expression (angry = crimson, happy =
