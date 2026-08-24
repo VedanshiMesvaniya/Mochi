@@ -152,12 +152,20 @@ def test_peek_one_eye_opens_an_eye_while_locked(qapp):
 
 
 @pytest.mark.parametrize("state", REQUIRED_STATES + PENDING_STATES)
-def test_every_state_renders_without_crashing_and_uses_its_own_color(qapp, state):
+def test_every_state_renders_without_crashing_and_settles_to_its_own_color(qapp, state):
     widget = PixelFaceWidget()
     widget.resize(140, 140)
     widget.set_state(state)
-    widget.tick(0.05)
-    assert widget._current_color() == get_expression_color(state)
+    for _ in range(300):  # let the color spring settle to its target
+        widget.tick(0.02)
+    current = widget._current_color()
+    target = get_expression_color(state)
+    # The spring approaches its target asymptotically and never lands on
+    # it exactly bit-for-bit - a couple of RGB units off is an
+    # imperceptible, expected steady-state residual, not a bug.
+    assert abs(current.red() - target.red()) <= 2
+    assert abs(current.green() - target.green()) <= 2
+    assert abs(current.blue() - target.blue()) <= 2
     widget.grab()  # must not raise
 
 

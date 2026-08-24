@@ -18,28 +18,35 @@ opt-in Google Calendar connection (see below), which is off by default.
 
 A ~180×180px frameless, translucent window: a dark rounded square with
 small triangular ears and a few whiskers, and a glowing pixel face on top.
-There's one unified casing look (no user-selectable palette) — instead,
-the **glow color itself changes per expression**, like an LED status
-light: idle is calm violet, happy is emerald green, angry is deep
-crimson, and so on. It blinks on its own, has a faint idle "breathing"
-glow, and its pupils drift toward your mouse cursor while idle. Every
-expression change eases and bounces into place through a small
-spring-physics layer rather than snapping instantly — that's the main
-thing that makes it read as alive rather than a slideshow of static
-faces.
+Rendered as genuine chunky pixel art - the whole face is drawn at a tiny
+fixed resolution with antialiasing off, then scaled up with nearest-
+neighbor sampling, so every edge lands on a hard pixel boundary instead of
+a smooth vector curve. There's one unified casing look (no user-selectable
+palette) — instead, the **glow color itself changes per expression**, like
+an LED status light: idle is calm violet, happy is emerald green, angry is
+deep crimson, and so on, easing into its new hue over a fraction of a
+second rather than cutting instantly. It blinks on its own, has a faint
+idle "breathing" glow, and its pupils drift toward your mouse cursor while
+idle. Every expression change eases and bounces into place through a small
+spring-physics layer rather than snapping instantly, and each reaction
+holds long enough to actually register (tuned per-emotion in
+`REACTION_HOLD_MS` - a surprised flash is quick, alert runs its full
+multi-second pulse sequence, a sulk lingers) — that's the main thing that
+makes it read as alive rather than a slideshow of static faces.
 
 **Expressions (16):** idle, happy, sad, angry, confused, surprised,
 thinking, sleepy, sleeping, talking, excited, alert, blush, shy, heart,
 wink — all drawn programmatically (no image assets), so every expression
 is just numbers (eye openness, pupil offset, mouth shape, brow angle,
-color) plus a handful of dedicated shapes for a few states: angry draws
-crossed "X" eyes, confused shows a small floating "?", shy closes its
-eyes into a soft upward curve, and alert runs a six-phase
-detect → flash-on → peak → flash-off → flash-on → return pulse (with a
-tiny vibration at its peak) instead of a static glow. Chat reactions pick
-between these organically — a mild compliment gets a shy blush, "I love
-you" gets heart-eyes, and an ignored-too-long attention ping alternates
-between an alert pulse and a playful wink.
+color) plus a handful of dedicated shapes for a few states: angry
+furrows both brows into a sharp downward frown (steeper and thicker than
+a mild sad brow, not just a slight squint), confused shows a small
+floating "?", shy closes its eyes into a soft upward curve, and alert
+runs a six-phase detect → flash-on → peak → flash-off → flash-on →
+return pulse (with a tiny vibration at its peak) instead of a static
+glow. Chat reactions pick between these organically — a mild compliment
+gets a shy blush, "I love you" gets heart-eyes, and an ignored-too-long
+attention ping alternates between an alert pulse and a playful wink.
 
 ![All 16 of Mochi's expressions](./assets/readme/expressions.png)
 
@@ -106,13 +113,16 @@ layers:
 2. **Local LLM fallback** — anything that bucket doesn't recognize is
    sent to a locally-running [Ollama](https://ollama.com) model (default
    `qwen3:0.6b`, configurable) for a real conversational reply, on a
-   background thread so a slow reply never freezes the chat window. If
-   Ollama isn't installed, isn't running, or the model hasn't been
-   pulled, Mochi says so directly ("my brain's offline right now...")
-   rather than giving the same generic "I'm not sure what you mean" line
-   a genuinely-unrecognized message gets — the LLM is a nice-to-have
-   layered on top of a fully working local app, not a requirement, but
-   it shouldn't be a mystery when it's not active.
+   background thread so a slow reply never freezes the chat window. The
+   prompt always includes the actual current local date/time, so
+   "what time is it"/"is it late"/relative phrasing like "remind me
+   tonight" have real ground truth to answer from instead of the model
+   guessing. If Ollama isn't installed, isn't running, or the model
+   hasn't been pulled, Mochi says so directly ("my brain's offline right
+   now...") rather than giving the same generic "I'm not sure what you
+   mean" line a genuinely-unrecognized message gets — the LLM is a
+   nice-to-have layered on top of a fully working local app, not a
+   requirement, but it shouldn't be a mystery when it's not active.
 
 Mochi also keeps a lightweight local interaction counter (not any kind of
 learned model) that shifts its greeting and tone a little as you talk to
@@ -123,13 +133,18 @@ it more — new, getting-to-know, and familiar.
 ## Reminders, tasks & timers
 
 All three are fully local, stored in SQLite, and handled entirely through
-chat — both creating them ("remind me to call mom at 7pm", "set a timer
-for 10 minutes", "remember that I need to buy milk") and checking them
-("do I have any tasks?", "what reminders do I have?", both answered from
-the real database, never guessed by the LLM). There's deliberately no
-separate right-click menu for any of this anymore — one consistent way in
-via chat, rather than a manual window duplicating what chat already does
-end to end.
+chat — creating them ("remind me to call mom at 7pm", "set a timer for 10
+minutes", "remember that I need to buy milk"), checking them ("do I have
+any tasks?", "what reminders do I have?", both answered from the real
+database, never guessed by the LLM), and acting on ones that already
+exist ("mark my task to call aunt as done", "cancel my reminder to call
+mom", "cancel the timer") — matched against whatever's actually open/
+active by title, so it resolves "call aunt" against a task literally
+titled "Call aunt" without needing an exact-string match. If nothing (or
+more than one thing) matches, Mochi asks which one you mean rather than
+guessing. There's deliberately no separate right-click menu for any of
+this anymore — one consistent way in via chat, rather than a manual
+window duplicating what chat already does end to end.
 
 - **Reminders** — one-off or repeating (`DAILY`/`WEEKLY`/`MONTHLY`), with
   a background scheduler that checks for due reminders and surfaces them

@@ -2,6 +2,8 @@ from app.ai.chat_engine import handle_message
 from app.character.state_machine import CharacterState, Emotion
 from app.memory import relationship
 from app.reminders import manager as reminder_manager
+from app.tasks import manager as task_manager
+from app.timers import manager as timer_manager
 
 
 def test_greeting_reaction_has_no_side_effects(temp_db):
@@ -23,6 +25,81 @@ def test_reminder_message_actually_creates_a_reminder(temp_db):
 def test_malformed_input_never_crashes(temp_db):
     reaction = handle_message("")
     assert reaction.text
+
+
+# --- Completing/cancelling an existing task/reminder/timer -------------
+# Regression coverage for the exact reported bug: "mark my task to call
+# aunt as done" had no matching intent at all and fell through to the
+# open-ended LLM bucket instead of actually completing anything.
+
+
+def test_mark_task_done_actually_completes_it(temp_db):
+    handle_message("remember that i need to call aunt")
+    reaction = handle_message("mark my task to call aunt as done")
+    assert "call aunt" in reaction.text.lower()
+    assert reaction.emotion == Emotion.HAPPY
+
+    tasks = task_manager.list_tasks()
+    assert tasks[-1].status == task_manager.TaskStatus.DONE
+
+
+def test_mark_task_done_with_only_one_task_and_no_specific_title(temp_db):
+    """"mark my task as done" with nothing else - falls back to the one
+    open task rather than asking, since there's nothing else it could
+    mean. This must not kick in when a *specific* title was given that
+    just doesn't match anything (see the "asks instead of guessing" test
+    above) - only when the query itself came out empty."""
+    handle_message("remember that i need to buy milk")
+    reaction = handle_message("mark my task as done")
+    assert "buy milk" in reaction.text.lower()
+
+
+def test_mark_task_done_with_no_matching_task_asks_instead_of_guessing(temp_db):
+    handle_message("remember that i need to buy milk")
+    reaction = handle_message("mark my task to launch a rocket as done")
+    assert "not sure" in reaction.text.lower()
+    tasks = task_manager.list_tasks()
+    assert tasks[-1].status == task_manager.TaskStatus.OPEN  # untouched
+
+
+def test_mark_task_done_with_no_tasks_at_all(temp_db):
+    reaction = handle_message("mark my task as done")
+    assert "don't have any open tasks" in reaction.text.lower()
+
+
+def test_cancel_task_actually_cancels_it(temp_db):
+    handle_message("remember that i need to buy milk")
+    reaction = handle_message("cancel my task to buy milk")
+    assert "buy milk" in reaction.text.lower()
+    tasks = task_manager.list_tasks()
+    assert tasks[-1].status == task_manager.TaskStatus.CANCELLED
+
+
+def test_mark_reminder_done_actually_completes_it(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    reaction = handle_message("mark my reminder to call mom as done")
+    assert "call mom" in reaction.text.lower()
+    reminders = reminder_manager.list_reminders()
+    assert reminders[-1].status == reminder_manager.ReminderStatus.COMPLETED
+
+
+def test_cancel_reminder_actually_cancels_it(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    reaction = handle_message("cancel my reminder to call mom")
+    reminders = reminder_manager.list_reminders()
+    assert reminders[-1].status == reminder_manager.ReminderStatus.CANCELLED
+
+
+def test_cancel_timer_actually_cancels_it(temp_db):
+    handle_message("set a timer for 10 minutes")
+    reaction = handle_message("cancel the timer")
+    assert "stopped" in reaction.text.lower()
+    assert timer_manager.list_active_timers() == []
+
+
+def test_cancel_timer_with_none_running(temp_db):
+    reaction = handle_message("cancel the timer")
+    assert "don't have any timers running" in reaction.text.lower()
 
 
 def test_every_message_records_an_interaction(temp_db):

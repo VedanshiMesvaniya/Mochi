@@ -93,17 +93,24 @@ app/
 │   │                           mouth, brows, ears, whiskers, blink/pulse/
 │   │                           talk-cycle animation, cursor-following pupils,
 │   │                           a spring-physics smoothing layer so expression
-│   │                           changes bounce into place instead of snapping,
-│   │                           a cartoon multi-glyph "Zzz" while asleep, and a
-│   │                           few dedicated draw paths layered on top of the
-│   │                           usual recolor: angry's crossed "X" eyes,
-│   │                           confused's floating "?", shy's closed
-│   │                           upward-curved eyes, and alert's six-phase
-│   │                           detect/flash/peak/flash/return pulse (with a
-│   │                           small vibration at its peak). No image assets;
-│   │                           every expression is a small dataclass of
-│   │                           numbers + flags (FACE_EXPRESSIONS table, 16
-│   │                           expressions total)
+│   │                           and color changes ease into place instead of
+│   │                           snapping, a cartoon multi-glyph "Zzz" while
+│   │                           asleep, and a few dedicated draw paths layered
+│   │                           on top of the usual recolor: angry's sharply
+│   │                           furrowed frown brows, confused's floating "?",
+│   │                           shy's closed upward-curved eyes, and alert's
+│   │                           six-phase detect/flash/peak/flash/return pulse
+│   │                           (with a small vibration at its peak, held long
+│   │                           enough via pet.py's REACTION_HOLD_MS to
+│   │                           actually finish before reverting). No image
+│   │                           assets; every expression is a small dataclass
+│   │                           of numbers + flags (FACE_EXPRESSIONS table, 16
+│   │                           expressions total). The whole face renders
+│   │                           onto a tiny fixed-resolution buffer with
+│   │                           antialiasing off, then scales up with
+│   │                           nearest-neighbor sampling for a genuine
+│   │                           chunky pixel-art look (_PIXEL_BUFFER_SIZE)
+│   │                           rather than a smooth vector blob
 │   ├── theme.py                 One unified casing look (CASING) plus
 │   │                            EXPRESSION_COLORS: a single canonical LED
 │   │                            hex per expression (angry = crimson, happy =
@@ -127,18 +134,33 @@ app/
 │   ├── intent.py                Rule-based matcher: greeting/farewell/thanks/
 │   │                            compliment (mild → blush, strong → heart)/
 │   │                            insult/sleepy/bored/reminder/timer/task/
-│   │                            unknown, each mapped to a response + emotion
-│   │                            + animation (+ a tool call, for actionable
-│   │                            intents)
+│   │                            complete-or-cancel-an-existing-task/
+│   │                            reminder/timer/unknown, each mapped to a
+│   │                            response + emotion + animation (+ a tool
+│   │                            call, for actionable intents). The
+│   │                            complete/cancel intents don't fix a
+│   │                            response text - they only extract a
+│   │                            free-text query ("mark my task to call
+│   │                            aunt as done" -> "call aunt") for
+│   │                            chat_engine.py to fuzzy-match against
+│   │                            whatever's actually open/active in the DB
 │   ├── chat_engine.py            Orchestrates a message end-to-end: runs
 │   │                            intent detection, executes any tool call
-│   │                            (with validation), falls through to the
-│   │                            local LLM for "unknown" messages, records
-│   │                            the interaction for familiarity tracking
+│   │                            (with validation), fuzzy-matches
+│   │                            complete/cancel intents against the real
+│   │                            task/reminder/timer tables (asks rather
+│   │                            than guessing when nothing/multiple
+│   │                            things match), falls through to the local
+│   │                            LLM for "unknown" messages, records the
+│   │                            interaction for familiarity tracking
 │   └── llm.py                    Optional local LLM backend - talks to
 │                                 Ollama's HTTP API directly (stdlib only,
-│                                 no extra dependency); 30s bounded timeout
-│                                 (generous enough for a cold local model);
+│                                 no extra dependency); every prompt
+│                                 includes the actual current local date/
+│                                 time so "what time is it"/relative
+│                                 phrasing never has to be guessed; 30s
+│                                 bounded timeout (generous enough for a
+│                                 cold local model);
 │                                 raises LLMUnavailable on any failure so
 │                                 the caller can fall back gracefully
 │

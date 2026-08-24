@@ -172,6 +172,55 @@ TASK_TRIGGER = re.compile(
     r"\b(remember (that )?i need to|add (a )?task|todo:?)\b", re.IGNORECASE
 )
 
+# --- Completing/cancelling an existing task/reminder/timer -------------
+# Previously totally unreachable from chat (spec bug report: "mark my
+# task to call aunt as done" fell through to the open-ended LLM, which
+# had no task list to check against and hallucinated a reply instead of
+# doing anything). These deliberately require the literal word "task" /
+# "reminder" / "timer" so "mark X as done" unambiguously routes to the
+# right store rather than guessing - see chat_engine.py's fuzzy title
+# match, which resolves the free-text query against whatever's actually
+# open/active in the DB.
+TASK_DONE_TRIGGER = re.compile(
+    r"(?:\bmark\b(?=.*\btask\b)(?=.*\b(?:done|complete(?:d)?|finished)\b))"
+    r"|(?:\bcomplete(?:d)?\b(?:\s+(?:the|my))?\s+task\b)"
+    r"|(?:\bfinish(?:ed)?\b(?:\s+(?:the|my))?\s+task\b)"
+    r"|(?:\btask\b.*\b(?:is\s+)?(?:done|complete(?:d)?|finished)\b)",
+    re.IGNORECASE,
+)
+TASK_CANCEL_TRIGGER = re.compile(
+    r"\b(?:cancel|delete|remove)\b(?=.*\btask\b)|\btask\b.*\b(?:cancel|delete|remove)\b",
+    re.IGNORECASE,
+)
+REMINDER_DONE_TRIGGER = re.compile(
+    r"(?:\bmark\b(?=.*\breminder\b)(?=.*\b(?:done|complete(?:d)?|finished)\b))"
+    r"|(?:\bcomplete(?:d)?\b(?:\s+(?:the|my))?\s+reminder\b)"
+    r"|(?:\breminder\b.*\b(?:is\s+)?(?:done|complete(?:d)?|finished)\b)",
+    re.IGNORECASE,
+)
+REMINDER_CANCEL_TRIGGER = re.compile(
+    r"\b(?:cancel|delete|remove)\b(?=.*\breminder\b)|\breminder\b.*\b(?:cancel|delete|remove)\b",
+    re.IGNORECASE,
+)
+TIMER_CANCEL_TRIGGER = re.compile(
+    r"\b(?:cancel|stop|delete|remove)\b(?=.*\btimer\b)|\btimer\b.*\b(?:cancel|stop)\b",
+    re.IGNORECASE,
+)
+# Strips control words (mark/complete/cancel/.../as/is/my/the/to plus the
+# store keyword itself) out of a matched sentence, leaving just the
+# free-text query to fuzzy-match against real titles in chat_engine.py.
+# e.g. "mark my task to call aunt as done" -(strip "task")-> "call aunt".
+_ACTION_STOPWORDS = re.compile(
+    r"\b(?:mark|complete(?:d)?|finish(?:ed)?|cancel|delete|remove|stop|"
+    r"task|reminder|timer|as|is|my|the|to|done)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_action_query(text: str) -> str:
+    cleaned = _ACTION_STOPWORDS.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip(" ,.!")
+
 # --- Google Calendar (spec sections 22-24, V3: read-only) --------------
 # Checked before the small-talk/fallback bucket but after reminders/
 # timers/tasks, same reasoning as LIST_REMINDERS_TRIGGER above: these are
@@ -354,6 +403,55 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=CharacterState.THINKING,
             response="",  # chat_engine fills this in from the real reminder list
             tool="list_reminders",
+        )
+
+    # --- Completing/cancelling an existing task/reminder/timer ---------
+    # Checked before the create triggers below and before calendar (no
+    # overlap risk either way, but grouped with the listing checks above
+    # since these are all "look something up / act on something that
+    # already exists" rather than "create something new"). response=""
+    # the same way list_tasks/list_reminders do - chat_engine.py's
+    # fuzzy-match-then-act handler builds the real reply from whatever
+    # actually matches in the DB, never a canned line here.
+    if TASK_DONE_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="complete_task",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="",
+            tool_args={"query": _extract_action_query(text)},
+        )
+    if TASK_CANCEL_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="cancel_task",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+            response="",
+            tool_args={"query": _extract_action_query(text)},
+        )
+    if REMINDER_DONE_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="complete_reminder",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="",
+            tool_args={"query": _extract_action_query(text)},
+        )
+    if REMINDER_CANCEL_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="cancel_reminder",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+            response="",
+            tool_args={"query": _extract_action_query(text)},
+        )
+    if TIMER_CANCEL_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="cancel_timer",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+            response="",
+            tool_args={"query": _extract_action_query(text)},
         )
 
     # --- Google Calendar (spec sections 22-24, V3: read-only) -----------
