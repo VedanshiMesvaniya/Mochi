@@ -144,24 +144,37 @@ it more — new, getting-to-know, and familiar.
 ## Reminders, tasks & timers
 
 All three are fully local, stored in SQLite, and handled entirely through
-chat — creating them ("remind me to call mom at 7pm", "set a timer for 10
-minutes", "remember that I need to buy milk"), checking them ("do I have
-any tasks?", "what reminders do I have?", both answered from the real
-database, never guessed by the LLM), and acting on ones that already
-exist ("mark my task to call aunt as done", "cancel my reminder to call
-mom", "cancel the timer") — matched against whatever's actually open/
-active by title, so it resolves "call aunt" against a task literally
-titled "Call aunt" without needing an exact-string match. If nothing (or
-more than one thing) matches, Mochi asks which one you mean rather than
-guessing. There's deliberately no separate right-click menu for any of
-this anymore — one consistent way in via chat, rather than a manual
-window duplicating what chat already does end to end.
+chat — creating them ("remind me to call mom at 7pm", "set a reminder to
+water plants at 8am", "set a timer for 10 minutes", "5 minute timer",
+"add task buy milk", "new task clean my room", "remember that I need to
+buy milk"), checking them ("do I have any tasks?", "what reminders do I
+have?", both answered from the real database, never guessed by the LLM),
+and acting on ones that already exist ("mark my task to call aunt as
+done", "cancel my reminder to call mom", "cancel the timer") — matched
+against whatever's actually open/active by title, so it resolves "call
+aunt" against a task literally titled "Call aunt" without needing an
+exact-string match. If nothing (or more than one thing) matches, Mochi
+asks which one you mean rather than guessing. There's deliberately no
+separate right-click menu for any of this — one consistent way in via
+chat, rather than a manual window/form duplicating what chat already
+does end to end. Chat recognizes a fairly wide range of everyday
+phrasing (see `TASK_TRIGGER`/`REMINDER_TRIGGER`/`TIMER_TRIGGER` in
+`app/ai/intent.py`); every message's detected intent is also logged
+(`mochi.ai.chat_engine`), so if a phrasing genuinely doesn't match yet
+it's visible in the log rather than silently doing nothing.
 
 - **Reminders** — one-off or repeating (`DAILY`/`WEEKLY`/`MONTHLY`), with
   a background scheduler that checks for due reminders and surfaces them
   with an animation, sound, speech bubble, and OS notification. If a
   reminder is still pending several minutes later, Mochi reacts annoyed.
-- **Tasks** — a simple open/done checklist, no due date.
+- **Tasks** — a simple open/done checklist. A due date is optional — add
+  a task with no deadline ("add task buy milk") and it just sits in the
+  list until you mark it done; give it a deadline ("add task submit
+  report at 5pm") and it sorts to the front of the list, soonest first,
+  ahead of undated tasks. Unlike reminders, a task with a deadline
+  doesn't get its own notification/scheduler — it's a checklist entry
+  with a date attached,
+  not a timed alert.
 - **Timers** — short countdowns that persist across restarts.
 
 ---

@@ -220,7 +220,7 @@ app/
     │                             background ChatWorker(QThread) so a slow
     │                             reply never freezes the UI
     ├── reminder_window.py          Create/list/complete/snooze/delete reminders
-    ├── task_window.py              Add/toggle-done/delete tasks
+    ├── task_window.py              Add (with optional deadline)/toggle-done/delete tasks
     ├── timer_window.py             Start/view/extend/cancel timers
     └── tray.py                     System tray icon + menu
 ```
@@ -310,7 +310,7 @@ reaction + sound + speech bubble + OS notification.
 ```text
 data/mochi.db
 ├── reminders   id, title, due_at, repeat_rule, status, created_at, completed_at
-├── tasks       id, title, status ('open'|'done'|'cancelled'), created_at, completed_at
+├── tasks       id, title, status ('open'|'done'|'cancelled'), created_at, completed_at, due_at (nullable)
 ├── timers      id, label, duration_seconds, started_at, due_at, status, notified_at
 └── relationship  id (single row), interaction_count, first_seen, last_seen
 ```
@@ -320,13 +320,32 @@ data/mochi.db
   If a reminder is still `pending` several minutes after being surfaced,
   the notifier checks back once and reacts annoyed (`CharacterState.ANGRY`).
 - **Tasks** have no scheduler — they're a plain open/done checklist,
-  toggled from the UI or via chat ("remember that I need to...").
+  created and toggled through chat ("remember that I need to...", "add
+  task buy milk", "mark my task to call aunt as done"). `due_at`
+  is optional and purely informational: it changes `list_tasks()`
+  ordering (dated tasks sort first, soonest due first, ahead of undated
+  ones) but never triggers a notification the way a reminder does — if
+  you want an actual alert, that's what reminders are for. `due_at` was
+  added after the `tasks` table already shipped, so `database.py` runs a
+  small idempotent `ALTER TABLE ... ADD COLUMN` migration (guarded by a
+  `PRAGMA table_info` check) on startup for anyone with an existing
+  `data/mochi.db` from before the column existed.
 - **Timers** poll every ~1s (a countdown finishing is something the user
   is actively waiting on, unlike a reminder) and persist across restarts.
 
-All three are reachable both by chatting in natural language and through
-a dedicated window from the right-click menu — the chat path and the
-manual-UI path call the exact same manager functions underneath.
+All three are handled entirely through chat — there's deliberately no
+right-click menu item for any of them (the underlying `app/ui/
+reminder_window.py` / `task_window.py` / `timer_window.py` classes still
+exist and are tested, just not wired into the UI, in case a future
+feature wants to reuse them). The alternative to a strict chat-first
+interface is the user filling in a form for something a companion app is
+supposed to just understand when asked, which defeats the point of
+Mochi. This means the regex triggers in `app/ai/intent.py`
+(`TASK_TRIGGER`/`REMINDER_TRIGGER`/`TIMER_TRIGGER`, etc.) are the whole
+interface and need to cover realistic everyday phrasing, not just one
+canonical form per action — and `chat_engine.py` logs every message's
+detected intent/tool/args plus each tool call's outcome, so a phrasing
+gap shows up in the log instead of silently doing nothing.
 
 ---
 

@@ -47,6 +47,49 @@ def test_task_creation():
     result = detect_intent("remember that i need to buy milk", now=NOW)
     assert result.tool == "create_task"
     assert result.tool_args["title"] == "Buy milk"
+    assert "due_at_iso" not in result.tool_args
+
+
+def test_task_creation_with_deadline():
+    result = detect_intent("add task submit report at 7pm", now=NOW)
+    assert result.tool == "create_task"
+    assert result.tool_args["title"] == "Submit report"
+    assert result.tool_args["due_at_iso"] == "2026-08-14T19:00:00"
+
+
+def test_reminder_trigger_variants():
+    for phrase in [
+        "set a reminder to water plants at 8am",
+        "create a reminder to water plants at 8am",
+        "reminder to water plants at 8am",
+        "don't let me forget to water plants at 8am",
+    ]:
+        result = detect_intent(phrase, now=NOW)
+        assert result.tool == "create_reminder", phrase
+        assert result.tool_args["title"] == "Water plants"
+
+
+def test_timer_trigger_variants():
+    assert detect_intent("5 minute timer", now=NOW).tool_args["duration_seconds"] == 300
+    assert (
+        detect_intent("start a countdown for 2 minutes", now=NOW).tool_args["duration_seconds"]
+        == 120
+    )
+    assert (
+        detect_intent("countdown for 90 seconds", now=NOW).tool_args["duration_seconds"] == 90
+    )
+
+
+def test_task_trigger_variants():
+    for phrase, expected_title in [
+        ("new task clean my room", "Clean my room"),
+        ("create a task call the bank", "Call the bank"),
+        ("create task pay rent", "Pay rent"),
+        ("task: clean my room", "Clean my room"),
+    ]:
+        result = detect_intent(phrase, now=NOW)
+        assert result.tool == "create_task", phrase
+        assert result.tool_args["title"] == expected_title
 
 
 def test_insult_is_not_confused_with_greeting():

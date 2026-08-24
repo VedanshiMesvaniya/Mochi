@@ -147,8 +147,16 @@ def _matches_any(text: str, phrases: tuple[str, ...]) -> bool:
     return False
 
 
-REMINDER_TRIGGER = re.compile(r"\bremind me\b", re.IGNORECASE)
-TIMER_TRIGGER = re.compile(r"\b(set a timer|start a timer|timer for)\b", re.IGNORECASE)
+REMINDER_TRIGGER = re.compile(
+    r"\b(remind me|set a reminder|create a reminder|make a reminder|reminder to|"
+    r"don'?t let me forget)\b",
+    re.IGNORECASE,
+)
+TIMER_TRIGGER = re.compile(
+    r"\b(set a timer|start a timer|timer for|start a countdown|countdown for|"
+    r"\d+\s*(?:second|sec|minute|min|hour|hr)s?\s+timer)\b",
+    re.IGNORECASE,
+)
 # Listing/query phrasing, checked BEFORE the creation triggers above so
 # something like "remind me what tasks I have" (contains "remind me" but
 # is clearly a query, not a new reminder) still resolves correctly.
@@ -169,7 +177,8 @@ LIST_REMINDERS_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 TASK_TRIGGER = re.compile(
-    r"\b(remember (that )?i need to|add (a )?task|todo:?)\b", re.IGNORECASE
+    r"\b(remember (that )?i need to|add (a )?task|new task:?|create (a )?task|todo:?|task:)",
+    re.IGNORECASE,
 )
 
 # --- Completing/cancelling an existing task/reminder/timer -------------
@@ -349,14 +358,14 @@ def _parse_duration_seconds(text: str) -> Optional[int]:
     return amount
 
 
-def _title_from(text: str) -> str:
+def _title_from(text: str, fallback: str = "Reminder") -> str:
     # Drop a trailing time clause so "call mom at 7pm" -> "call mom"
     cleaned = TIME_AT.sub("", text)
     cleaned = TIME_IN.sub("", cleaned)
     cleaned = re.sub(r"\btomorrow\b", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^to\s+", "", cleaned.strip(), flags=re.IGNORECASE)
     cleaned = cleaned.strip(" ,.!")
-    return cleaned[:1].upper() + cleaned[1:] if cleaned else "Reminder"
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else fallback
 
 
 # ---------------------------------------------------------------------------
@@ -632,15 +641,28 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
     # --- Tasks ---------------------------------------------------------
     if TASK_TRIGGER.search(lowered):
         body = TASK_TRIGGER.sub("", text, count=1).strip(" ,.!")
-        title = _title_from(body) if body else "New task"
+        # Tasks are checklist items with no required deadline (unlike
+        # reminders) - but spec follow-up: "unless i give it deadline it
+        # should be there [too]", so reuse the same at/in-N-minutes
+        # parsing reminders use and attach it when present, without
+        # requiring it the way reminders do.
+        due = _parse_absolute_time(body, now) if body else None
+        minutes = _parse_relative_minutes(body) if body else None
+        if due is None and minutes is not None:
+            due = now + timedelta(minutes=minutes)
+        title = _title_from(body, fallback="New task") if body else "New task"
+        due_note = f" (due {due:%H:%M})" if due else ""
+        tool_args = {"title": title}
+        if due is not None:
+            tool_args["due_at_iso"] = due.isoformat()
         return DetectedIntent(
             name="create_task",
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
             sound="chirp",
-            response=f"Noted! I'll remember: {title.lower()}.",
+            response=f"Noted! I'll remember: {title.lower()}{due_note}.",
             tool="create_task",
-            tool_args={"title": title},
+            tool_args=tool_args,
         )
 
     # --- On-demand expression command --------------------------------

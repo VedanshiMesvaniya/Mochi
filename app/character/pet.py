@@ -301,16 +301,17 @@ class PetWindow(QWidget):
     def _setup_tray_free_menu(self) -> None:
         """Right-click context menu (spec section 13).
 
-        Reminders/Tasks/Timers/Calendar are deliberately NOT here anymore -
-        creating any of those is now handled "smartly" straight from chat
-        (e.g. "remind me to..." / "add task..." / "timer for...", see
-        app/ai/intent.py), and *checking* them is a chat query too ("do I
-        have any tasks?" - see app/ai/chat_engine.py's list_tasks/
-        list_reminders handling). A menu item whose only job was opening a
-        window to do that manually was redundant with something chat
-        already does end to end. The window classes themselves
+        Reminders/Tasks/Timers/Calendar are deliberately NOT here - the
+        whole point of Mochi is that you talk to it, not fill in a form
+        ("remind me to call mom at 7pm" / "add task buy milk" / "timer for
+        10 minutes", see app/ai/intent.py). Checking them is a chat query
+        too ("do I have any tasks?" - see app/ai/chat_engine.py's
+        list_tasks/list_reminders handling). A menu item whose only job is
+        opening a window to do the same thing manually defeats the point
+        of a chat-first companion - don't re-add these without confirming
+        with the user first. The window classes themselves
         (app/ui/reminder_window.py etc.) are untouched and still fully
-        working/tested - just not wired to this menu.
+        working/tested, just not wired to this menu.
         """
         self.context_menu = QMenu(self)
         self.action_chat = QAction("Chat", self)
@@ -622,10 +623,10 @@ class PetWindow(QWidget):
     # ------------------------------------------------------------------
     # Reminders window (spec section 13/20 - V1)
     #
-    # No longer reachable from the right-click menu (see
-    # _setup_tray_free_menu) - kept here, fully working, in case a future
-    # chat command wants to pop the visual list open ("let me see that")
-    # rather than just answering in text.
+    # Not on the right-click menu - chat is the primary/intended way to
+    # create and check reminders (see app/ai/intent.py + chat_engine.py).
+    # Kept here, fully working, in case a future chat command wants to pop
+    # the visual list open ("let me see that") rather than answering in text.
     # ------------------------------------------------------------------
     def _open_reminder_window(self) -> None:
         # Local import avoids a hard PySide6-widget dependency for anything
@@ -641,7 +642,7 @@ class PetWindow(QWidget):
 
     # ------------------------------------------------------------------
     # Tasks window (V2) - see _open_reminder_window's note above; same
-    # story, no longer on the right-click menu, kept for future reuse.
+    # story, not on the right-click menu, kept for future reuse.
     # ------------------------------------------------------------------
     def _open_task_window(self) -> None:
         from app.ui.task_window import TaskWindow
@@ -655,7 +656,7 @@ class PetWindow(QWidget):
 
     # ------------------------------------------------------------------
     # Timers window (V2) - see _open_reminder_window's note above; same
-    # story, no longer on the right-click menu, kept for future reuse.
+    # story, not on the right-click menu, kept for future reuse.
     # ------------------------------------------------------------------
     def _open_timer_window(self) -> None:
         from app.ui.timer_window import TimerWindow
