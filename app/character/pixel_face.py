@@ -33,8 +33,16 @@ Personality touches baked into the renderer itself (not just state swaps):
     dedicated draw path instead of just a recolor: ANGRY furrows both
     brows into a sharp downward frown, ALERT runs a six-phase
     detect/flash/peak/flash/return pulse sequence with a small vibration
-    at its peak, SHY draws closed upward-curved "happy" eyes, and
-    CONFUSED shows a small floating "?" above one eye
+    at its peak, SHY draws closed upward-curved "happy" eyes, CONFUSED
+    shows a small floating "?" above one eye, SAD draws a small falling
+    tear, and EXCITED sparkles a tiny star beside each eye
+  - drawn fully antialiased at the widget's real resolution (an earlier
+    revision rendered to a tiny buffer and nearest-neighbor-upscaled it
+    for a "pixel art" look, but that just produced jagged, ugly edges -
+    reverted). "Pixel" here describes the deliberately blocky/geometric
+    *shape* of each expression (rounded-rect eyes, hard-edged mouths),
+    the same visual language as an LED matrix icon - not literal
+    single-pixel rasterization
 """
 
 from __future__ import annotations
@@ -46,7 +54,7 @@ from enum import Enum
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QRadialGradient
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
 from app.character.state_machine import CharacterState
@@ -86,6 +94,8 @@ class Expression:
     shy_eyes: bool = False         # draw closed, upward-curved "happy" eyes
     show_question_mark: bool = False  # floating "?" above the face (confused)
     alert_flash: bool = False      # run the 6-phase detect/flash/peak/return pulse
+    show_tear: bool = False        # a small falling tear beside one eye (sad)
+    show_sparkle: bool = False     # a tiny star beside each eye (excited)
 
 
 # The 16-expression reference sheet, plus a Locked state for the
@@ -95,7 +105,7 @@ class Expression:
 FACE_EXPRESSIONS: dict[CharacterState, Expression] = {
     CharacterState.IDLE: Expression(eye_open=1.0, mouth=MouthType.FLAT, cursor_follow=True, glow=0.55),
     CharacterState.HAPPY: Expression(eye_open=0.75, mouth=MouthType.SMILE, glow=0.75),
-    CharacterState.SAD: Expression(eye_open=0.6, eye_offset_y=0.25, brow_angle=-12, mouth=MouthType.FROWN, glow=0.35),
+    CharacterState.SAD: Expression(eye_open=0.6, eye_offset_y=0.25, brow_angle=-12, mouth=MouthType.FROWN, glow=0.35, show_tear=True),
     CharacterState.ANGRY: Expression(eye_open=0.55, brow_angle=26, mouth=MouthType.ANGRY_V, glow=0.85),
     CharacterState.CONFUSED: Expression(eye_open=0.85, eye_open_right=0.5, brow_angle=10, mouth=MouthType.WAVY, glow=0.55, show_question_mark=True),
     CharacterState.SURPRISED: Expression(eye_open=1.35, mouth=MouthType.O, glow=0.9),
@@ -103,7 +113,7 @@ FACE_EXPRESSIONS: dict[CharacterState, Expression] = {
     CharacterState.SLEEPY: Expression(eye_open=0.25, eye_offset_y=0.15, mouth=MouthType.FLAT, glow=0.3),
     CharacterState.SLEEP: Expression(eye_open=0.0, mouth=MouthType.NONE, glow=0.2, show_zzz=True),
     CharacterState.TALKING: Expression(eye_open=0.9, mouth=MouthType.TALK_OPEN, glow=0.65, cursor_follow=True),
-    CharacterState.EXCITED: Expression(eye_open=1.1, mouth=MouthType.BIG_SMILE, glow=0.95),
+    CharacterState.EXCITED: Expression(eye_open=1.1, mouth=MouthType.BIG_SMILE, glow=0.95, show_sparkle=True),
     CharacterState.ALERT: Expression(eye_open=1.25, mouth=MouthType.O, glow=0.85, cursor_follow=True, alert_flash=True),
     # --- the four "pending" expressions from the reference sheet ---
     CharacterState.BLUSH: Expression(eye_open=0.8, mouth=MouthType.SMILE, glow=0.7, blush=True),
@@ -148,16 +158,6 @@ _PEEK_DURATION_S = 0.55
 
 # Dizzy spiral-eye rotation speed (see DIZZY expression / _draw_spiral).
 _SPIN_DEGREES_PER_SECOND = 320.0
-
-# Pixel-art rendering (spec: "give me those pixel art type of thing" -
-# matching the blocky EMO reference sheet rather than a smooth vector
-# blob). The whole face is drawn at this fixed, tiny resolution with
-# antialiasing off, then scaled up to the widget's real size with nearest-
-# neighbor sampling (Qt's default when SmoothPixmapTransform is off) - so
-# every edge lands on a hard pixel boundary instead of a soft curve, the
-# same way the reference sprite sheet reads. Low enough to look chunky at
-# typical widget sizes (~140-220px) without going illegible.
-_PIXEL_BUFFER_SIZE = 44
 
 # Spring constants (see _spring_step) - deliberately underdamped relative
 # to critical damping (2*sqrt(stiffness)) so expression changes have a
@@ -435,19 +435,10 @@ class PixelFaceWidget(QWidget):
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
-        # Render the whole face at a fixed, tiny resolution with no
-        # antialiasing (see _PIXEL_BUFFER_SIZE), then blit that buffer up
-        # to the widget's real size with nearest-neighbor scaling - this
-        # is what actually produces the blocky pixel-art look, without
-        # having to hand-author a bitmap per expression: every existing
-        # shape-drawing routine below is unchanged, it just now draws
-        # onto a small buffer instead of the widget directly.
-        buffer = QImage(_PIXEL_BUFFER_SIZE, _PIXEL_BUFFER_SIZE, QImage.Format_ARGB32_Premultiplied)
-        buffer.fill(Qt.transparent)
-        painter = QPainter(buffer)
-        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
 
-        full_rect = QRectF(buffer.rect()).adjusted(1, 1, -1, -1)
+        full_rect = QRectF(self.rect()).adjusted(3, 3, -3, -3)
         # Screen sits inset from the widget's full bounds, leaving room
         # above for cat ears and to the sides for whiskers - both drawn
         # outside the screen itself, like a physical device's casing.
@@ -507,16 +498,6 @@ class PixelFaceWidget(QWidget):
         if self._expr.show_zzz:
             self._draw_zzz(painter, full_rect)
         painter.end()
-
-        # Blit the tiny buffer up to the widget's real size with nearest-
-        # neighbor sampling (SmoothPixmapTransform left off, which is
-        # Qt's default for drawImage) - this is what turns it into hard-
-        # edged "pixels" instead of a blurry upscale.
-        widget_painter = QPainter(self)
-        widget_painter.setRenderHint(QPainter.Antialiasing, False)
-        widget_painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-        widget_painter.drawImage(self.rect(), buffer, buffer.rect())
-        widget_painter.end()
 
     def _draw_ears(self, painter: QPainter, screen_rect: QRectF) -> None:
         """Two simple triangular cat ears sitting on top of the screen,
@@ -586,12 +567,14 @@ class PixelFaceWidget(QWidget):
         pupil_shift = QPointF(pupil.x() * w * 0.05, pupil.y() * h * 0.05)
 
         eye_centers: list[float] = []
+        eye_rects: list[QRectF] = []
         for side, open_amount in ((-1, left_open), (1, right_open)):
             eye_h = max(2.0, eye_max_h * open_amount)
             ex = cx + side * eye_gap - eye_w / 2 + pupil_shift.x()
             ey = cy - eye_h / 2 + pupil_shift.y()
             eye_rect = QRectF(ex, ey, eye_w, eye_h)
             eye_centers.append(ex + eye_w / 2)
+            eye_rects.append(eye_rect)
             painter.setBrush(eye_color)
             painter.setPen(Qt.NoPen)
             if self._expr.spin_eyes and open_amount > 0.15:
@@ -610,6 +593,13 @@ class PixelFaceWidget(QWidget):
 
         if self._expr.show_question_mark:
             self._draw_question_mark(painter, eye_centers, cy - eye_max_h * 1.05, eye_color)
+
+        if self._expr.show_tear and len(eye_rects) == 2:
+            self._draw_tear(painter, eye_rects[1], eye_color)
+
+        if self._expr.show_sparkle:
+            for eye_rect in eye_rects:
+                self._draw_sparkle(painter, eye_rect, eye_color)
 
         mouth_color = eye_color
         mouth_y = cy + h * 0.24
@@ -774,6 +764,50 @@ class PixelFaceWidget(QWidget):
         painter.setFont(font)
         painter.drawText(QPointF(x, y + bob), "?")
         painter.setPen(Qt.NoPen)
+
+    def _draw_tear(self, painter: QPainter, eye_rect: QRectF, color: QColor) -> None:
+        """A small falling teardrop beside one eye (spec: Sad, matching
+        the reference image's teardrop). A fixed cool blue reads as
+        "tear" clearly regardless of the expression's own glow color, so
+        this deliberately doesn't reuse `color` for the fill - only for
+        a thin outline that ties it back to the face."""
+        fall = (math.sin(self._clock * 1.4) * 0.5 + 0.5) * eye_rect.height() * 0.6
+        cx = eye_rect.center().x() + eye_rect.width() * 0.55
+        top_y = eye_rect.bottom() + eye_rect.height() * 0.15 + fall
+        w = eye_rect.width() * 0.32
+        path = QPainterPath()
+        path.moveTo(cx, top_y)
+        path.cubicTo(cx - w * 0.6, top_y + w * 0.9, cx - w * 0.5, top_y + w * 1.8, cx, top_y + w * 2.0)
+        path.cubicTo(cx + w * 0.5, top_y + w * 1.8, cx + w * 0.6, top_y + w * 0.9, cx, top_y)
+        painter.setBrush(QColor(93, 173, 226, 230))
+        pen = QPen(color)
+        pen.setWidthF(max(0.6, eye_rect.width() * 0.03))
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.setPen(Qt.NoPen)
+
+    def _draw_sparkle(self, painter: QPainter, eye_rect: QRectF, color: QColor) -> None:
+        """A tiny 4-point star beside an eye (spec: Excited, matching the
+        reference image's sparkle-eyes). Twinkles via a fast size pulse
+        rather than sitting static, to read as energetic rather than
+        decorative clutter."""
+        twinkle = 0.6 + 0.4 * math.sin(self._clock * 9.0 + eye_rect.center().x())
+        size = eye_rect.width() * 0.34 * twinkle
+        cx = eye_rect.center().x() + eye_rect.width() * 0.75
+        cy = eye_rect.top() - eye_rect.height() * 0.25
+        path = QPainterPath()
+        path.moveTo(cx, cy - size)
+        path.lineTo(cx + size * 0.22, cy - size * 0.22)
+        path.lineTo(cx + size, cy)
+        path.lineTo(cx + size * 0.22, cy + size * 0.22)
+        path.lineTo(cx, cy + size)
+        path.lineTo(cx - size * 0.22, cy + size * 0.22)
+        path.lineTo(cx - size, cy)
+        path.lineTo(cx - size * 0.22, cy - size * 0.22)
+        path.closeSubpath()
+        painter.setBrush(color)
+        painter.setPen(Qt.NoPen)
+        painter.drawPath(path)
 
     def _draw_blush(self, painter: QPainter, eye_centers: list, cy: float, eye_max_h: float) -> None:
         """Soft cheek color under each eye (spec: BLUSH/SHY expressions).

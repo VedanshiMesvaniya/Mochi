@@ -18,11 +18,12 @@ opt-in Google Calendar connection (see below), which is off by default.
 
 A ~180×180px frameless, translucent window: a dark rounded square with
 small triangular ears and a few whiskers, and a glowing pixel face on top.
-Rendered as genuine chunky pixel art - the whole face is drawn at a tiny
-fixed resolution with antialiasing off, then scaled up with nearest-
-neighbor sampling, so every edge lands on a hard pixel boundary instead of
-a smooth vector curve. There's one unified casing look (no user-selectable
-palette) — instead, the **glow color itself changes per expression**, like
+"Pixel" describes the deliberately blocky, geometric shape language
+(rounded-rect eyes, hard-edged mouths - the same visual grammar as an LED
+matrix icon), not literal jagged rasterization: the face is drawn fully
+antialiased at the widget's real resolution, so curves and edges stay
+smooth. There's one unified casing look (no user-selectable palette) —
+instead, the **glow color itself changes per expression**, like
 an LED status light: idle is calm violet, happy is emerald green, angry is
 deep crimson, and so on, easing into its new hue over a fraction of a
 second rather than cutting instantly. It blinks on its own, has a faint
@@ -41,8 +42,9 @@ is just numbers (eye openness, pupil offset, mouth shape, brow angle,
 color) plus a handful of dedicated shapes for a few states: angry
 furrows both brows into a sharp downward frown (steeper and thicker than
 a mild sad brow, not just a slight squint), confused shows a small
-floating "?", shy closes its eyes into a soft upward curve, and alert
-runs a six-phase detect → flash-on → peak → flash-off → flash-on →
+floating "?", shy closes its eyes into a soft upward curve, sad gets a
+small falling tear, excited sparkles a tiny star beside each eye, and
+alert runs a six-phase detect → flash-on → peak → flash-off → flash-on →
 return pulse (with a tiny vibration at its peak) instead of a static
 glow. Chat reactions pick between these organically — a mild compliment
 gets a shy blush, "I love you" gets heart-eyes, and an ignored-too-long
@@ -50,19 +52,28 @@ attention ping alternates between an alert pulse and a playful wink.
 
 ![All 16 of Mochi's expressions](./assets/readme/expressions.png)
 
-**LED color map** — one canonical color per expression (see
+**LED color map** — one canonical color per expression, tuned by
+arousal/valence rather than picked arbitrarily (see
 `app/character/theme.py`):
 
-| Expression | Hex | Expression | Hex |
-|---|---|---|---|
-| Idle | `#8A2BE2` | Talking | `#34D399` |
-| Happy | `#00FF66` | Excited | `#FF007F` |
-| Sad | `#00D2FF` | Alert | `#FF1744` |
-| Angry | `#D50000` | Blush | `#FF6B8B` |
-| Confused | `#FFB300` | Shy | `#F472B6` |
-| Surprised | `#00E5FF` | Heart | `#FF1493` |
-| Thinking | `#A855F7` | Wink | `#00F0FF` |
-| Sleepy | `#6A608A` | Sleeping | `#312E81` |
+| Expression | Hex | Meaning |
+|---|---|---|
+| Happy | `#22C55E` | joy, warmth, optimism |
+| Excited | `#F97316` | energy, enthusiasm |
+| Wink | `#FFEA00` | playful, cheerful mischief |
+| Idle | `#C8C8D2` | neutral, resting |
+| Sad | `#3B82F6` | melancholy, tears |
+| Sleepy | `#C4B5FD` | twilight comfort, drowsiness |
+| Sleeping | `#312E81` | deep night, stillness |
+| Angry | `#E53935` | fury, danger |
+| Alert | `#FFC107` | warning light, heightened awareness |
+| Heart | `#EC4899` | affection, love |
+| Blush | `#F8A6C0` | embarrassment |
+| Shy | `#FFAB91` | modest, self-conscious |
+| Confused | `#14B8A6` | disorientation, mental fog |
+| Thinking | `#1E3A8A` | logic, structured analysis |
+| Surprised | `#C6FF00` | sudden shock, unpredictable |
+| Talking | `#22D3EE` | steady communication, flow |
 
 **Sleep:** eyes close and a small cartoon-style "Zzz" floats up and fades
 near the ear, looping, always contained within the window's own bounds.

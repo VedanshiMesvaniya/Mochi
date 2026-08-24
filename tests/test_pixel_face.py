@@ -170,8 +170,8 @@ def test_every_state_renders_without_crashing_and_settles_to_its_own_color(qapp,
 
 
 def test_angry_and_alert_have_their_updated_colors():
-    assert EXPRESSION_COLORS[CharacterState.ANGRY].name().upper() == "#D50000"
-    assert EXPRESSION_COLORS[CharacterState.ALERT].name().upper() == "#FF1744"
+    assert EXPRESSION_COLORS[CharacterState.ANGRY].name().upper() == "#E53935"
+    assert EXPRESSION_COLORS[CharacterState.ALERT].name().upper() == "#FFC107"
 
 
 def test_alert_phase_cycles_through_six_named_segments():
