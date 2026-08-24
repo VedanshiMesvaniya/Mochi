@@ -320,7 +320,8 @@ data/mochi.db
   If a reminder is still `pending` several minutes after being surfaced,
   the notifier checks back once and reacts annoyed (`CharacterState.ANGRY`).
 - **Tasks** have no scheduler — they're a plain open/done checklist,
-  toggled from the UI or via chat ("remember that I need to..."). `due_at`
+  created and toggled through chat ("remember that I need to...", "add
+  task buy milk", "mark my task to call aunt as done"). `due_at`
   is optional and purely informational: it changes `list_tasks()`
   ordering (dated tasks sort first, soonest due first, ahead of undated
   ones) but never triggers a notification the way a reminder does — if
@@ -332,14 +333,19 @@ data/mochi.db
 - **Timers** poll every ~1s (a countdown finishing is something the user
   is actively waiting on, unlike a reminder) and persist across restarts.
 
-All three are reachable both by chatting in natural language and through
-a dedicated window from the right-click menu — the chat path and the
-manual-UI path call the exact same manager functions underneath. (These
-windows were briefly unwired from the right-click menu in an earlier
-revision on the theory that chat covered everything; they've been
-restored since chat only acts on phrasing its regex triggers recognize,
-and the windows are the only way to browse the full list, snooze a
-reminder, or set/clear a task's deadline.)
+All three are handled entirely through chat — there's deliberately no
+right-click menu item for any of them (the underlying `app/ui/
+reminder_window.py` / `task_window.py` / `timer_window.py` classes still
+exist and are tested, just not wired into the UI, in case a future
+feature wants to reuse them). The alternative to a strict chat-first
+interface is the user filling in a form for something a companion app is
+supposed to just understand when asked, which defeats the point of
+Mochi. This means the regex triggers in `app/ai/intent.py`
+(`TASK_TRIGGER`/`REMINDER_TRIGGER`/`TIMER_TRIGGER`, etc.) are the whole
+interface and need to cover realistic everyday phrasing, not just one
+canonical form per action — and `chat_engine.py` logs every message's
+detected intent/tool/args plus each tool call's outcome, so a phrasing
+gap shows up in the log instead of silently doing nothing.
 
 ---
 

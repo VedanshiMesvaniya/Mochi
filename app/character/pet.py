@@ -301,22 +301,20 @@ class PetWindow(QWidget):
     def _setup_tray_free_menu(self) -> None:
         """Right-click context menu (spec section 13).
 
-        Reminders/Tasks/Timers are reachable two ways: "smartly" straight
-        from chat (e.g. "remind me to..." / "add task..." / "timer for...",
-        see app/ai/intent.py) *and* here, via the dedicated windows
-        (app/ui/reminder_window.py / task_window.py / timer_window.py).
-        These were previously removed from this menu on the theory that
-        chat covered everything - but chat only understands phrasing its
-        regex triggers recognize, and there was then no way at all to see/
-        edit things like a task's deadline or snooze a reminder without
-        guessing the right words. Keeping both paths means a message chat
-        doesn't parse the way you expected is a fallback, not a dead end.
+        Reminders/Tasks/Timers/Calendar are deliberately NOT here - the
+        whole point of Mochi is that you talk to it, not fill in a form
+        ("remind me to call mom at 7pm" / "add task buy milk" / "timer for
+        10 minutes", see app/ai/intent.py). Checking them is a chat query
+        too ("do I have any tasks?" - see app/ai/chat_engine.py's
+        list_tasks/list_reminders handling). A menu item whose only job is
+        opening a window to do the same thing manually defeats the point
+        of a chat-first companion - don't re-add these without confirming
+        with the user first. The window classes themselves
+        (app/ui/reminder_window.py etc.) are untouched and still fully
+        working/tested, just not wired to this menu.
         """
         self.context_menu = QMenu(self)
         self.action_chat = QAction("Chat", self)
-        self.action_reminders = QAction("Reminders", self)
-        self.action_tasks = QAction("Tasks", self)
-        self.action_timers = QAction("Timers", self)
         self.action_memories = QAction("Memories", self)
         self.action_refresh_trends = QAction("Refresh trends && memes", self)
         self.action_settings = QAction("Settings", self)
@@ -328,16 +326,10 @@ class PetWindow(QWidget):
             lambda: self.state_machine.set_state(CharacterState.SLEEP)
         )
         self.action_chat.triggered.connect(self.on_open_chat_requested)
-        self.action_reminders.triggered.connect(self._open_reminder_window)
-        self.action_tasks.triggered.connect(self._open_task_window)
-        self.action_timers.triggered.connect(self._open_timer_window)
         self.action_refresh_trends.triggered.connect(self._on_refresh_trends_requested)
 
         for action in (
             self.action_chat,
-            self.action_reminders,
-            self.action_tasks,
-            self.action_timers,
             self.action_memories,
             self.action_refresh_trends,
             self.action_settings,
@@ -630,7 +622,11 @@ class PetWindow(QWidget):
 
     # ------------------------------------------------------------------
     # Reminders window (spec section 13/20 - V1)
-    # Reachable from the right-click menu (see _setup_tray_free_menu).
+    #
+    # Not on the right-click menu - chat is the primary/intended way to
+    # create and check reminders (see app/ai/intent.py + chat_engine.py).
+    # Kept here, fully working, in case a future chat command wants to pop
+    # the visual list open ("let me see that") rather than answering in text.
     # ------------------------------------------------------------------
     def _open_reminder_window(self) -> None:
         # Local import avoids a hard PySide6-widget dependency for anything
@@ -645,7 +641,8 @@ class PetWindow(QWidget):
         self._reminder_window.activateWindow()
 
     # ------------------------------------------------------------------
-    # Tasks window (V2) - reachable from the right-click menu.
+    # Tasks window (V2) - see _open_reminder_window's note above; same
+    # story, not on the right-click menu, kept for future reuse.
     # ------------------------------------------------------------------
     def _open_task_window(self) -> None:
         from app.ui.task_window import TaskWindow
@@ -658,7 +655,8 @@ class PetWindow(QWidget):
         self._task_window.activateWindow()
 
     # ------------------------------------------------------------------
-    # Timers window (V2) - reachable from the right-click menu.
+    # Timers window (V2) - see _open_reminder_window's note above; same
+    # story, not on the right-click menu, kept for future reuse.
     # ------------------------------------------------------------------
     def _open_timer_window(self) -> None:
         from app.ui.timer_window import TimerWindow

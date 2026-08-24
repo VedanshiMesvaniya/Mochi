@@ -147,8 +147,16 @@ def _matches_any(text: str, phrases: tuple[str, ...]) -> bool:
     return False
 
 
-REMINDER_TRIGGER = re.compile(r"\bremind me\b", re.IGNORECASE)
-TIMER_TRIGGER = re.compile(r"\b(set a timer|start a timer|timer for)\b", re.IGNORECASE)
+REMINDER_TRIGGER = re.compile(
+    r"\b(remind me|set a reminder|create a reminder|make a reminder|reminder to|"
+    r"don'?t let me forget)\b",
+    re.IGNORECASE,
+)
+TIMER_TRIGGER = re.compile(
+    r"\b(set a timer|start a timer|timer for|start a countdown|countdown for|"
+    r"\d+\s*(?:second|sec|minute|min|hour|hr)s?\s+timer)\b",
+    re.IGNORECASE,
+)
 # Listing/query phrasing, checked BEFORE the creation triggers above so
 # something like "remind me what tasks I have" (contains "remind me" but
 # is clearly a query, not a new reminder) still resolves correctly.
@@ -169,7 +177,8 @@ LIST_REMINDERS_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 TASK_TRIGGER = re.compile(
-    r"\b(remember (that )?i need to|add (a )?task|todo:?|task:)", re.IGNORECASE
+    r"\b(remember (that )?i need to|add (a )?task|new task:?|create (a )?task|todo:?|task:)",
+    re.IGNORECASE,
 )
 
 # --- Completing/cancelling an existing task/reminder/timer -------------
