@@ -8,8 +8,12 @@ timed/repeating reminders.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QDateTimeEdit,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -53,6 +57,23 @@ class TaskWindow(TranslucentDialog):
         input_row.addWidget(self.add_button)
         layout.addLayout(input_row)
 
+        # Optional deadline (spec follow-up: "task i add it should be in
+        # task list unless i give it deadline it should be there [too]") -
+        # a task never *requires* a deadline (that's what makes it
+        # different from a reminder), but you can attach one. Disabled by
+        # default so "just add a task" stays a single field + Enter, same
+        # as before.
+        deadline_row = QHBoxLayout()
+        self.deadline_checkbox = QCheckBox("Set deadline")
+        self.deadline_input = QDateTimeEdit(datetime.now() + timedelta(hours=1))
+        self.deadline_input.setCalendarPopup(True)
+        self.deadline_input.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.deadline_input.setEnabled(False)
+        self.deadline_checkbox.toggled.connect(self.deadline_input.setEnabled)
+        deadline_row.addWidget(self.deadline_checkbox)
+        deadline_row.addWidget(self.deadline_input, stretch=1)
+        layout.addLayout(deadline_row)
+
         list_label = QLabel("Your tasks")
         list_label.setStyleSheet("font-weight: bold; margin-top: 12px;")
         layout.addWidget(list_label)
@@ -85,7 +106,8 @@ class TaskWindow(TranslucentDialog):
 
         for task in tasks:
             prefix = "☑" if task.status == "done" else "☐"
-            item = QListWidgetItem(f"{prefix}  {task.title}")
+            deadline_suffix = f"  (due {task.due_at:%Y-%m-%d %H:%M})" if task.due_at else ""
+            item = QListWidgetItem(f"{prefix}  {task.title}{deadline_suffix}")
             item.setData(Qt.UserRole, task.id)
             self.task_list.addItem(item)
 
@@ -100,12 +122,18 @@ class TaskWindow(TranslucentDialog):
         if not title:
             QMessageBox.warning(self, "Mochi", "Give the task a title first!")
             return
+        due_at = (
+            self.deadline_input.dateTime().toPython()
+            if self.deadline_checkbox.isChecked()
+            else None
+        )
         try:
-            manager.create_task(title)
+            manager.create_task(title, due_at=due_at)
         except TaskError as exc:
             QMessageBox.warning(self, "Mochi", str(exc))
             return
         self.title_input.clear()
+        self.deadline_checkbox.setChecked(False)
         self.refresh_list()
 
     def _on_toggle_clicked(self) -> None:

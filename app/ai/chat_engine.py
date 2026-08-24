@@ -110,7 +110,10 @@ def _list_tasks_reaction() -> "ChatReaction":
             animation=CharacterState.HAPPY,
             sound="chirp",
         )
-    shown = "; ".join(t.title for t in tasks[:5])
+    def _label(t) -> str:
+        return f"{t.title} (due {t.due_at:%m-%d %H:%M})" if t.due_at else t.title
+
+    shown = "; ".join(_label(t) for t in tasks[:5])
     more = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
     plural = "task" if len(tasks) == 1 else "tasks"
     return ChatReaction(
@@ -638,6 +641,14 @@ def handle_message(
         # forward at every return point past this one.
 
     intent: DetectedIntent = detect_intent(text)
+    # Observability (bug report: reminders/timers/tasks "not getting set"
+    # with nothing in the logs to say why): log what every message was
+    # actually classified as *before* any handler runs, so a message that
+    # silently fails to match create_reminder/start_timer/create_task -
+    # e.g. because the phrasing didn't match app/ai/intent.py's regex
+    # triggers - is visible in the log as "unknown"/some other intent
+    # instead of leaving no trace at all.
+    logger.info("Message %r -> intent=%s tool=%s args=%s", text, intent.name, intent.tool, intent.tool_args)
 
     if intent.name in _LIST_HANDLERS:
         try:
@@ -754,7 +765,8 @@ def handle_message(
                 ensure_ready = _ENSURE_READY.get(intent.tool)
                 if ensure_ready is not None:
                     ensure_ready()
-                tool_fn(**intent.tool_args)
+                result = tool_fn(**intent.tool_args)
+                logger.info("Tool '%s' succeeded: %s", intent.tool, result)
             except MochiError as exc:
                 logger.info("Tool '%s' rejected: %s", intent.tool, exc)
                 return ChatReaction(

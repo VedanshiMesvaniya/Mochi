@@ -62,3 +62,27 @@ def test_operations_on_missing_task_raise_tool_validation_error():
         task_tools.delete_task(9999)
     with pytest.raises(ToolValidationError):
         task_tools.update_task(9999, "New")
+
+
+def test_create_task_tool_with_due_at_iso():
+    result = task_tools.create_task("Submit report", due_at_iso="2026-09-01T17:00:00")
+    assert result["due_at"] == "2026-09-01T17:00:00"
+
+
+def test_create_task_tool_rejects_invalid_due_at_iso():
+    with pytest.raises(ToolValidationError):
+        task_tools.create_task("Bad date", due_at_iso="not-a-date")
+
+
+def test_set_task_due_date_tool_round_trip():
+    created = task_tools.create_task("Task")
+    updated = task_tools.set_task_due_date(created["id"], due_at_iso="2026-09-01T09:00:00")
+    assert updated["due_at"] == "2026-09-01T09:00:00"
+
+    cleared = task_tools.set_task_due_date(created["id"], due_at_iso=None)
+    assert cleared["due_at"] is None
+
+
+def test_set_task_due_date_tool_missing_task_raises():
+    with pytest.raises(ToolValidationError):
+        task_tools.set_task_due_date(9999, due_at_iso=None)

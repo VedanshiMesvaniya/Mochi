@@ -39,6 +39,51 @@ def test_cancel_task():
     assert manager.get_task(task.id).status == "cancelled"
 
 
+def test_create_task_with_due_date():
+    from datetime import datetime
+
+    due = datetime(2026, 9, 1, 17, 0)
+    task = manager.create_task("Submit report", due_at=due)
+    assert task.due_at == due
+    fetched = manager.get_task(task.id)
+    assert fetched.due_at == due
+
+
+def test_create_task_without_due_date_has_none():
+    task = manager.create_task("Just a task")
+    assert task.due_at is None
+
+
+def test_set_and_clear_due_date():
+    from datetime import datetime
+
+    task = manager.create_task("Buy milk")
+    assert task.due_at is None
+
+    due = datetime(2026, 9, 1, 9, 0)
+    updated = manager.set_due_date(task.id, due)
+    assert updated.due_at == due
+
+    cleared = manager.set_due_date(task.id, None)
+    assert cleared.due_at is None
+
+
+def test_set_due_date_missing_task_raises():
+    with pytest.raises(TaskError):
+        manager.set_due_date(9999, None)
+
+
+def test_list_tasks_orders_dated_tasks_first():
+    from datetime import datetime
+
+    manager.create_task("No deadline")
+    manager.create_task("Later deadline", due_at=datetime(2026, 9, 5, 10, 0))
+    manager.create_task("Sooner deadline", due_at=datetime(2026, 9, 1, 10, 0))
+
+    titles = [t.title for t in manager.list_tasks()]
+    assert titles == ["Sooner deadline", "Later deadline", "No deadline"]
+
+
 def test_cancel_missing_task_raises():
     with pytest.raises(TaskError):
         manager.cancel_task(9999)

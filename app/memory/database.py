@@ -42,7 +42,8 @@ SCHEMA_STATEMENTS: list[str] = [
         title         TEXT NOT NULL,
         status        TEXT NOT NULL DEFAULT 'open',   -- open|done|cancelled
         created_at    TEXT NOT NULL,
-        completed_at  TEXT
+        completed_at  TEXT,
+        due_at        TEXT                 -- ISO 8601, local timezone, optional
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);",
@@ -129,10 +130,29 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added to an existing table after it first shipped. CREATE TABLE
+# IF NOT EXISTS (above) only helps brand-new databases - anyone with an
+# existing data/mochi.db from before a column was added needs an explicit
+# ALTER TABLE, guarded by a column-existence check since SQLite has no
+# "ADD COLUMN IF NOT EXISTS". Each entry: (table, column, column_def).
+_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("tasks", "due_at", "TEXT"),
+]
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, column_def in _COLUMN_MIGRATIONS:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table});")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def};")
+            logger.info("Migrated database: added %s.%s", table, column)
+
+
 def initialize_schema() -> None:
-    """Create any tables/indexes that don't already exist. Safe to call on
-    every application startup."""
+    """Create any tables/indexes that don't already exist, then apply any
+    pending column migrations. Safe to call on every application startup."""
     with get_connection() as conn:
         for statement in SCHEMA_STATEMENTS:
             conn.execute(statement)
+        _run_migrations(conn)
     logger.info("Database schema ready at %s", get_database_path())

@@ -47,6 +47,20 @@ def test_task_creation():
     result = detect_intent("remember that i need to buy milk", now=NOW)
     assert result.tool == "create_task"
     assert result.tool_args["title"] == "Buy milk"
+    assert "due_at_iso" not in result.tool_args
+
+
+def test_task_creation_with_deadline():
+    result = detect_intent("add task submit report at 7pm", now=NOW)
+    assert result.tool == "create_task"
+    assert result.tool_args["title"] == "Submit report"
+    assert result.tool_args["due_at_iso"] == "2026-08-14T19:00:00"
+
+
+def test_task_creation_bare_colon_trigger():
+    result = detect_intent("task: clean my room", now=NOW)
+    assert result.tool == "create_task"
+    assert result.tool_args["title"] == "Clean my room"
 
 
 def test_insult_is_not_confused_with_greeting():

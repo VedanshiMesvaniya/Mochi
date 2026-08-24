@@ -39,6 +39,12 @@ class Task:
     status: str
     created_at: datetime
     completed_at: Optional[datetime]
+    # Optional deadline (spec follow-up: "task i add it should be in task
+    # list unless i give it deadline it should be there [too]") - a task
+    # with no deadline just sits in the checklist forever until done; one
+    # *with* a deadline additionally shows up sorted to the front of the
+    # list by due date, see list_tasks() below. None means no deadline.
+    due_at: Optional[datetime] = None
 
     @classmethod
     def from_row(cls, row) -> "Task":
@@ -52,6 +58,14 @@ class Task:
                 if row["completed_at"]
                 else None
             ),
+            due_at=(
+                datetime.strptime(row["due_at"], ISO_FORMAT)
+                # sqlite3.Row from a schema-migrated older DB always has
+                # the column once initialize_schema() has run, but guard
+                # with keys() anyway in case a row is ever built by hand.
+                if "due_at" in row.keys() and row["due_at"]
+                else None
+            ),
         )
 
 
@@ -59,19 +73,29 @@ def ensure_ready() -> None:
     initialize_schema()
 
 
-def create_task(title: str) -> Task:
+def create_task(title: str, due_at: Optional[datetime] = None) -> Task:
     if not title or not title.strip():
         raise TaskError("Task title cannot be empty.")
 
     now = datetime.now()
     with get_connection() as conn:
         cursor = conn.execute(
-            "INSERT INTO tasks (title, status, created_at) VALUES (?, ?, ?)",
-            (title.strip(), TaskStatus.OPEN, now.strftime(ISO_FORMAT)),
+            "INSERT INTO tasks (title, status, created_at, due_at) VALUES (?, ?, ?, ?)",
+            (
+                title.strip(),
+                TaskStatus.OPEN,
+                now.strftime(ISO_FORMAT),
+                due_at.strftime(ISO_FORMAT) if due_at else None,
+            ),
         )
         task_id = cursor.lastrowid
 
-    logger.info("Created task #%s: '%s'", task_id, title)
+    logger.info(
+        "Created task #%s: '%s'%s",
+        task_id,
+        title,
+        f" (due {due_at:%Y-%m-%d %H:%M})" if due_at else "",
+    )
     task = get_task(task_id)
     if task is None:  # pragma: no cover - defensive
         raise TaskError("Failed to read back newly created task.")
@@ -90,7 +114,11 @@ def list_tasks(status: Optional[str] = None) -> list[Task]:
     if status is not None:
         query += " WHERE status = ?"
         params.append(status)
-    query += " ORDER BY created_at ASC"
+    # Tasks with a deadline surface first (soonest due first, per spec
+    # follow-up), undated tasks fall back to plain creation order behind
+    # them - `due_at IS NULL` sorts false (0) before true (1) so dated
+    # rows always win the primary ORDER BY key.
+    query += " ORDER BY (due_at IS NULL) ASC, due_at ASC, created_at ASC"
 
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -155,4 +183,19 @@ def update_task(task_id: int, title: str) -> Task:
     with get_connection() as conn:
         conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (title.strip(), task_id))
     logger.info("Updated task #%s", task_id)
+    return get_task(task_id)  # type: ignore[return-value]
+
+
+def set_due_date(task_id: int, due_at: Optional[datetime]) -> Task:
+    """Set (or, with due_at=None, clear) a task's deadline."""
+    task = get_task(task_id)
+    if task is None:
+        raise TaskError(f"Task #{task_id} not found.")
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE tasks SET due_at = ? WHERE id = ?",
+            (due_at.strftime(ISO_FORMAT) if due_at else None, task_id),
+        )
+    logger.info("Set due date for task #%s: %s", task_id, due_at)
     return get_task(task_id)  # type: ignore[return-value]

@@ -220,7 +220,7 @@ app/
     │                             background ChatWorker(QThread) so a slow
     │                             reply never freezes the UI
     ├── reminder_window.py          Create/list/complete/snooze/delete reminders
-    ├── task_window.py              Add/toggle-done/delete tasks
+    ├── task_window.py              Add (with optional deadline)/toggle-done/delete tasks
     ├── timer_window.py             Start/view/extend/cancel timers
     └── tray.py                     System tray icon + menu
 ```
@@ -310,7 +310,7 @@ reaction + sound + speech bubble + OS notification.
 ```text
 data/mochi.db
 ├── reminders   id, title, due_at, repeat_rule, status, created_at, completed_at
-├── tasks       id, title, status ('open'|'done'|'cancelled'), created_at, completed_at
+├── tasks       id, title, status ('open'|'done'|'cancelled'), created_at, completed_at, due_at (nullable)
 ├── timers      id, label, duration_seconds, started_at, due_at, status, notified_at
 └── relationship  id (single row), interaction_count, first_seen, last_seen
 ```
@@ -320,13 +320,26 @@ data/mochi.db
   If a reminder is still `pending` several minutes after being surfaced,
   the notifier checks back once and reacts annoyed (`CharacterState.ANGRY`).
 - **Tasks** have no scheduler — they're a plain open/done checklist,
-  toggled from the UI or via chat ("remember that I need to...").
+  toggled from the UI or via chat ("remember that I need to..."). `due_at`
+  is optional and purely informational: it changes `list_tasks()`
+  ordering (dated tasks sort first, soonest due first, ahead of undated
+  ones) but never triggers a notification the way a reminder does — if
+  you want an actual alert, that's what reminders are for. `due_at` was
+  added after the `tasks` table already shipped, so `database.py` runs a
+  small idempotent `ALTER TABLE ... ADD COLUMN` migration (guarded by a
+  `PRAGMA table_info` check) on startup for anyone with an existing
+  `data/mochi.db` from before the column existed.
 - **Timers** poll every ~1s (a countdown finishing is something the user
   is actively waiting on, unlike a reminder) and persist across restarts.
 
 All three are reachable both by chatting in natural language and through
 a dedicated window from the right-click menu — the chat path and the
-manual-UI path call the exact same manager functions underneath.
+manual-UI path call the exact same manager functions underneath. (These
+windows were briefly unwired from the right-click menu in an earlier
+revision on the theory that chat covered everything; they've been
+restored since chat only acts on phrasing its regex triggers recognize,
+and the windows are the only way to browse the full list, snooze a
+reminder, or set/clear a task's deadline.)
 
 ---
 
