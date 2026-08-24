@@ -26,6 +26,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Optional
 
 from app.core.config import settings
@@ -143,6 +144,7 @@ def ask(
     history: Optional[list[tuple[str, str]]] = None,
     trend_topic: Optional[str] = None,
     meme_premise: Optional[str] = None,
+    now: Optional[datetime] = None,
 ) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
     reply. Raises LLMUnavailable on any failure (connection refused, model
@@ -172,8 +174,18 @@ def ask(
     short, already-paraphrased topic label the caller may have cached -
     never raw scraped text, see that module for why. Purely a light
     seasoning of the prompt; the model is explicitly told not to force it.
+
+    `now` (spec section 26: "always provide the model with the current
+    local date/time when interpreting today/tomorrow/tonight/etc.") is
+    injectable for tests; defaults to the real current local time. Fed
+    into the prompt as plain text so the model actually knows what "now"
+    is instead of guessing - without this, "what time is it" or "is it
+    late" have no ground truth to answer from, and relative phrasing
+    ("remind me tonight", "call me back in a bit") has nothing to anchor
+    to either.
     """
 
+    now = now or datetime.now()
     hint = _FAMILIARITY_HINTS.get(familiarity, _FAMILIARITY_HINTS["new"])
     if meme_premise:
         flavor_context = _MEME_CONTEXT_TEMPLATE.format(premise=meme_premise)
@@ -188,8 +200,15 @@ def ask(
         lines = [f"{'User' if role == 'user' else 'Mochi'}: {msg}" for role, msg in recent]
         conversation_block = "\nRecent conversation so far (oldest first):\n" + "\n".join(lines) + "\n"
 
+    time_block = (
+        f"\nRight now it's {now:%A, %B %d, %Y at %I:%M %p} "
+        "(the person's actual local device time) - use this as ground "
+        "truth for anything involving the current time, date, or "
+        "day-of-week; never guess or make one up.\n"
+    )
+
     prompt = (
-        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}\n{conversation_block}"
+        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{time_block}{conversation_block}"
         f"\nUser message: {user_text}\nMochi (JSON only):"
     )
     payload = {

@@ -40,9 +40,9 @@ BEHAVIOR_TICK_MS = 2000  # must match BehaviorEngine.tick_interval_seconds below
 # one blanket number: a surprised flash should be quick, a sulk should
 # linger. Anything not listed uses DEFAULT_REACTION_HOLD_MS.
 REACTION_HOLD_MS: dict[CharacterState, int] = {
-    CharacterState.SURPRISED: 900,
-    CharacterState.ALERT: 1200,
-    CharacterState.WINK: 1400,
+    CharacterState.SURPRISED: 1800,
+    CharacterState.ALERT: 2600,
+    CharacterState.WINK: 2000,
     CharacterState.HAPPY: 3200,
     CharacterState.EXCITED: 3200,
     CharacterState.PLAY: 3200,

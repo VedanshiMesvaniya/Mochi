@@ -243,3 +243,61 @@ def test_calendar_create_does_not_shadow_task_creation():
     appointment/call) that 'task' isn't."""
     result = detect_intent("add task buy milk", now=NOW)
     assert result.name == "create_task"
+
+
+# --- Completing/cancelling an existing task/reminder/timer -------------
+# Regression coverage for the exact reported bug: "mark my task to call
+# aunt as done" had no matching intent at all and fell through to the
+# open-ended LLM bucket, which had no task list to check against.
+
+
+def test_mark_task_done_extracts_clean_query():
+    result = detect_intent("mark my task to call aunt as done", now=NOW)
+    assert result.name == "complete_task"
+    assert result.tool_args["query"] == "call aunt"
+
+
+def test_complete_task_alternate_phrasing():
+    result = detect_intent("complete the task buy milk", now=NOW)
+    assert result.name == "complete_task"
+    assert "buy milk" in result.tool_args["query"]
+
+
+def test_finished_task_phrasing():
+    result = detect_intent("i finished the task submit assignment", now=NOW)
+    assert result.name == "complete_task"
+
+
+def test_cancel_task():
+    result = detect_intent("cancel my task to buy milk", now=NOW)
+    assert result.name == "cancel_task"
+    assert "buy milk" in result.tool_args["query"]
+
+
+def test_mark_reminder_done():
+    result = detect_intent("mark my reminder to call mom as done", now=NOW)
+    assert result.name == "complete_reminder"
+    assert result.tool_args["query"] == "call mom"
+
+
+def test_cancel_reminder():
+    result = detect_intent("cancel my reminder to call mom", now=NOW)
+    assert result.name == "cancel_reminder"
+
+
+def test_cancel_timer():
+    result = detect_intent("cancel the timer", now=NOW)
+    assert result.name == "cancel_timer"
+
+
+def test_stop_timer_phrasing():
+    result = detect_intent("stop my timer", now=NOW)
+    assert result.name == "cancel_timer"
+
+
+def test_mark_task_done_does_not_shadow_reminder_creation():
+    """'remind me' isn't in this message at all, but guard the inverse
+    too: a genuine new-reminder request must never be misread as a
+    completion just because it shares words like 'to'."""
+    result = detect_intent("remind me to call aunt at 7pm", now=NOW)
+    assert result.name == "create_reminder"

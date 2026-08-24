@@ -16,6 +16,11 @@ Note: this used to also render a themes.png grid (4 selectable glow
 palettes). That's gone along with the multi-theme system itself - see
 app/character/theme.py - so there's only one sheet to produce now, and
 each tile picks up its expression's own signature color automatically.
+
+The renderer itself (PixelFaceWidget) now draws onto a tiny low-res
+buffer and scales it up with nearest-neighbor sampling for a chunky
+pixel-art look (see app/character/pixel_face.py's _PIXEL_BUFFER_SIZE) -
+so this script's PNG output is blocky by design, not a rendering bug.
 """
 
 from __future__ import annotations
@@ -86,7 +91,7 @@ def render_face(state: CharacterState) -> Image.Image:
     # eyes-open frame rather than an arbitrary mid-blink one. ALERT is the
     # exception - advance it partway into its "Peak" phase so the still
     # frame shows the pulse at its brightest, not its resting "Detect" level.
-    steps = 40 if state != CharacterState.ALERT else 23
+    steps = 180 if state != CharacterState.ALERT else 100
     for _ in range(steps):
         widget.tick(0.02)
 

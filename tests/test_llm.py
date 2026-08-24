@@ -1,6 +1,7 @@
 import http.server
 import json
 import threading
+from datetime import datetime
 
 import pytest
 
@@ -197,3 +198,40 @@ class TestExtractJsonObject:
 
         result = _extract_json_object("just a plain sentence reply")
         assert result["response"] == "just a plain sentence reply"
+
+
+def test_prompt_includes_current_time_so_the_model_never_has_to_guess(monkeypatch):
+    """spec section 26: 'always provide the model with the current local
+    date/time' - regression test for the exact bug this fixed (the model
+    had no ground-truth clock and would confabulate what 'now'/'today' is)."""
+    captured = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            captured["prompt"] = body.get("prompt", "")
+            payload = json.dumps(
+                {"response": '{"response": "ok", "emotion": "neutral"}', "done": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        fixed_now = datetime(2026, 8, 23, 21, 5)
+        ask("what time is it right now?", now=fixed_now)
+        assert "Sunday, August 23, 2026 at 09:05 PM" in captured["prompt"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

@@ -17,6 +17,7 @@ available.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -136,6 +137,173 @@ def _list_reminders_reaction() -> "ChatReaction":
         text=f"You've got {len(reminders)} {plural}: {shown}{more}.",
         emotion=Emotion.CURIOUS,
         animation=CharacterState.THINKING,
+    )
+
+
+def _fuzzy_find(query: str, items: list, title_attr: str = "title"):
+    """Best-matching item for `query` among `items` by word overlap, or
+    None if nothing shares a word with it. Simple, deterministic scoring
+    - good enough for resolving "mark X as done" against someone's own
+    short task/reminder list; not meant to be a real search engine, and
+    deliberately never guesses when the overlap is zero rather than
+    silently completing the wrong thing."""
+    if not items or not query:
+        return None
+    query_words = set(re.findall(r"[a-z0-9]+", query.lower()))
+    if not query_words:
+        return None
+    query_lower = query.lower()
+    best, best_score = None, 0
+    for item in items:
+        title_lower = getattr(item, title_attr).lower()
+        title_words = set(re.findall(r"[a-z0-9]+", title_lower))
+        score = len(query_words & title_words)
+        if query_lower in title_lower or title_lower in query_lower:
+            score += 1
+        if score > best_score:
+            best, best_score = item, score
+    return best
+
+
+def _complete_task_reaction(tool_args: dict) -> "ChatReaction":
+    task_manager.ensure_ready()
+    open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
+    if not open_tasks:
+        return ChatReaction(
+            text="You don't have any open tasks to mark done!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    query = tool_args.get("query", "")
+    match = _fuzzy_find(query, open_tasks)
+    if match is None and not query and len(open_tasks) == 1:
+        match = open_tasks[0]
+    if match is None:
+        shown = "; ".join(t.title for t in open_tasks[:5])
+        return ChatReaction(
+            text=f"Not sure which task you mean - your open ones: {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    task_manager.complete_task(match.id)
+    return ChatReaction(
+        text=f'Done! Marked "{match.title}" as complete.',
+        emotion=Emotion.HAPPY,
+        animation=CharacterState.HAPPY,
+        sound="chirp",
+    )
+
+
+def _cancel_task_reaction(tool_args: dict) -> "ChatReaction":
+    task_manager.ensure_ready()
+    open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
+    if not open_tasks:
+        return ChatReaction(
+            text="There's nothing on your task list to cancel!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    query = tool_args.get("query", "")
+    match = _fuzzy_find(query, open_tasks)
+    if match is None and not query and len(open_tasks) == 1:
+        match = open_tasks[0]
+    if match is None:
+        shown = "; ".join(t.title for t in open_tasks[:5])
+        return ChatReaction(
+            text=f"Not sure which task you mean - your open ones: {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    task_manager.cancel_task(match.id)
+    return ChatReaction(
+        text=f'Okay, cancelled "{match.title}".',
+        emotion=Emotion.NEUTRAL,
+        animation=CharacterState.IDLE,
+    )
+
+
+def _complete_reminder_reaction(tool_args: dict) -> "ChatReaction":
+    reminder_manager.ensure_ready()
+    pending = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+    if not pending:
+        return ChatReaction(
+            text="You don't have any pending reminders to mark done!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    query = tool_args.get("query", "")
+    match = _fuzzy_find(query, pending)
+    if match is None and not query and len(pending) == 1:
+        match = pending[0]
+    if match is None:
+        shown = "; ".join(r.title for r in pending[:5])
+        return ChatReaction(
+            text=f"Not sure which reminder you mean - your pending ones: {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    reminder_manager.complete_reminder(match.id)
+    return ChatReaction(
+        text=f'Done! Marked "{match.title}" as complete.',
+        emotion=Emotion.HAPPY,
+        animation=CharacterState.HAPPY,
+        sound="chirp",
+    )
+
+
+def _cancel_reminder_reaction(tool_args: dict) -> "ChatReaction":
+    reminder_manager.ensure_ready()
+    pending = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+    if not pending:
+        return ChatReaction(
+            text="You don't have any pending reminders to cancel!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    query = tool_args.get("query", "")
+    match = _fuzzy_find(query, pending)
+    if match is None and not query and len(pending) == 1:
+        match = pending[0]
+    if match is None:
+        shown = "; ".join(r.title for r in pending[:5])
+        return ChatReaction(
+            text=f"Not sure which reminder you mean - your pending ones: {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    reminder_manager.cancel_reminder(match.id)
+    return ChatReaction(
+        text=f'Okay, cancelled "{match.title}".',
+        emotion=Emotion.NEUTRAL,
+        animation=CharacterState.IDLE,
+    )
+
+
+def _cancel_timer_reaction(tool_args: dict) -> "ChatReaction":
+    timer_manager.ensure_ready()
+    active = timer_manager.list_active_timers()
+    if not active:
+        return ChatReaction(
+            text="You don't have any timers running!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    query = tool_args.get("query", "")
+    match = _fuzzy_find(query, active, title_attr="label")
+    if match is None and not query and len(active) == 1:
+        match = active[0]
+    if match is None:
+        shown = "; ".join(t.label for t in active[:5])
+        return ChatReaction(
+            text=f"Not sure which timer you mean - running ones: {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    timer_manager.cancel_timer(match.id)
+    return ChatReaction(
+        text=f'Okay, stopped "{match.label}".',
+        emotion=Emotion.NEUTRAL,
+        animation=CharacterState.IDLE,
     )
 
 
@@ -416,6 +584,20 @@ _LIST_HANDLERS = {
     "calendar_disconnect": _calendar_disconnect_reaction,
 }
 
+# "Act on an existing item" handlers (spec bug fix: "mark my task ... as
+# done" / cancel-a-timer / etc were completely unreachable from chat -
+# only *creation* commands were wired up before this). Unlike
+# _LIST_HANDLERS these take the intent's tool_args (the free-text query
+# to fuzzy-match against real titles - see _fuzzy_find above), same
+# calling convention as _PROPOSAL_HANDLERS below.
+_ACTION_HANDLERS = {
+    "complete_task": _complete_task_reaction,
+    "cancel_task": _cancel_task_reaction,
+    "complete_reminder": _complete_reminder_reaction,
+    "cancel_reminder": _cancel_reminder_reaction,
+    "cancel_timer": _cancel_timer_reaction,
+}
+
 
 def handle_message(
     text: str,
@@ -464,6 +646,26 @@ def handle_message(
             logger.exception("Failed to read DB for intent '%s'", intent.name)
             reaction = ChatReaction(
                 text="Hmm, I couldn't check that just now.",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        reaction.pending_action = pending_action
+        return reaction
+
+    if intent.name in _ACTION_HANDLERS:
+        try:
+            reaction = _ACTION_HANDLERS[intent.name](intent.tool_args)
+        except MochiError as exc:
+            logger.info("Action '%s' rejected: %s", intent.name, exc)
+            reaction = ChatReaction(
+                text=f"Hmm, I couldn't do that: {exc}",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        except Exception:  # noqa: BLE001 - never let a bad DB write crash chat
+            logger.exception("Failed to run action for intent '%s'", intent.name)
+            reaction = ChatReaction(
+                text="Oops, something went wrong on my end.",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
