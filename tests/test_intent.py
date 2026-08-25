@@ -132,6 +132,57 @@ def test_count_range_is_capped():
     assert result.response.count("31!") == 0
 
 
+def test_time_query_reads_injected_clock():
+    result = detect_intent("what time is it", now=NOW)
+    assert result.name == "time_query"
+    assert result.response == "It's 03:00 PM right now."
+
+
+def test_time_query_variants():
+    for phrase in ("what's the time", "current time", "what time do you have"):
+        assert detect_intent(phrase, now=NOW).name == "time_query"
+
+
+def test_date_query_reads_injected_clock():
+    result = detect_intent("what day is it today", now=NOW)
+    assert result.name == "date_query"
+    assert result.response == "It's Friday, August 14."
+
+
+def test_date_query_variants():
+    for phrase in ("what's the date", "what's today", "what day of the week is it"):
+        assert detect_intent(phrase, now=NOW).name == "date_query"
+
+
+def test_time_query_uses_real_system_clock_by_default():
+    """Regression test for the actual bug report: 'what time is it' must
+    reflect the live OS clock when `now` isn't injected, not a stale or
+    hardcoded value - this is what makes the deterministic handler an
+    actual fix for "Mochi can't read the real time" rather than just
+    another canned line. Calls detect_intent with no `now=` at all (its
+    real default: `datetime.now()`) and checks the reply matches the
+    actual wall clock at call time, tolerating the minute ticking over
+    mid-test by accepting either the before- or after-call minute."""
+    before = datetime.now()
+    result = detect_intent("what time is it")
+    after = datetime.now()
+
+    assert result.name == "time_query"
+    acceptable = {
+        f"It's {before:%I:%M %p} right now.",
+        f"It's {after:%I:%M %p} right now.",
+    }
+    assert result.response in acceptable
+
+
+def test_date_query_uses_real_system_clock_by_default():
+    result = detect_intent("what day is it")
+    today = datetime.now()
+    assert result.name == "date_query"
+    assert f"{today:%A, %B}" in result.response
+    assert str(today.day) in result.response
+
+
 def test_insult_is_not_confused_with_greeting():
     """Regression test: the greeting keyword 'yo' used to match as a
     substring inside 'you', e.g. 'you're so stupid' -> false greeting."""
