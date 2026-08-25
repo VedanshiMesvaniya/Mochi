@@ -31,9 +31,11 @@ idle "breathing" glow, and its pupils drift toward your mouse cursor while
 idle. Every expression change eases and bounces into place through a small
 spring-physics layer rather than snapping instantly, and each reaction
 holds long enough to actually register (tuned per-emotion in
-`REACTION_HOLD_MS` - a surprised flash is quick, alert runs its full
-multi-second pulse sequence, a sulk lingers) — that's the main thing that
-makes it read as alive rather than a slideshow of static faces.
+`REACTION_HOLD_MS` - a surprised flash is quickest at ~2.5s, alert runs its
+full multi-second pulse sequence, a sulk lingers past 4s; the quickest
+durations were bumped up from their original ~1.8-2s since they were
+reading as a flicker rather than a visible expression) — that's the main
+thing that makes it read as alive rather than a slideshow of static faces.
 
 **Expressions (16):** idle, happy, sad, angry, confused, surprised,
 thinking, sleepy, sleeping, talking, excited, alert, blush, shy, heart,
@@ -83,7 +85,13 @@ doesn't sit static — it occasionally perks up (alert or wink), gets
 sleepy, and falls asleep; any interaction wakes it back up. It shows
 "thinking" the instant you send a chat message, gets happy when you
 complete a reminder or task, and gets annoyed if a reminder sits ignored
-for a while.
+for a while. It's meant to be an easygoing companion, not a moderator: the
+LLM system prompt (`app/ai/llm.py`) explicitly tells it to treat ordinary
+topics — relationships, fictional pairings, opinions, personal choices,
+and so on — as normal conversation rather than lecturing about
+"boundaries" or steering to "a different topic," since that read as
+preachy rather than caring. It still declines anything genuinely harmful,
+it just doesn't moralize about everyday, non-harmful things.
 
 **Lock-screen easter egg (Windows only):** when you lock your PC, Mochi
 closes its eyes; every couple of seconds it playfully peeks one eye open,
@@ -118,22 +126,25 @@ only goes away when you actually close it. Messages are handled in two
 layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
-   greetings, and common small talk are recognized by a rule-based
-   matcher and handled directly. This is intentional: things that create
-   or delete data should never depend on a language model's judgement.
+   greetings, common small talk, and `what time is it`/`what day is it`
+   are recognized by a rule-based matcher and handled directly, reading
+   straight from the system clock. This is intentional: things that
+   create/delete data, and basic facts like the current time, should
+   never depend on whether an optional language model happens to be
+   installed and running.
 2. **Local LLM fallback** — anything that bucket doesn't recognize is
    sent to a locally-running [Ollama](https://ollama.com) model (default
    `qwen3:0.6b`, configurable) for a real conversational reply, on a
    background thread so a slow reply never freezes the chat window. The
    prompt always includes the actual current local date/time, so
-   "what time is it"/"is it late"/relative phrasing like "remind me
-   tonight" have real ground truth to answer from instead of the model
-   guessing. If Ollama isn't installed, isn't running, or the model
-   hasn't been pulled, Mochi says so directly ("my brain's offline right
-   now...") rather than giving the same generic "I'm not sure what you
-   mean" line a genuinely-unrecognized message gets — the LLM is a
-   nice-to-have layered on top of a fully working local app, not a
-   requirement, but it shouldn't be a mystery when it's not active.
+   relative phrasing like "remind me tonight" or "is it late" has real
+   ground truth to reason from instead of the model guessing. If Ollama
+   isn't installed, isn't running, or the model hasn't been pulled, Mochi
+   says so directly ("my brain's offline right now...") rather than
+   giving the same generic "I'm not sure what you mean" line a
+   genuinely-unrecognized message gets — the LLM is a nice-to-have
+   layered on top of a fully working local app, not a requirement, but it
+   shouldn't be a mystery when it's not active.
 
 Mochi also keeps a lightweight local interaction counter (not any kind of
 learned model) that shifts its greeting and tone a little as you talk to

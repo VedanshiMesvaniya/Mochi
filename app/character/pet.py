@@ -40,9 +40,15 @@ BEHAVIOR_TICK_MS = 2000  # must match BehaviorEngine.tick_interval_seconds below
 # one blanket number: a surprised flash should be quick, a sulk should
 # linger. Anything not listed uses DEFAULT_REACTION_HOLD_MS.
 REACTION_HOLD_MS: dict[CharacterState, int] = {
-    CharacterState.SURPRISED: 1800,
-    CharacterState.ALERT: 2600,
-    CharacterState.WINK: 2000,
+    # Bug report: expressions were "so less like i can not properly see it" -
+    # the shortest ones (SURPRISED/WINK/ALERT) were cut noticeably shorter
+    # than the rest, which read as a flicker rather than a readable
+    # expression. Raised so every reaction gets at least ~2.5s on screen -
+    # still clearly quicker than the "settle in" emotions like SAD/ANGRY,
+    # just no longer so brief it's easy to miss.
+    CharacterState.SURPRISED: 2500,
+    CharacterState.ALERT: 3000,
+    CharacterState.WINK: 2600,
     CharacterState.HAPPY: 3200,
     CharacterState.EXCITED: 3200,
     CharacterState.PLAY: 3200,

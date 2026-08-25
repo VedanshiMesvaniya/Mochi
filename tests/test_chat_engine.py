@@ -465,7 +465,7 @@ def test_check_on_reports_real_reminder_status(temp_db):
     handle_message("remind me to message my aunt at 7pm")
     reaction = handle_message("check on messeging my aunt")
     assert "message my aunt" in reaction.text.lower()
-    assert "19:00" in reaction.text
+    assert "07:00 PM" in reaction.text
 
 
 def test_check_on_reports_real_task_status(temp_db):
