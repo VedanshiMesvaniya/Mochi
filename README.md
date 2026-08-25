@@ -139,6 +139,27 @@ Mochi also keeps a lightweight local interaction counter (not any kind of
 learned model) that shifts its greeting and tone a little as you talk to
 it more — new, getting-to-know, and familiar.
 
+While a reply is pending, both the chat window ("thinking...") and the
+character itself show it — Mochi's face actually holds a THINKING
+expression for the whole wait, up to the ~30s an LLM call can take,
+rather than the autonomous idle/happy cycling elsewhere on the desktop
+stomping it a couple seconds in (see `BehaviorEngine.enter_busy()` /
+`exit_busy()` in `app/character/behavior.py`).
+
+The LLM fallback's system prompt explicitly forbids it from claiming to
+have created, checked, completed, or cancelled a reminder/task/timer —
+it has no access to do any of that, and the deterministic layer above
+handles anything phrased as an actual command before the LLM is ever
+asked. This matters because a small local model asked "did you check on
+X?" will happily improvise a confident-sounding "yes, I'll remind you..."
+if not told otherwise, which is a lie the person has no way to catch
+until it quietly never happens.
+
+Also handled deterministically, no AI required: ask Mochi to
+`count to 10` (or `count from 3 to 7`) and it actually counts it out with
+excitement, capped at 30 numbers so a typo can't turn it into a wall of
+text.
+
 ---
 
 ## Reminders, tasks & timers
@@ -162,6 +183,18 @@ phrasing (see `TASK_TRIGGER`/`REMINDER_TRIGGER`/`TIMER_TRIGGER` in
 `app/ai/intent.py`); every message's detected intent is also logged
 (`mochi.ai.chat_engine`), so if a phrasing genuinely doesn't match yet
 it's visible in the log rather than silently doing nothing.
+
+Two more phrasings that don't need the literal word "task"/"reminder":
+"check on <something>" reports the real status of whatever matches it in
+either store ("Yep - 'message my aunt' is set for 19:00", or "I don't
+have anything like that saved" if nothing matches) — it never invents an
+answer. And "mark it as done" / "that's done" / "I finished it" resolves
+"it" against whatever's currently open across both tasks and reminders,
+auto-completing it if there's exactly one, or asking which one if there's
+more than one. Both exist specifically because falling through to the
+local LLM for phrasing like this used to produce a hallucinated reply —
+"I'll remind you..." or "Okay, I'll take care of it" — that sounded
+plausible but hadn't actually checked or changed anything.
 
 - **Reminders** — one-off or repeating (`DAILY`/`WEEKLY`/`MONTHLY`), with
   a background scheduler that checks for due reminders and surfaces them

@@ -92,6 +92,46 @@ def test_task_trigger_variants():
         assert result.tool_args["title"] == expected_title
 
 
+def test_check_on_extracts_query():
+    result = detect_intent("check on messeging my aunt", now=NOW)
+    assert result.name == "check_on"
+    assert result.tool_args["query"] == "messeging my aunt"
+
+
+def test_check_on_does_not_shadow_reminder_creation():
+    """'remind me to check on X' must still create a reminder, not be
+    misread as a status check - CHECK_ON_TRIGGER is checked after
+    REMINDER_TRIGGER specifically to guarantee this."""
+    result = detect_intent("remind me to check on my aunt at 7pm", now=NOW)
+    assert result.tool == "create_reminder"
+    assert result.tool_args["title"] == "Check on my aunt"
+
+
+def test_ambiguous_done_trigger_variants():
+    for phrase in ["mark it as done", "that's done", "i finished it", "complete it"]:
+        result = detect_intent(phrase, now=NOW)
+        assert result.name == "complete_ambiguous", phrase
+
+
+def test_count_command():
+    result = detect_intent("mochi count 1 to 10", now=NOW)
+    assert result.name == "count"
+    assert result.emotion == Emotion.EXCITED
+    assert "1!" in result.response and "10!" in result.response
+
+
+def test_count_to_defaults_start_to_one():
+    result = detect_intent("count to 5", now=NOW)
+    assert "1! 2! 3! 4! 5!" in result.response
+
+
+def test_count_range_is_capped():
+    result = detect_intent("count from 1 to 30", now=NOW)
+    # Capped at start+30 in detect_intent - shouldn't silently balloon
+    # into an enormous reply for a typo'd huge range.
+    assert result.response.count("31!") == 0
+
+
 def test_insult_is_not_confused_with_greeting():
     """Regression test: the greeting keyword 'yo' used to match as a
     substring inside 'you', e.g. 'you're so stupid' -> false greeting."""

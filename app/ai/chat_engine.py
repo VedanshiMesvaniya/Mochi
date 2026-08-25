@@ -510,6 +510,108 @@ def _calendar_delete_proposal(tool_args: dict) -> "ChatReaction":
 # *propose* a write instead of reading data - each of these returns a
 # ChatReaction carrying a fresh `pending_action` for the confirmation
 # flow above, rather than executing anything immediately.
+def _check_on_reaction(tool_args: dict) -> "ChatReaction":
+    """Handles "check on X" / "did you remind me about X" / "status of X" -
+    bug report: this phrasing fell through to the open-ended LLM, which has
+    no actual access to the task/reminder database and would just
+    improvise a plausible-sounding "I'll remind you..." reply - a real
+    hallucination, since nothing was actually checked or created. This
+    answers from the real database only, and says so plainly when nothing
+    matches rather than inventing a status."""
+    task_manager.ensure_ready()
+    reminder_manager.ensure_ready()
+    query = (tool_args.get("query") or "").strip()
+    open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
+    pending_reminders = reminder_manager.list_reminders(
+        status=reminder_manager.ReminderStatus.PENDING
+    )
+
+    if not query:
+        return ChatReaction(
+            text="Check on what, exactly? Give me a bit of the title.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    task_match = _fuzzy_find(query, open_tasks)
+    reminder_match = _fuzzy_find(query, pending_reminders)
+
+    if reminder_match is not None and task_match is not None:
+        return ChatReaction(
+            text=(
+                f'I have both a reminder ("{reminder_match.title}" at '
+                f"{reminder_match.due_at:%H:%M}) and a task "
+                f'("{task_match.title}") that match that - which one?'
+            ),
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+        )
+    if reminder_match is not None:
+        return ChatReaction(
+            text=f'Yep - "{reminder_match.title}" is set for {reminder_match.due_at:%H:%M}.',
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+        )
+    if task_match is not None:
+        due_note = (
+            f" (due {task_match.due_at:%m-%d %H:%M})" if task_match.due_at else ""
+        )
+        return ChatReaction(
+            text=f'Yep - "{task_match.title}" is still open on your task list{due_note}.',
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+        )
+    return ChatReaction(
+        text=f"I don't have anything like \"{query}\" saved as a task or reminder.",
+        emotion=Emotion.CONFUSED,
+        animation=CharacterState.CONFUSED,
+    )
+
+
+def _complete_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
+    """Handles "mark it as done" / "that's done" / "I finished it" - i.e.
+    the same completion request as complete_task/complete_reminder, but
+    phrased without the literal word "task"/"reminder" so TASK_DONE_TRIGGER/
+    REMINDER_DONE_TRIGGER never match it (bug report: this used to fall to
+    the open-ended LLM, which would say something like "Okay, I'll take
+    care of it" without actually marking anything done anywhere - another
+    hallucination). Resolves "it" against whatever's actually open across
+    both stores; only auto-completes when that's unambiguous."""
+    task_manager.ensure_ready()
+    reminder_manager.ensure_ready()
+    open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
+    pending_reminders = reminder_manager.list_reminders(
+        status=reminder_manager.ReminderStatus.PENDING
+    )
+    combined = [("task", t) for t in open_tasks] + [("reminder", r) for r in pending_reminders]
+
+    if not combined:
+        return ChatReaction(
+            text="I don't have anything open to mark done!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    if len(combined) > 1:
+        shown = "; ".join(f"{kind}: {item.title}" for kind, item in combined[:5])
+        return ChatReaction(
+            text=f"Which one do you mean? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    kind, item = combined[0]
+    if kind == "task":
+        task_manager.complete_task(item.id)
+    else:
+        reminder_manager.complete_reminder(item.id)
+    return ChatReaction(
+        text=f'Done! Marked "{item.title}" as complete.',
+        emotion=Emotion.HAPPY,
+        animation=CharacterState.HAPPY,
+        sound="chirp",
+    )
+
+
 _PROPOSAL_HANDLERS = {
     "calendar_create_event": _calendar_create_proposal,
     "calendar_delete_event": _calendar_delete_proposal,
@@ -599,6 +701,8 @@ _ACTION_HANDLERS = {
     "complete_reminder": _complete_reminder_reaction,
     "cancel_reminder": _cancel_reminder_reaction,
     "cancel_timer": _cancel_timer_reaction,
+    "check_on": _check_on_reaction,
+    "complete_ambiguous": _complete_ambiguous_reaction,
 }
 
 

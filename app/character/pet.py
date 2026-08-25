@@ -689,9 +689,16 @@ class PetWindow(QWidget):
     def _on_chat_thinking(self) -> None:
         """Called the instant a message is sent, before a reply exists -
         spec: 'think while the local model is processing'. Chat may fall
-        through to a local LLM call (bounded by a few seconds), so this
-        gives immediate visual feedback rather than a dead pause."""
-        self.behavior_engine.mark_interacted()
+        through to a local LLM call (bounded by ~30s, see app/ai/llm.py),
+        so this gives immediate visual feedback rather than a dead pause.
+
+        Uses enter_busy() (not mark_interacted()) so the THINKING face
+        actually survives the whole wait: mark_interacted() alone queues a
+        happy-acknowledgment that the very next ~2s autonomous tick would
+        apply, stomping THINKING almost immediately - see
+        BehaviorEngine.enter_busy()'s docstring for the full bug report.
+        """
+        self.behavior_engine.enter_busy()
         self._expression_hold_timer.stop()
         self._held_state = None
         self.state_machine.set_state(CharacterState.THINKING)
@@ -707,6 +714,7 @@ class PetWindow(QWidget):
         disappear together, rather than the face snapping back to idle
         seconds before the bubble (or vice versa).
         """
+        self.behavior_engine.exit_busy()  # release the THINKING hold from _on_chat_thinking
         hold_ms = DEFAULT_REACTION_HOLD_MS
         if reaction.animation is not None:
             hold_ms = REACTION_HOLD_MS.get(reaction.animation, DEFAULT_REACTION_HOLD_MS)

@@ -131,3 +131,31 @@ def test_bored_cycles_through_multiple_expressions_without_flickering_every_tick
 def test_next_interval_returns_tick_interval():
     engine = BehaviorEngine(tick_interval_seconds=3.0)
     assert engine.next_interval() == 3.0
+
+
+def test_busy_suppresses_tick_driven_state_changes():
+    """Regression test for the bug report: Mochi's THINKING face while a
+    chat reply is pending got stomped by HAPPY within ~2s because
+    mark_interacted() queues a happy-acknowledgment the very next tick
+    would apply. enter_busy() must make tick() a complete no-op (not even
+    HAPPY) until exit_busy() is called."""
+    engine = BehaviorEngine(enabled=True, tick_interval_seconds=2)
+    engine.mark_interacted()  # simulate having interacted already
+    engine.enter_busy()
+
+    calls = []
+    for _ in range(20):  # would normally cross into bored/sleepy territory
+        engine.tick(lambda s: calls.append(s))
+    assert calls == []
+
+
+def test_exit_busy_resumes_normal_ticking_and_flashes_happy():
+    engine = BehaviorEngine(enabled=True, tick_interval_seconds=2, happy_hold_seconds=15)
+    engine.enter_busy()
+    engine.tick(lambda s: None)  # no-op while busy
+
+    engine.exit_busy()
+    seen = []
+    engine.tick(lambda s: seen.append(s))
+    assert CharacterState.HAPPY in seen
+    assert engine.busy is False

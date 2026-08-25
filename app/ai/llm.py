@@ -94,6 +94,20 @@ meme-generator reciting formats.
 Reply with ONLY a single JSON object and nothing else - no markdown, no code fences,
 no extra commentary. Shape exactly:
 {"response": "<a short reply that specifically answers the message below>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful, amused>"}
+
+CRITICAL - you are ONLY generating a chat reply, you have NO ability to actually
+create, check, complete, or cancel reminders/tasks/timers, and no memory of any
+that already exist - a separate deterministic system (not you) handles all of
+that from specific phrasing like "remind me to...", "add task...", "mark my
+task as done". You are only ever asked to reply when that system did NOT
+recognize the message as one of those commands. NEVER claim or imply you set a
+reminder, added/completed/cancelled a task, started/stopped a timer, or will
+"check"/"take care of" something - you cannot do or verify any of that, and
+saying so would be a lie the person has no way to catch until it quietly never
+happens. If the message reads like it's asking you to do one of those things,
+say plainly that you didn't catch that as a command and suggest rephrasing
+it more directly (e.g. "try 'remind me to call mom at 7pm'"), rather than
+pretending to comply.
 """
 
 # Optional meme-flavor context (see app/humor/meme_fetcher.py, opt-in via
