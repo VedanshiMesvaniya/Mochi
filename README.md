@@ -126,22 +126,25 @@ only goes away when you actually close it. Messages are handled in two
 layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
-   greetings, and common small talk are recognized by a rule-based
-   matcher and handled directly. This is intentional: things that create
-   or delete data should never depend on a language model's judgement.
+   greetings, common small talk, and `what time is it`/`what day is it`
+   are recognized by a rule-based matcher and handled directly, reading
+   straight from the system clock. This is intentional: things that
+   create/delete data, and basic facts like the current time, should
+   never depend on whether an optional language model happens to be
+   installed and running.
 2. **Local LLM fallback** — anything that bucket doesn't recognize is
    sent to a locally-running [Ollama](https://ollama.com) model (default
    `qwen3:0.6b`, configurable) for a real conversational reply, on a
    background thread so a slow reply never freezes the chat window. The
    prompt always includes the actual current local date/time, so
-   "what time is it"/"is it late"/relative phrasing like "remind me
-   tonight" have real ground truth to answer from instead of the model
-   guessing. If Ollama isn't installed, isn't running, or the model
-   hasn't been pulled, Mochi says so directly ("my brain's offline right
-   now...") rather than giving the same generic "I'm not sure what you
-   mean" line a genuinely-unrecognized message gets — the LLM is a
-   nice-to-have layered on top of a fully working local app, not a
-   requirement, but it shouldn't be a mystery when it's not active.
+   relative phrasing like "remind me tonight" or "is it late" has real
+   ground truth to reason from instead of the model guessing. If Ollama
+   isn't installed, isn't running, or the model hasn't been pulled, Mochi
+   says so directly ("my brain's offline right now...") rather than
+   giving the same generic "I'm not sure what you mean" line a
+   genuinely-unrecognized message gets — the LLM is a nice-to-have
+   layered on top of a fully working local app, not a requirement, but it
+   shouldn't be a mystery when it's not active.
 
 Mochi also keeps a lightweight local interaction counter (not any kind of
 learned model) that shifts its greeting and tone a little as you talk to

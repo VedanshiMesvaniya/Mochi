@@ -67,6 +67,24 @@ BORED_WORDS = ("i'm bored", "im bored", "bored")
 HOW_ARE_YOU = ("how are you", "how r u", "how are u", "hows it going")
 WHAT_DOING = ("what are you doing", "whatcha doing", "what r u doing")
 MEMORY_QUERY = ("what do you remember", "remember about me")
+# Bug report: "what time is it" had no rule-based handler at all, so it
+# fell all the way through to the open-ended LLM bucket - meaning if
+# Ollama isn't installed/running (spec section 5: it's explicitly
+# optional, chat must stay usable without it), asking Mochi the time got
+# either a generic "I'm not sure what you mean" or an "install Ollama"
+# message instead of an actual answer. Reading the system clock needs no
+# AI at all, so it's answered directly and deterministically here, the
+# same way reminders/dates already are (spec section 26).
+TIME_QUERY_TRIGGER = re.compile(
+    r"\b(what(?:'s| is) the time|what time (?:is it|do you have)|"
+    r"current time|got the time)\b",
+    re.IGNORECASE,
+)
+DATE_QUERY_TRIGGER = re.compile(
+    r"\b(what(?:'s| is) (?:the |today'?s )?date|what day (?:is it|of the week is it)"
+    r"|what'?s today)\b",
+    re.IGNORECASE,
+)
 # Direct identity questions (spec: "clarify the intent" - these were
 # previously falling through to the open-ended LLM bucket, which could
 # answer evasively or vaguely instead of just saying who Mochi is).
@@ -802,6 +820,29 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=CharacterState.EXCITED,
             sound="chirp",
             response=f"Ooh okay, here we go!! {numbers} Yay, I did it!! 🎉",
+        )
+
+    # --- Time / date queries (spec section 26: always answer these from
+    # the real clock, never a guess) - checked in the small-talk section
+    # but ahead of HOW_ARE_YOU/WHAT_DOING since neither of those overlaps
+    # with "what time/day is it" phrasing.
+    if TIME_QUERY_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="time_query",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.TALKING,
+            response=f"It's {now:%I:%M %p} right now.",
+        )
+    if DATE_QUERY_TRIGGER.search(lowered):
+        # now.day (not the %-d/%#d strftime extension, which isn't
+        # portable between Linux and Windows - spec section 3: Windows is
+        # the primary target) avoids a leading zero on single-digit days
+        # without relying on a platform-specific format code.
+        return DetectedIntent(
+            name="date_query",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.TALKING,
+            response=f"It's {now:%A, %B} {now.day}.",
         )
 
     # --- Small talk ------------------------------------------------------

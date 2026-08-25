@@ -333,10 +333,22 @@ fixes for this, in order of preference:
    it to `check_on` instead - while leaving `CHECK_ON_TRIGGER` itself at
    its original later position so legitimate creation requests like
    "remind me to check on my aunt at 7pm" still create a reminder.
+
 2. Defense in depth for whatever still isn't caught: `app/ai/llm.py`'s
    `SYSTEM_PROMPT` explicitly forbids the model from claiming to have
    created/checked/completed/cancelled anything, telling it to say
    plainly it didn't recognize the message as a command instead.
+
+A sibling bug in the same family: "what time is it" / "what day is it"
+had no rule-based handler at all, so it fell through to the open-ended
+LLM bucket - meaning if Ollama isn't installed/running (which is
+explicitly optional, see section 5 above), asking Mochi the time got a
+generic "not sure what you mean" or "install Ollama" message instead of
+an actual answer, even though reading the system clock needs no AI
+whatsoever. `TIME_QUERY_TRIGGER`/`DATE_QUERY_TRIGGER` in `app/ai/intent.py`
+answer this directly from `now` (the same injectable real-clock value
+every other date/time parsing in this file already uses), so it always
+works with zero setup.
 
 ---
 
