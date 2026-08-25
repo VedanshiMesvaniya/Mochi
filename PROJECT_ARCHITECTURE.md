@@ -131,7 +131,13 @@ app/
 │   ├── behavior.py             Inactivity-tiered autonomous behavior (idle →
 │   │                           occasional "alert"/"wink" attention ping →
 │   │                           sleepy → sleep); fixed-interval QTimer, no LLM
-│   │                           calls
+│   │                           calls. Also exposes enter_busy()/exit_busy() -
+│   │                           a full no-op mode for tick(), used while a
+│   │                           chat reply is pending so the THINKING
+│   │                           expression pet.py sets isn't stomped by this
+│   │                           engine's own next scheduled tick a couple
+│   │                           seconds later (see pet.py's _on_chat_thinking/
+│   │                           _on_chat_reaction)
 │   └── movement.py             Screen-bounds math used when dragging the window
 │
 ├── ai/                         Chat brain
@@ -139,15 +145,20 @@ app/
 │   │                            compliment (mild → blush, strong → heart)/
 │   │                            insult/sleepy/bored/reminder/timer/task/
 │   │                            complete-or-cancel-an-existing-task/
-│   │                            reminder/timer/unknown, each mapped to a
-│   │                            response + emotion + animation (+ a tool
-│   │                            call, for actionable intents). The
-│   │                            complete/cancel intents don't fix a
-│   │                            response text - they only extract a
+│   │                            reminder/timer/check_on/complete_ambiguous/
+│   │                            count/unknown, each mapped to a response +
+│   │                            emotion + animation (+ a tool call, for
+│   │                            actionable intents). The complete/cancel/
+│   │                            check_on/complete_ambiguous intents don't
+│   │                            fix a response text - they only extract a
 │   │                            free-text query ("mark my task to call
-│   │                            aunt as done" -> "call aunt") for
-│   │                            chat_engine.py to fuzzy-match against
-│   │                            whatever's actually open/active in the DB
+│   │                            aunt as done" -> "call aunt", "check on
+│   │                            messeging my aunt" -> "messeging my aunt";
+│   │                            complete_ambiguous - "mark it as done" -
+│   │                            has no keyword to extract a query from at
+│   │                            all) for chat_engine.py to fuzzy-match
+│   │                            against whatever's actually open/active in
+│   │                            the DB
 │   ├── chat_engine.py            Orchestrates a message end-to-end: runs
 │   │                            intent detection, executes any tool call
 │   │                            (with validation), fuzzy-matches
@@ -297,6 +308,24 @@ for display — it has no tool-calling ability and cannot create, modify, or
 delete anything. This means a bad or hallucinated LLM reply is, at worst,
 a wrong sentence in the chat window, never a wrong reminder.
 
+That said, "at worst a wrong sentence" was itself a real bug: phrasing
+like "check on my aunt" or "mark it as done" (no literal "task"/
+"reminder" keyword) used to fall all the way through to `unknown` and get
+sent to the LLM - which, having no database access, would confidently
+invent a plausible-sounding reply ("I'll remind you...", "Okay, I'll take
+care of it") without anything actually being checked or changed. Two
+fixes for this, in order of preference:
+
+1. `check_on`/`complete_ambiguous` intents (see `CHECK_ON_TRIGGER`/
+   `AMBIGUOUS_DONE_TRIGGER` in `app/ai/intent.py`) catch the common
+   phrasings for this *before* they'd ever reach `unknown`, and answer
+   from the real DB the same way the keyword-requiring complete/cancel
+   intents do.
+2. Defense in depth for whatever still isn't caught: `app/ai/llm.py`'s
+   `SYSTEM_PROMPT` explicitly forbids the model from claiming to have
+   created/checked/completed/cancelled anything, telling it to say
+   plainly it didn't recognize the message as a command instead.
+
 ---
 
 ## 6. Reminders, tasks & timers
@@ -332,6 +361,14 @@ data/mochi.db
   `data/mochi.db` from before the column existed.
 - **Timers** poll every ~1s (a countdown finishing is something the user
   is actively waiting on, unlike a reminder) and persist across restarts.
+- **`check_on <query>`** and **`mark it as done` / "that's done" (no
+  keyword)** search across *both* tasks and reminders by fuzzy title
+  match rather than requiring the caller to know which store something
+  lives in - see `_check_on_reaction`/`_complete_ambiguous_reaction` in
+  `chat_engine.py`. `complete_ambiguous` only auto-resolves when exactly
+  one open task+reminder exists across both; otherwise it lists them and
+  asks which one, the same "ask rather than guess" rule the
+  keyword-requiring complete/cancel intents already follow.
 
 All three are handled entirely through chat — there's deliberately no
 right-click menu item for any of them (the underlying `app/ui/

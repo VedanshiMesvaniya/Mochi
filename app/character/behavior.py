@@ -76,6 +76,15 @@ class BehaviorEngine:
     _happy_pending: bool = field(default=False, init=False)
     _bored_ticks_remaining: int = field(default=0, init=False)
     _last_bored_state: Optional[CharacterState] = field(default=None, init=False)
+    # True while something more important than idle autonomy owns the
+    # face - specifically, chat awaiting a reply (see PetWindow's
+    # _on_chat_thinking/_on_chat_reaction). Bug this fixes: mark_interacted()
+    # (called when the message is sent) sets _happy_pending, and the very
+    # next 2s-interval tick would consume it and force HAPPY - stomping the
+    # THINKING expression within ~2 seconds of it being set, for the
+    # entire rest of a reply that can take up to 30s (see app/ai/llm.py).
+    # See enter_busy()/exit_busy().
+    busy: bool = field(default=False, init=False)
     _rng: random.Random = field(default_factory=random.Random)
 
     # ------------------------------------------------------------------
@@ -89,6 +98,23 @@ class BehaviorEngine:
         self._happy_pending = True
         self._bored_ticks_remaining = 0
         self._last_bored_state = None
+
+    def enter_busy(self) -> None:
+        """Suppress every tick-driven state change (see _choose_state)
+        until exit_busy() is called - for whenever the caller is showing
+        something on the face that must not be interrupted by autonomous
+        idle/happy/bored cycling, e.g. Mochi 'thinking' while a chat reply
+        (possibly a real LLM call, up to ~30s) is in flight."""
+        self.busy = True
+
+    def exit_busy(self) -> None:
+        """Resume normal tick-driven autonomy. Also treats the moment
+        busy-ness ends as a fresh interaction (mark_interacted()) - e.g.
+        a chat reply just arrived, which is exactly the kind of thing
+        that should reset the idle clock and queue the brief happy
+        acknowledgment the same way a click or drag would."""
+        self.busy = False
+        self.mark_interacted()
 
     def default_expression(self) -> CharacterState:
         """The face Mochi should rest on whenever nothing else is actively
@@ -125,6 +151,9 @@ class BehaviorEngine:
         alone (e.g. mid-bored-hold, nothing has changed, or a more
         specific reaction - like a chat reply's expression - is already
         showing and shouldn't be interrupted by this engine)."""
+        if self.busy:
+            return None
+
         if not self.has_interacted:
             return CharacterState.IDLE
 

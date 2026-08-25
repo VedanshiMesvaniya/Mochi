@@ -451,3 +451,61 @@ def test_unrelated_query_while_pending_action_open_keeps_it_alive(temp_db, monke
 
     assert reaction.pending_action == pending
     assert reaction.text  # the reminders query still answered normally
+
+
+# --- "check on X" / ambiguous "mark it as done" ------------------------
+# Regression coverage for the exact reported bug: both phrasings fell
+# through to the open-ended LLM fallback, which has no real database
+# access and would hallucinate a plausible-sounding reply ("I'll remind
+# you..." / "Okay, I'll take care of it") without actually checking or
+# completing anything.
+
+
+def test_check_on_reports_real_reminder_status(temp_db):
+    handle_message("remind me to message my aunt at 7pm")
+    reaction = handle_message("check on messeging my aunt")
+    assert "message my aunt" in reaction.text.lower()
+    assert "19:00" in reaction.text
+
+
+def test_check_on_reports_real_task_status(temp_db):
+    handle_message("add task buy milk")
+    reaction = handle_message("check on buy milk")
+    assert "buy milk" in reaction.text.lower()
+    assert "open" in reaction.text.lower()
+
+
+def test_check_on_nothing_found_says_so_plainly(temp_db):
+    reaction = handle_message("check on the moon landing")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_check_on_without_query_asks_for_one(temp_db):
+    reaction = handle_message("check on")
+    assert reaction.emotion == Emotion.CONFUSED
+
+
+def test_ambiguous_done_completes_the_only_open_item(temp_db):
+    handle_message("remind me to message my aunt at 7pm")
+    reaction = handle_message("mark it as done")
+    assert "message my aunt" in reaction.text.lower()
+    assert reminder_manager.list_reminders()[0].status == "completed"
+
+
+def test_ambiguous_done_asks_which_when_multiple_open_items(temp_db):
+    handle_message("remind me to message my aunt at 7pm")
+    handle_message("add task buy milk")
+    reaction = handle_message("mark it as done")
+    assert reaction.emotion == Emotion.CONFUSED
+    assert "which one" in reaction.text.lower()
+
+
+def test_ambiguous_done_with_nothing_open_says_so(temp_db):
+    reaction = handle_message("mark it as done")
+    assert reaction.emotion == Emotion.CONFUSED
+
+
+def test_count_command_end_to_end(temp_db):
+    reaction = handle_message("mochi count 1 to 5")
+    assert reaction.emotion == Emotion.EXCITED
+    assert "1!" in reaction.text and "5!" in reaction.text

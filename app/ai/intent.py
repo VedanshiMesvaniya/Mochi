@@ -215,6 +215,35 @@ TIMER_CANCEL_TRIGGER = re.compile(
     r"\b(?:cancel|stop|delete|remove)\b(?=.*\btimer\b)|\btimer\b.*\b(?:cancel|stop)\b",
     re.IGNORECASE,
 )
+# Bug report: "check on X" / "mark it as done" (without the literal word
+# task/reminder/timer) fell all the way through to the open-ended LLM
+# fallback, which has no actual database access and would just invent a
+# plausible-sounding reply ("I'll remind you..." / "Okay, I'll take care
+# of it") without doing or checking anything real - see chat_engine.py's
+# _check_on_reaction/_complete_ambiguous_reaction, which answer from the
+# real task/reminder tables instead. Checked *after* the create_reminder/
+# create_task/start_timer triggers below (deliberately - so "remind me to
+# check on my aunt" is still a reminder creation, not a status check) but
+# before small talk.
+CHECK_ON_TRIGGER = re.compile(
+    r"\b(check(?:ed)? on|any update on|status of|what'?s the status of|"
+    r"did (?:you|i) (?:forget|remind))\b",
+    re.IGNORECASE,
+)
+AMBIGUOUS_DONE_TRIGGER = re.compile(
+    r"\b(mark (?:it|that|this) (?:as )?done|(?:it|that|this)(?:'s| is) done|"
+    r"(?:it|that|this)(?:'s| is) finished|complete it|finish it|"
+    r"i (?:did|finished) it)\b",
+    re.IGNORECASE,
+)
+# "count 1 to 10" / "count from 1 to 10" -> groups 1/2; "count to 10"
+# (implicit start of 1) -> group 3. See the count-handling block in
+# detect_intent() below for why this is deterministic rather than an LLM bit.
+COUNT_TRIGGER = re.compile(
+    r"\bcount\b(?:\s+from)?\s+(\d{1,3})\s*(?:to|-)\s*(\d{1,3})\b"
+    r"|\bcount\s+to\s+(\d{1,3})\b",
+    re.IGNORECASE,
+)
 # Strips control words (mark/complete/cancel/.../as/is/my/the/to plus the
 # store keyword itself) out of a matched sentence, leaving just the
 # free-text query to fuzzy-match against real titles in chat_engine.py.
@@ -665,6 +694,26 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             tool_args=tool_args,
         )
 
+    # --- Check-on / ambiguous done (see CHECK_ON_TRIGGER/AMBIGUOUS_DONE_TRIGGER
+    # definitions above for why these are checked here specifically) ------
+    if CHECK_ON_TRIGGER.search(lowered):
+        body = _strip_trigger(text, CHECK_ON_TRIGGER)
+        return DetectedIntent(
+            name="check_on",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",
+            tool_args={"query": body.strip(" ,.!?") or None},
+        )
+    if AMBIGUOUS_DONE_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="complete_ambiguous",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="",
+            tool_args={},
+        )
+
     # --- On-demand expression command --------------------------------
     # Checked after reminders/timers/tasks (so "make a reminder to..."
     # etc. are never shadowed by this) but before small talk, since it's
@@ -679,6 +728,35 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=requested_state,
             sound="chirp",
             response=f"Hehe, here's my {display} face for you~",
+        )
+
+    # --- On-demand counting command -----------------------------------
+    # Bug report: "mochi count 1 to 10" got a single flat sentence back
+    # ("Counting to 10, one at a time.") from the open-ended LLM fallback -
+    # a kid asking a companion to count with them wants to actually hear
+    # it counted, with excitement, not be told that counting is happening.
+    # Handled deterministically (same reasoning as the expression command
+    # above) so it's always the same fun, reliable bit rather than
+    # depending on whether a local LLM happens to be installed/running.
+    count_match = COUNT_TRIGGER.search(lowered)
+    if count_match:
+        start_str, end_str, to_only_str = count_match.groups()
+        if to_only_str is not None:
+            start, end = 1, int(to_only_str)
+        else:
+            start, end = int(start_str or 1), int(end_str)
+        if start > end:
+            start, end = end, start
+        # Cap the range so a typo like "count to 1000" can't produce a
+        # wall of text instead of a fun little bit.
+        end = min(end, start + 30)
+        numbers = "! ".join(str(n) for n in range(start, end + 1)) + "!"
+        return DetectedIntent(
+            name="count",
+            emotion=Emotion.EXCITED,
+            animation=CharacterState.EXCITED,
+            sound="chirp",
+            response=f"Ooh okay, here we go!! {numbers} Yay, I did it!! 🎉",
         )
 
     # --- Small talk ------------------------------------------------------
