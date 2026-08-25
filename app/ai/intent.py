@@ -230,6 +230,27 @@ CHECK_ON_TRIGGER = re.compile(
     r"did (?:you|i) (?:forget|remind))\b",
     re.IGNORECASE,
 )
+# Accusation phrasing specifically ("you forgot to remind me", "you never
+# remind me", "you didn't remind me") - bug report: this contains the
+# literal phrase "remind me", so it was matching REMINDER_TRIGGER below and
+# being (mis)read as a brand-new reminder request with the complaint itself
+# as the title (e.g. "you dumb cat you forgot to remind me" -> "Got it -
+# \"You dumb cat you forgot to\" - but when?"). Deliberately its own
+# narrow trigger (rather than folded into CHECK_ON_TRIGGER above) so it can
+# be checked before REMINDER_TRIGGER without disturbing CHECK_ON_TRIGGER's
+# existing position/reasoning - "remind me to check on my aunt" must still
+# hit REMINDER_TRIGGER and create a reminder, not be caught here; the "you"
+# subject is what makes this unambiguously about something Mochi
+# supposedly already failed to do, not a new request.
+REMINDER_ACCUSATION_TRIGGER = re.compile(
+    r"\byou(?:'ve| have)? (?:forgot(?:ten)? to remind|never remind(?:ed)?|didn'?t remind)\b"
+    # "did you forget to remind me" has the same "remind me" substring
+    # problem as the "you forgot" phrasing above and needs the same early
+    # interception, ahead of REMINDER_TRIGGER, rather than waiting for
+    # CHECK_ON_TRIGGER's later position where REMINDER_TRIGGER already won.
+    r"|\bdid (?:you|i) forget to remind\b",
+    re.IGNORECASE,
+)
 AMBIGUOUS_DONE_TRIGGER = re.compile(
     r"\b(mark (?:it|that|this) (?:as )?done|(?:it|that|this)(?:'s| is) done|"
     r"(?:it|that|this)(?:'s| is) finished|complete it|finish it|"
@@ -618,6 +639,28 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             tool_args={"query": query, "time_of_day": time_of_day},
         )
 
+    # --- Accusation about a forgotten reminder ---------------------------
+    # Checked BEFORE the create-reminder trigger below: see
+    # REMINDER_ACCUSATION_TRIGGER's definition above for why "you forgot to
+    # remind me" needs to be caught here specifically, ahead of
+    # REMINDER_TRIGGER, instead of at CHECK_ON_TRIGGER's normal (later)
+    # position.
+    if REMINDER_ACCUSATION_TRIGGER.search(lowered):
+        body = _strip_trigger(text, REMINDER_ACCUSATION_TRIGGER)
+        # The trigger match stops right before a trailing "me"/"you"
+        # (e.g. "...to remind [me]"), so strip a leftover leading/trailing
+        # pronoun too - otherwise a bare complaint like "you forgot to
+        # remind me" leaves a stray "me" as the whole "query", which would
+        # print verbatim in the "I don't have anything like ..." fallback.
+        body = re.sub(r"^(me|you)\b|\b(me|you)$", "", body, flags=re.IGNORECASE).strip(" ,.!?")
+        return DetectedIntent(
+            name="check_on",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",
+            tool_args={"query": body.strip(" ,.!?") or None},
+        )
+
     # --- Reminders -------------------------------------------------
     if REMINDER_TRIGGER.search(lowered):
         body = _strip_trigger(text, REMINDER_TRIGGER)
@@ -641,7 +684,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
             sound="chirp",
-            response=f"Okay! I'll remind you to {title.lower()} at {due:%H:%M}.",
+            response=f"Okay! I'll remind you to {title.lower()} at {due:%I:%M %p}.",
             tool="create_reminder",
             tool_args={"title": title, "datetime_iso": due.isoformat()},
         )
@@ -680,7 +723,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         if due is None and minutes is not None:
             due = now + timedelta(minutes=minutes)
         title = _title_from(body, fallback="New task") if body else "New task"
-        due_note = f" (due {due:%H:%M})" if due else ""
+        due_note = f" (due {due:%I:%M %p})" if due else ""
         tool_args = {"title": title}
         if due is not None:
             tool_args["due_at_iso"] = due.isoformat()
@@ -695,7 +738,9 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         )
 
     # --- Check-on / ambiguous done (see CHECK_ON_TRIGGER/AMBIGUOUS_DONE_TRIGGER
-    # definitions above for why these are checked here specifically) ------
+    # definitions above for why these are checked here specifically; the
+    # narrower REMINDER_ACCUSATION_TRIGGER case is handled earlier, right
+    # before the create_reminder block) ----------------------------------
     if CHECK_ON_TRIGGER.search(lowered):
         body = _strip_trigger(text, CHECK_ON_TRIGGER)
         return DetectedIntent(

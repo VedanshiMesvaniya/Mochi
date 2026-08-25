@@ -31,9 +31,11 @@ idle "breathing" glow, and its pupils drift toward your mouse cursor while
 idle. Every expression change eases and bounces into place through a small
 spring-physics layer rather than snapping instantly, and each reaction
 holds long enough to actually register (tuned per-emotion in
-`REACTION_HOLD_MS` - a surprised flash is quick, alert runs its full
-multi-second pulse sequence, a sulk lingers) — that's the main thing that
-makes it read as alive rather than a slideshow of static faces.
+`REACTION_HOLD_MS` - a surprised flash is quickest at ~2.5s, alert runs its
+full multi-second pulse sequence, a sulk lingers past 4s; the quickest
+durations were bumped up from their original ~1.8-2s since they were
+reading as a flicker rather than a visible expression) — that's the main
+thing that makes it read as alive rather than a slideshow of static faces.
 
 **Expressions (16):** idle, happy, sad, angry, confused, surprised,
 thinking, sleepy, sleeping, talking, excited, alert, blush, shy, heart,
@@ -83,7 +85,13 @@ doesn't sit static — it occasionally perks up (alert or wink), gets
 sleepy, and falls asleep; any interaction wakes it back up. It shows
 "thinking" the instant you send a chat message, gets happy when you
 complete a reminder or task, and gets annoyed if a reminder sits ignored
-for a while.
+for a while. It's meant to be an easygoing companion, not a moderator: the
+LLM system prompt (`app/ai/llm.py`) explicitly tells it to treat ordinary
+topics — relationships, fictional pairings, opinions, personal choices,
+and so on — as normal conversation rather than lecturing about
+"boundaries" or steering to "a different topic," since that read as
+preachy rather than caring. It still declines anything genuinely harmful,
+it just doesn't moralize about everyday, non-harmful things.
 
 **Lock-screen easter egg (Windows only):** when you lock your PC, Mochi
 closes its eyes; every couple of seconds it playfully peeks one eye open,

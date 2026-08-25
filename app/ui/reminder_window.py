@@ -120,7 +120,7 @@ class ReminderWindow(TranslucentDialog):
 
         for reminder in reminders:
             repeat_suffix = f"  (repeats {reminder.repeat_rule})" if reminder.repeat_rule else ""
-            text = f"#{reminder.id}  {reminder.due_at:%Y-%m-%d %H:%M}  —  {reminder.title}{repeat_suffix}"
+            text = f"#{reminder.id}  {reminder.due_at:%Y-%m-%d %I:%M %p}  —  {reminder.title}{repeat_suffix}"
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, reminder.id)
             self.reminder_list.addItem(item)

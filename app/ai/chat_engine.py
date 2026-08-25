@@ -111,7 +111,7 @@ def _list_tasks_reaction() -> "ChatReaction":
             sound="chirp",
         )
     def _label(t) -> str:
-        return f"{t.title} (due {t.due_at:%m-%d %H:%M})" if t.due_at else t.title
+        return f"{t.title} (due {t.due_at:%m-%d %I:%M %p})" if t.due_at else t.title
 
     shown = "; ".join(_label(t) for t in tasks[:5])
     more = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
@@ -133,7 +133,7 @@ def _list_reminders_reaction() -> "ChatReaction":
             animation=CharacterState.HAPPY,
             sound="chirp",
         )
-    shown = "; ".join(f"{r.title} at {r.due_at:%H:%M}" for r in reminders[:5])
+    shown = "; ".join(f"{r.title} at {r.due_at:%I:%M %p}" for r in reminders[:5])
     more = f" (+{len(reminders) - 5} more)" if len(reminders) > 5 else ""
     plural = "reminder" if len(reminders) == 1 else "reminders"
     return ChatReaction(
@@ -446,7 +446,7 @@ def _describe_when(start_iso: str) -> str:
         start_dt = datetime.fromisoformat(start_iso)
     except ValueError:
         return start_iso
-    return start_dt.strftime("%a %b %d at %H:%M")
+    return start_dt.strftime("%a %b %d at %I:%M %p")
 
 
 def _calendar_create_proposal(tool_args: dict) -> "ChatReaction":
@@ -527,6 +527,26 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
     )
 
     if not query:
+        # No specific title given (e.g. a bare "you forgot to remind me!"
+        # complaint rather than "did you forget to remind me about X") -
+        # answer from the real pending list instead of just demanding a
+        # title, since "I don't have anything on file" is itself a real,
+        # useful answer here.
+        if not pending_reminders and not open_tasks:
+            return ChatReaction(
+                text="I don't actually have any reminders or tasks on file for you right now - want me to set one?",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        shown = "; ".join(
+            f'"{r.title}" at {r.due_at:%I:%M %p}' for r in pending_reminders[:3]
+        )
+        if shown:
+            return ChatReaction(
+                text=f"I've got: {shown}. Is one of those what you meant?",
+                emotion=Emotion.CURIOUS,
+                animation=CharacterState.THINKING,
+            )
         return ChatReaction(
             text="Check on what, exactly? Give me a bit of the title.",
             emotion=Emotion.CONFUSED,
@@ -540,7 +560,7 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
         return ChatReaction(
             text=(
                 f'I have both a reminder ("{reminder_match.title}" at '
-                f"{reminder_match.due_at:%H:%M}) and a task "
+                f"{reminder_match.due_at:%I:%M %p}) and a task "
                 f'("{task_match.title}") that match that - which one?'
             ),
             emotion=Emotion.CURIOUS,
@@ -548,13 +568,13 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
         )
     if reminder_match is not None:
         return ChatReaction(
-            text=f'Yep - "{reminder_match.title}" is set for {reminder_match.due_at:%H:%M}.',
+            text=f'Yep - "{reminder_match.title}" is set for {reminder_match.due_at:%I:%M %p}.',
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
         )
     if task_match is not None:
         due_note = (
-            f" (due {task_match.due_at:%m-%d %H:%M})" if task_match.due_at else ""
+            f" (due {task_match.due_at:%m-%d %I:%M %p})" if task_match.due_at else ""
         )
         return ChatReaction(
             text=f'Yep - "{task_match.title}" is still open on your task list{due_note}.',

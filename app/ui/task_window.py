@@ -106,7 +106,7 @@ class TaskWindow(TranslucentDialog):
 
         for task in tasks:
             prefix = "☑" if task.status == "done" else "☐"
-            deadline_suffix = f"  (due {task.due_at:%Y-%m-%d %H:%M})" if task.due_at else ""
+            deadline_suffix = f"  (due {task.due_at:%Y-%m-%d %I:%M %p})" if task.due_at else ""
             item = QListWidgetItem(f"{prefix}  {task.title}{deadline_suffix}")
             item.setData(Qt.UserRole, task.id)
             self.task_list.addItem(item)
