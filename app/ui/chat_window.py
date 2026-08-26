@@ -58,18 +58,26 @@ logger = get_logger("mochi.ui.chat")
 # ChatReaction so the character can actually animate/speak/show a bubble.
 ReactionCallback = Callable[[ChatReaction], None]
 
-_BUBBLE_MAX_WIDTH = 230
+# Widened slightly (spec follow-up: "give little format to answer...
+# make chat a little [nicer], it is inconvenient look and all same") -
+# list-style replies (see chat_engine.py's _format_bullet_list) wrap much
+# more awkwardly at the old 230px width once each item is on its own
+# line, and a touch more room plus a slightly larger font reads less
+# cramped without changing the window's overall compact footprint.
+_BUBBLE_MAX_WIDTH = 260
 _MOCHI_BUBBLE_STYLE = (
     "background-color: rgba(255, 255, 255, 225);"
     "color: #3a3350;"
     "border-radius: 14px;"
-    "padding: 7px 12px;"
+    "padding: 8px 13px;"
+    "font-size: 13px;"
 )
 _USER_BUBBLE_STYLE = (
     "background-color: rgba(150, 120, 220, 210);"
     "color: #ffffff;"
     "border-radius: 14px;"
-    "padding: 7px 12px;"
+    "padding: 8px 13px;"
+    "font-size: 13px;"
 )
 
 
@@ -188,6 +196,12 @@ class ChatWindow(TranslucentDialog):
         self.message_log = QListWidget()
         self.message_log.setWordWrap(True)
         self.message_log.setFocusPolicy(Qt.NoFocus)
+        # A little breathing room between messages (previously bubbles
+        # sat flush against each other, part of the "all same, cramped"
+        # look) - matches the 2px margin ChatBubble already gives itself
+        # on each side, just adding real gap between rows too.
+        self.message_log.setSpacing(3)
+        self.message_log.setStyleSheet("QListWidget { border: none; background: transparent; }")
         self.content_layout.addWidget(self.message_log, stretch=1)
 
         input_row = QHBoxLayout()

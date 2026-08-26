@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from app.memory import database
 
 
@@ -61,3 +63,89 @@ def test_initialize_schema_migration_is_idempotent(temp_db):
     database.initialize_schema()
     database.initialize_schema()
     database.initialize_schema()
+
+
+# --- Archive tables (spec follow-up: "after task/reminder/timer
+# complete... move data to done table" / "remain ... should fetch from
+# main table not done table") -----------------------------------------
+
+
+def test_archive_row_moves_data_out_of_main_table(temp_db):
+    database.initialize_schema()
+    now = "2026-08-01T00:00:00"
+    with database.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (1, 'Buy milk', 'done', ?)",
+            (now,),
+        )
+
+    database.archive_row("tasks", 1)
+
+    with database.get_connection() as conn:
+        main_row = conn.execute("SELECT * FROM tasks WHERE id = 1").fetchone()
+        done_row = conn.execute("SELECT * FROM tasks_done WHERE id = 1").fetchone()
+
+    assert main_row is None
+    assert done_row is not None
+    assert done_row["title"] == "Buy milk"
+    assert done_row["archived_at"] is not None
+
+
+def test_archive_row_is_a_noop_for_a_missing_row(temp_db):
+    database.initialize_schema()
+    # Must not raise - archiving something that isn't there (already
+    # archived, or never existed) is a safe no-op.
+    database.archive_row("tasks", 9999)
+
+
+def test_restore_row_moves_data_back_to_main_table(temp_db):
+    database.initialize_schema()
+    now = "2026-08-01T00:00:00"
+    with database.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (1, 'Buy milk', 'done', ?)",
+            (now,),
+        )
+    database.archive_row("tasks", 1)
+
+    restored = database.restore_row("tasks", 1)
+
+    with database.get_connection() as conn:
+        main_row = conn.execute("SELECT * FROM tasks WHERE id = 1").fetchone()
+        done_row = conn.execute("SELECT * FROM tasks_done WHERE id = 1").fetchone()
+
+    assert restored is True
+    assert main_row is not None
+    assert main_row["title"] == "Buy milk"
+    assert done_row is None
+
+
+def test_restore_row_returns_false_when_nothing_archived(temp_db):
+    database.initialize_schema()
+    assert database.restore_row("tasks", 9999) is False
+
+
+def test_list_done_orders_newest_archived_first(temp_db):
+    database.initialize_schema()
+    now = "2026-08-01T00:00:00"
+    with database.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (1, 'First', 'done', ?)",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (2, 'Second', 'done', ?)",
+            (now,),
+        )
+    database.archive_row("tasks", 1)
+    database.archive_row("tasks", 2)
+
+    rows = database.list_done("tasks")
+
+    assert [r["id"] for r in rows] == [2, 1]
+
+
+def test_archive_row_rejects_unknown_table(temp_db):
+    database.initialize_schema()
+    with pytest.raises(ValueError):
+        database.archive_row("not_a_real_table", 1)

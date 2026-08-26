@@ -19,7 +19,14 @@ from typing import Optional
 
 from app.core.exceptions import TaskError
 from app.core.logger import get_logger
-from app.memory.database import get_connection, initialize_schema
+from app.memory.database import (
+    archive_row,
+    get_archived,
+    get_connection,
+    initialize_schema,
+    list_done,
+    restore_row,
+)
 
 logger = get_logger("mochi.tasks")
 
@@ -108,6 +115,19 @@ def get_task(task_id: int) -> Optional[Task]:
     return Task.from_row(row) if row else None
 
 
+def get_task_any(task_id: int) -> Optional[Task]:
+    """Look up a task by id whether it's still active (`tasks`) or
+    already archived as finished (`tasks_done`), without moving it. The
+    task checklist UI shows both open and recently-done tasks together
+    (see app/ui/task_window.py) and needs to inspect either kind without
+    triggering a restore just to read its current state."""
+    task = get_task(task_id)
+    if task is not None:
+        return task
+    row = get_archived("tasks", task_id)
+    return Task.from_row(row) if row is not None else None
+
+
 def list_tasks(status: Optional[str] = None) -> list[Task]:
     query = "SELECT * FROM tasks"
     params: list = []
@@ -126,6 +146,9 @@ def list_tasks(status: Optional[str] = None) -> list[Task]:
 
 
 def complete_task(task_id: int) -> Task:
+    """Mark a task done, then move it out of the active `tasks` table into
+    the `tasks_done` archive (product rule: the main table only ever holds
+    tasks still open - see app/memory/database.py's archive_row())."""
     task = get_task(task_id)
     if task is None:
         raise TaskError(f"Task #{task_id} not found.")
@@ -136,11 +159,20 @@ def complete_task(task_id: int) -> Task:
             "UPDATE tasks SET status = ?, completed_at = ? WHERE id = ?",
             (TaskStatus.DONE, now.strftime(ISO_FORMAT), task_id),
         )
+    # Read back before archiving - archive_row() deletes the `tasks` row.
+    completed = get_task(task_id)
+    archive_row("tasks", task_id)
     logger.info("Completed task #%s: '%s'", task_id, task.title)
-    return get_task(task_id)  # type: ignore[return-value]
+    return completed  # type: ignore[return-value]
 
 
 def reopen_task(task_id: int) -> Task:
+    """Reopen a task. Since complete_task()/cancel_task() move a finished
+    task into `tasks_done`, the row usually has to be restored from there
+    first - restore_row() is a no-op if it's actually still in `tasks`
+    (e.g. reopening something that was never archived for some reason),
+    so this works either way."""
+    restore_row("tasks", task_id)
     task = get_task(task_id)
     if task is None:
         raise TaskError(f"Task #{task_id} not found.")
@@ -155,21 +187,32 @@ def reopen_task(task_id: int) -> Task:
 
 
 def cancel_task(task_id: int) -> None:
+    """Cancel a task and archive it into `tasks_done` (status
+    'cancelled') - same "main table = active only" rule as
+    complete_task() above."""
     with get_connection() as conn:
         result = conn.execute(
             "UPDATE tasks SET status = ? WHERE id = ?", (TaskStatus.CANCELLED, task_id)
         )
         if result.rowcount == 0:
             raise TaskError(f"Task #{task_id} not found.")
+    archive_row("tasks", task_id)
     logger.info("Cancelled task #%s", task_id)
 
 
 def delete_task(task_id: int) -> None:
+    """Hard delete - checks the active `tasks` table first, then falls
+    back to `tasks_done` (a finished task the UI is showing from the
+    archive - see get_task_any() above - must still be deletable)."""
     with get_connection() as conn:
         result = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if result.rowcount > 0:
+            logger.info("Deleted task #%s", task_id)
+            return
+        result = conn.execute("DELETE FROM tasks_done WHERE id = ?", (task_id,))
         if result.rowcount == 0:
             raise TaskError(f"Task #{task_id} not found.")
-    logger.info("Deleted task #%s", task_id)
+    logger.info("Deleted archived task #%s", task_id)
 
 
 def update_task(task_id: int, title: str) -> Task:
@@ -199,3 +242,11 @@ def set_due_date(task_id: int, due_at: Optional[datetime]) -> Task:
         )
     logger.info("Set due date for task #%s: %s", task_id, due_at)
     return get_task(task_id)  # type: ignore[return-value]
+
+
+def list_archived_tasks(limit: int = 20) -> list[Task]:
+    """Most-recently-finished (done or cancelled) tasks, newest first -
+    reads `tasks_done`, never `tasks`. Used for "what have I finished"
+    chat queries (app/ai/db_glossary.py) and by the task checklist UI to
+    still show recently-checked-off items alongside open ones."""
+    return [Task.from_row(row) for row in list_done("tasks", limit=limit)]

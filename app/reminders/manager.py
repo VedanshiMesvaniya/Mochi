@@ -21,7 +21,7 @@ from typing import Optional
 
 from app.core.exceptions import ReminderError
 from app.core.logger import get_logger
-from app.memory.database import get_connection, initialize_schema
+from app.memory.database import archive_row, get_archived, get_connection, initialize_schema, list_done
 
 logger = get_logger("mochi.reminders")
 
@@ -144,6 +144,17 @@ def get_reminder(reminder_id: int) -> Optional[Reminder]:
     return Reminder.from_row(row) if row else None
 
 
+def get_reminder_any(reminder_id: int) -> Optional[Reminder]:
+    """Look up a reminder whether it's still active (`reminders`) or
+    already archived as finished (`reminders_done`), without moving it -
+    same idea as app/tasks/manager.py's get_task_any()."""
+    reminder = get_reminder(reminder_id)
+    if reminder is not None:
+        return reminder
+    row = get_archived("reminders", reminder_id)
+    return Reminder.from_row(row) if row is not None else None
+
+
 def list_reminders(
     status: Optional[str] = None, upcoming_only: bool = False
 ) -> list[Reminder]:
@@ -192,8 +203,11 @@ def mark_notified(reminder_id: int, when: Optional[datetime] = None) -> None:
 
 
 def complete_reminder(reminder_id: int) -> Reminder:
-    """Mark a reminder completed. If it has a repeat_rule, schedule the next
-    occurrence as a fresh pending reminder."""
+    """Mark a reminder completed, then move it out of the active
+    `reminders` table into the `reminders_done` archive (product rule:
+    the main table only ever holds reminders still pending - see
+    app/memory/database.py's archive_row()). If it has a repeat_rule,
+    schedule the next occurrence as a fresh pending reminder."""
     reminder = get_reminder(reminder_id)
     if reminder is None:
         raise ReminderError(f"Reminder #{reminder_id} not found.")
@@ -204,6 +218,11 @@ def complete_reminder(reminder_id: int) -> Reminder:
             "UPDATE reminders SET status = ?, completed_at = ? WHERE id = ?",
             (ReminderStatus.COMPLETED, now.strftime(ISO_FORMAT), reminder_id),
         )
+    # Read the now-completed row back before archiving - archive_row()
+    # deletes it from `reminders`, so this is the last point it's
+    # reachable via get_reminder().
+    completed = get_reminder(reminder_id)
+    archive_row("reminders", reminder_id)
 
     logger.info("Completed reminder #%s: '%s'", reminder_id, reminder.title)
 
@@ -211,10 +230,14 @@ def complete_reminder(reminder_id: int) -> Reminder:
         next_due = compute_next_due(reminder.due_at, reminder.repeat_rule)
         return create_reminder(reminder.title, next_due, reminder.repeat_rule)
 
-    return get_reminder(reminder_id)  # type: ignore[return-value]
+    return completed  # type: ignore[return-value]
 
 
 def cancel_reminder(reminder_id: int) -> None:
+    """Cancel a reminder and archive it into `reminders_done` (status
+    'cancelled') - same "main table = active only" rule as
+    complete_reminder() above, so a cancelled reminder disappears from
+    `reminders` immediately rather than lingering with status=cancelled."""
     with get_connection() as conn:
         result = conn.execute(
             "UPDATE reminders SET status = ? WHERE id = ?",
@@ -222,6 +245,7 @@ def cancel_reminder(reminder_id: int) -> None:
         )
         if result.rowcount == 0:
             raise ReminderError(f"Reminder #{reminder_id} not found.")
+    archive_row("reminders", reminder_id)
     logger.info("Cancelled reminder #%s", reminder_id)
 
 
@@ -241,12 +265,21 @@ def snooze_reminder(reminder_id: int, minutes: int = 10) -> Reminder:
 
 
 def delete_reminder(reminder_id: int) -> None:
-    """Hard delete - distinct from cancel (which keeps history)."""
+    """Hard delete - distinct from cancel (which archives into
+    `reminders_done` rather than removing it, see cancel_reminder() above).
+    Checks the active `reminders` table first, then falls back to
+    `reminders_done` (a completed/cancelled reminder someone wants gone
+    for good, not just archived) - it must still be deletable even though
+    it's no longer in the main table."""
     with get_connection() as conn:
         result = conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        if result.rowcount > 0:
+            logger.info("Deleted reminder #%s", reminder_id)
+            return
+        result = conn.execute("DELETE FROM reminders_done WHERE id = ?", (reminder_id,))
         if result.rowcount == 0:
             raise ReminderError(f"Reminder #{reminder_id} not found.")
-    logger.info("Deleted reminder #%s", reminder_id)
+    logger.info("Deleted archived reminder #%s", reminder_id)
 
 
 def update_reminder(
@@ -273,3 +306,13 @@ def update_reminder(
         )
     logger.info("Updated reminder #%s", reminder_id)
     return get_reminder(reminder_id)  # type: ignore[return-value]
+
+
+def list_archived_reminders(limit: int = 20) -> list[Reminder]:
+    """Most-recently-finished (completed or cancelled) reminders, newest
+    first - reads `reminders_done`, never `reminders`, so this never
+    overlaps with list_reminders() (which only ever sees active rows now
+    that complete_reminder()/cancel_reminder() archive on the way out).
+    Used for "what have I completed"-style chat queries - see
+    app/ai/db_glossary.py."""
+    return [Reminder.from_row(row) for row in list_done("reminders", limit=limit)]

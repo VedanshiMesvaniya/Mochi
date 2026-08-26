@@ -39,8 +39,14 @@ def test_mark_task_done_actually_completes_it(temp_db):
     assert "call aunt" in reaction.text.lower()
     assert reaction.emotion == Emotion.HAPPY
 
-    tasks = task_manager.list_tasks()
-    assert tasks[-1].status == task_manager.TaskStatus.DONE
+    # Completed tasks are archived out of the main `tasks` table (see
+    # app/tasks/manager.py's complete_task()) so a "what's left" query
+    # never has to filter finished rows out by hand - the finished record
+    # now lives in tasks_done instead.
+    assert task_manager.list_tasks() == []
+    archived = task_manager.list_archived_tasks()
+    assert archived[0].status == task_manager.TaskStatus.DONE
+    assert archived[0].title == "Call aunt"
 
 
 def test_mark_task_done_with_only_one_task_and_no_specific_title(temp_db):
@@ -71,23 +77,32 @@ def test_cancel_task_actually_cancels_it(temp_db):
     handle_message("remember that i need to buy milk")
     reaction = handle_message("cancel my task to buy milk")
     assert "buy milk" in reaction.text.lower()
-    tasks = task_manager.list_tasks()
-    assert tasks[-1].status == task_manager.TaskStatus.CANCELLED
+    # Cancelled tasks are archived out of `tasks` the same way completed
+    # ones are - see app/tasks/manager.py's cancel_task().
+    assert task_manager.list_tasks() == []
+    archived = task_manager.list_archived_tasks()
+    assert archived[0].status == task_manager.TaskStatus.CANCELLED
 
 
 def test_mark_reminder_done_actually_completes_it(temp_db):
     handle_message("remind me to call mom at 7pm")
     reaction = handle_message("mark my reminder to call mom as done")
     assert "call mom" in reaction.text.lower()
-    reminders = reminder_manager.list_reminders()
-    assert reminders[-1].status == reminder_manager.ReminderStatus.COMPLETED
+    # Completed reminders are archived out of `reminders` - see
+    # app/reminders/manager.py's complete_reminder().
+    assert reminder_manager.list_reminders() == []
+    archived = reminder_manager.list_archived_reminders()
+    assert archived[0].status == reminder_manager.ReminderStatus.COMPLETED
 
 
 def test_cancel_reminder_actually_cancels_it(temp_db):
     handle_message("remind me to call mom at 7pm")
     reaction = handle_message("cancel my reminder to call mom")
-    reminders = reminder_manager.list_reminders()
-    assert reminders[-1].status == reminder_manager.ReminderStatus.CANCELLED
+    # Cancelled reminders are archived out of `reminders` - see
+    # app/reminders/manager.py's cancel_reminder().
+    assert reminder_manager.list_reminders() == []
+    archived = reminder_manager.list_archived_reminders()
+    assert archived[0].status == reminder_manager.ReminderStatus.CANCELLED
 
 
 def test_cancel_timer_actually_cancels_it(temp_db):
@@ -489,7 +504,10 @@ def test_ambiguous_done_completes_the_only_open_item(temp_db):
     handle_message("remind me to message my aunt at 7pm")
     reaction = handle_message("mark it as done")
     assert "message my aunt" in reaction.text.lower()
-    assert reminder_manager.list_reminders()[0].status == "completed"
+    # Completed reminders are archived out of `reminders` now - see
+    # app/reminders/manager.py's complete_reminder().
+    assert reminder_manager.list_reminders() == []
+    assert reminder_manager.list_archived_reminders()[0].status == "completed"
 
 
 def test_ambiguous_done_asks_which_when_multiple_open_items(temp_db):
@@ -515,7 +533,10 @@ def test_ambiguous_cancel_cancels_the_only_open_item(temp_db):
     handle_message("remind me to message my aunt at 7pm")
     reaction = handle_message("cancel it")
     assert "message my aunt" in reaction.text.lower()
-    assert reminder_manager.list_reminders()[0].status == "cancelled"
+    # Cancelled reminders are archived out of `reminders` now - see
+    # app/reminders/manager.py's cancel_reminder().
+    assert reminder_manager.list_reminders() == []
+    assert reminder_manager.list_archived_reminders()[0].status == "cancelled"
 
 
 def test_ambiguous_cancel_covers_running_timers_too(temp_db):
@@ -565,3 +586,60 @@ def test_count_command_end_to_end(temp_db):
     reaction = handle_message("mochi count 1 to 5")
     assert reaction.emotion == Emotion.EXCITED
     assert "1!" in reaction.text and "5!" in reaction.text
+
+
+# --- Timer listing (spec follow-up: there was previously no way to ask
+# chat "what timers do I have" at all - see LIST_TIMERS_TRIGGER) --------
+
+
+def test_list_timers_reaction_reports_running_timers(temp_db):
+    handle_message("set a timer for 10 minutes")
+    reaction = handle_message("what timers do i have")
+    assert "timer" in reaction.text.lower()
+    assert "1" in reaction.text
+
+
+def test_list_timers_reaction_with_none_running(temp_db):
+    reaction = handle_message("any timers running")
+    assert "no timers" in reaction.text.lower()
+
+
+# --- "What have I finished" query (spec follow-up: glossary-driven
+# lookup against the *_done archive tables, not the main active tables -
+# see app/ai/db_glossary.py and _query_done_reaction in chat_engine.py) -
+
+
+def test_query_done_reports_completed_tasks(temp_db):
+    handle_message("remember that i need to call aunt")
+    handle_message("mark my task to call aunt as done")
+
+    reaction = handle_message("what tasks are done")
+    assert "call aunt" in reaction.text.lower()
+
+
+def test_query_done_reports_nothing_when_archive_is_empty(temp_db):
+    handle_message("remember that i need to buy milk")  # still open
+    reaction = handle_message("show completed tasks")
+    assert "call aunt" not in reaction.text.lower()
+    assert "no" in reaction.text.lower() or "nothing" in reaction.text.lower()
+
+
+def test_query_done_reports_cancelled_reminders(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    handle_message("cancel my reminder to call mom")
+
+    reaction = handle_message("show me cancelled reminders")
+    assert "call mom" in reaction.text.lower()
+
+
+def test_query_done_never_shows_still_open_items(temp_db):
+    """The core product rule this whole feature exists for: a 'done'
+    question must read from the archive table, never the active one - an
+    open task must never appear in a 'what's done' answer."""
+    handle_message("remember that i need to buy milk")  # left open
+    handle_message("remember that i need to call aunt")
+    handle_message("mark my task to call aunt as done")
+
+    reaction = handle_message("which tasks are done")
+    assert "call aunt" in reaction.text.lower()
+    assert "buy milk" not in reaction.text.lower()

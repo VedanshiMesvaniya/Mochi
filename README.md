@@ -1,5 +1,12 @@
 # 🐱 Mochi
 
+**Current status: V1.0 — Correct Assistant** (see
+[`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full versioned roadmap:
+V1.0 → V1.2 → V2.0 → V2.1 → V3.0 → V3.1). This phase is about making
+Mochi *reliable* before making it clever — deterministic tools for
+anything that touches real data, a local LLM only for open-ended chat,
+never the other way around.
+
 Mochi is a small, local-first desktop companion: a black rounded "screen"
 with cat ears and whiskers that sits on your desktop and shows an
 expressive pixel face — no body, no walking, just a face that
@@ -235,7 +242,37 @@ because "remind me" happens to also appear in the sentence.
   doesn't get its own notification/scheduler — it's a checklist entry
   with a date attached,
   not a timed alert.
-- **Timers** — short countdowns that persist across restarts.
+- **Timers** — short countdowns that persist across restarts. Chat can
+  also list them now ("what timers do I have?", "any timers running?").
+
+### Where finished items go
+
+Completing, cancelling, or a timer firing doesn't just flip a status flag
+in place — the record is moved out of its active table (`reminders`,
+`tasks`, `timers`) into a matching archive table (`reminders_done`,
+`tasks_done`, `timers_done`; see `app/memory/database.py`'s
+`archive_row()`/`restore_row()`). The point: the active tables only ever
+hold things you still need to deal with, so "what's remaining" never has
+to filter finished rows out by hand — it's just everything still in the
+table. Reopening a task (`manager.reopen_task()`) moves it back out of
+the archive.
+
+You can still ask about what's finished — "what tasks are done", "show
+completed reminders", "which timers got cancelled" — Mochi recognizes a
+broad synonym glossary for this (`app/ai/db_glossary.py`: "remaining" /
+"left" / "pending" all mean active; "done" / "completed" / "finished" /
+"history" / "archive" all mean the archive; "cancelled" / "canceled" /
+"called off"; "task" / "todo" / "chore" / "assignment" all mean the same
+table, and so on), reads the real archive table for whatever you asked
+about, and — if a local LLM is available — has it phrase the answer
+naturally, strictly grounded in those real rows (never allowed to invent
+a title, count, or time beyond what was actually fetched; see
+`app/ai/llm.py`'s `phrase_data_answer()`). Without a local LLM running it
+falls back to the same real data, just phrased plainly instead. The
+query itself is never handed to the LLM to write — see that module's
+docstring for why a small local model generating live SQL against your
+own database would be exactly the kind of untrusted "LLM performs the
+action" step Mochi's own design rule (spec section 1) exists to prevent.
 
 ---
 

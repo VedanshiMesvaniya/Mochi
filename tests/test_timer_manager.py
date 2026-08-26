@@ -55,7 +55,12 @@ def test_mark_notified_moves_status_to_done():
     manager.add_time(timer.id, -10)
     manager.mark_notified(timer.id)
 
-    fetched = manager.get_timer(timer.id)
+    # A notified timer is archived out of `timers` immediately (see
+    # mark_notified()'s archive_row() call) - get_timer() (main table
+    # only) correctly finds nothing; the finished record lives in
+    # timers_done instead.
+    assert manager.get_timer(timer.id) is None
+    fetched = manager.list_archived_timers()[0]
     assert fetched.status == "done"
     assert fetched.notified_at is not None
     assert manager.list_due_timers() == []
@@ -64,7 +69,10 @@ def test_mark_notified_moves_status_to_done():
 def test_cancel_timer():
     timer = manager.start_timer(60, "Cancel me")
     manager.cancel_timer(timer.id)
-    assert manager.get_timer(timer.id).status == "cancelled"
+    # Cancelled timers are archived out of `timers` the same way - see
+    # cancel_timer()'s archive_row() call.
+    assert manager.get_timer(timer.id) is None
+    assert manager.list_archived_timers()[0].status == "cancelled"
 
 
 def test_cancel_missing_timer_raises():

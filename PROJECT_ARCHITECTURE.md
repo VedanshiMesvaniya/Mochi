@@ -1,5 +1,10 @@
 # Mochi — Project Architecture
 
+**Current status: V1.0 — Correct Assistant.** See
+[`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full versioned roadmap and
+what changes at each later version. Everything in this document describes
+the codebase as it exists in V1.0.
+
 How Mochi is structured internally: module layout, data flow, and the
 design principles that constrain new changes. Read this before adding a
 new subsystem.
@@ -168,20 +173,38 @@ app/
 │   │                            things match), falls through to the local
 │   │                            LLM for "unknown" messages, records the
 │   │                            interaction for familiarity tracking
-│   └── llm.py                    Optional local LLM backend - talks to
+│   ├── llm.py                    Optional local LLM backend - talks to
 │                                 Ollama's HTTP API directly (stdlib only,
 │                                 no extra dependency); every prompt
 │                                 includes the actual current local date/
 │                                 time so "what time is it"/relative
 │                                 phrasing never has to be guessed; 30s
 │                                 bounded timeout (generous enough for a
-│                                 cold local model);
-│                                 raises LLMUnavailable on any failure so
-│                                 the caller can fall back gracefully
+│                                 cold local model); raises LLMUnavailable
+│                                 on any failure so the caller can fall
+│                                 back gracefully; also exposes
+│                                 phrase_data_answer() - phrases an
+│                                 already-fetched, ground-truth DB result
+│                                 (see db_glossary.py below) rather than
+│                                 answering freely
+│   └── db_glossary.py            Synonym glossary + live-schema reader for
+│                                 natural-language "what's done"/"what's
+│                                 remaining" questions - maps words like
+│                                 "remaining"/"left"/"done"/"history" onto
+│                                 a plain (entity, status) QueryPlan;
+│                                 chat_engine.py runs that through the
+│                                 existing safe manager functions (never
+│                                 raw SQL) and only hands llm.py the
+│                                 real result to phrase, not the query
+│                                 itself
 │
 ├── memory/                     SQLite access layer
 │   ├── database.py              Connection management + schema (reminders,
-│   │                            tasks, timers, relationship, app_settings)
+│   │                            tasks, timers + their `_done` archive
+│   │                            tables, relationship, app_settings) plus
+│   │                            archive_row()/restore_row()/list_done() -
+│   │                            the move-to-archive machinery every
+│   │                            manager's complete/cancel path uses (§6)
 │   ├── relationship.py           Lightweight interaction counter (not ML) -
 │   │                             flavors greetings/LLM tone as familiarity
 │   │                             grows (new / getting_to_know / familiar)
@@ -393,10 +416,13 @@ reaction + sound + speech bubble + OS notification.
 
 ```text
 data/mochi.db
-├── reminders   id, title, due_at, repeat_rule, status, created_at, completed_at
-├── tasks       id, title, status ('open'|'done'|'cancelled'), created_at, completed_at, due_at (nullable)
-├── timers      id, label, duration_seconds, started_at, due_at, status, notified_at
-└── relationship  id (single row), interaction_count, first_seen, last_seen
+├── reminders       id, title, due_at, repeat_rule, status, created_at, completed_at, notified_at
+├── reminders_done  same columns + archived_at  (finished reminders land here - see below)
+├── tasks           id, title, status ('open'|'done'|'cancelled'), created_at, completed_at, due_at (nullable)
+├── tasks_done      same columns + archived_at  (finished tasks land here)
+├── timers          id, label, duration_seconds, started_at, due_at, status, notified_at
+├── timers_done     same columns + archived_at  (finished timers land here)
+└── relationship    id (single row), interaction_count, first_seen, last_seen
 ```
 
 - **Reminders** poll every ~15s, support `DAILY`/`WEEKLY`/`MONTHLY`
@@ -416,6 +442,8 @@ data/mochi.db
   `data/mochi.db` from before the column existed.
 - **Timers** poll every ~1s (a countdown finishing is something the user
   is actively waiting on, unlike a reminder) and persist across restarts.
+  Chat can also list active ones ("what timers do I have?") - see
+  `LIST_TIMERS_TRIGGER` in `app/ai/intent.py`.
 - **`check_on <query>`** and **`mark it as done` / "that's done" (no
   keyword)** search across *both* tasks and reminders by fuzzy title
   match rather than requiring the caller to know which store something
@@ -425,7 +453,59 @@ data/mochi.db
   asks which one, the same "ask rather than guess" rule the
   keyword-requiring complete/cancel intents already follow.
 
-All three are handled entirely through chat — there's deliberately no
+### Active vs. archived: where finished items go
+
+Completing/cancelling a reminder or task, or a timer firing its due
+notification, doesn't just flip `status` in place — the row is moved
+wholesale out of its active table into a parallel `_done` archive table
+(`app/memory/database.py`'s `archive_row()`), stamped with `archived_at`.
+`restore_row()` is the inverse, used by `reopen_task()`. This is a
+deliberate product rule, not an implementation detail: **the active
+tables only ever hold things still outstanding**, so any "what's
+remaining" read — `list_tasks()`, `list_reminders()`, `list_active_timers()`
+— never has to filter finished rows out by hand; it's just everything
+still in the table. `get_task_any()` / `get_reminder_any()` (check active,
+then archive) exist for the few call sites that need to look up an item
+regardless of which side of that split it's currently on (e.g. the task
+checklist UI toggling a recently-completed item back open, or deleting an
+already-archived record for good).
+
+### Asking about finished items: the synonym glossary
+
+`app/ai/db_glossary.py` is a small, deliberately "universal" synonym
+table mapping the words someone might actually use — "remaining" / "left"
+/ "pending" / "open" all mean *active*; "done" / "completed" / "finished"
+/ "history" / "archive" all mean the *archive*; "cancelled" / "canceled"
+/ "called off"; "task" / "todo" / "chore" / "assignment" all mean the
+same table, and so on for reminders/timers — onto a plain
+`QueryPlan(entity, status)`. `LIST_DONE_TRIGGER` in `intent.py` routes
+matching chat messages ("what tasks are done", "show completed
+reminders") to `_query_done_reaction()` in `chat_engine.py`, which:
+
+1. Resolves the message to a `QueryPlan` via the glossary.
+2. Reads the real archive (or active/all) table through the *same*
+   already-safe manager functions everything else uses —
+   `list_archived_tasks()`, `list_archived_reminders()`,
+   `list_archived_timers()` — never a hand-built SQL string.
+3. Builds a short, deterministic plain-text summary of the real result
+   ("facts").
+4. Passes those facts to `app/ai/llm.py`'s `phrase_data_answer()` so a
+   local model, if one's running, can phrase the answer naturally -
+   explicitly instructed to state only what's in the facts and never
+   invent a title/count/time beyond them. Falls back to the same facts
+   formatted plainly in Python if no LLM is available.
+
+This is a deliberate departure from "just let the LLM write the SQL":
+principle 3 above ("deterministic where it matters") already rules that
+out for anything touching real data, and a small local model generating
+live SQL against someone's own database is exactly that kind of
+untrusted "LLM performs the action" step, with real injection/
+hallucination risk on top. The glossary keeps the actual query
+deterministic and safe while still answering natural-language questions
+about it — the LLM only ever touches the *wording* of an answer that's
+already been computed correctly.
+
+All three stores are handled entirely through chat — there's deliberately no
 right-click menu item for any of them (the underlying `app/ui/
 reminder_window.py` / `task_window.py` / `timer_window.py` classes still
 exist and are tested, just not wired into the UI, in case a future

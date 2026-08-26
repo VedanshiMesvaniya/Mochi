@@ -194,6 +194,35 @@ LIST_REMINDERS_TRIGGER = re.compile(
     r"what(\'s| is) on my (reminders|schedule))\b",
     re.IGNORECASE,
 )
+# Timers had no listing trigger at all before this - "what timers do I
+# have" / "any timers running" fell all the way through to the
+# open-ended LLM fallback, which has no real access to the timers table
+# and would have to guess or deflect. Same shape as LIST_TASKS_TRIGGER/
+# LIST_REMINDERS_TRIGGER above.
+LIST_TIMERS_TRIGGER = re.compile(
+    r"\b(do i have (any )?timers?|what timers?|list (my )?timers?|"
+    r"show (me )?(my )?timers?|any timers?( running)?|timers? (left|remaining))\b",
+    re.IGNORECASE,
+)
+# Glossary-driven "what have I finished/cancelled" query (spec follow-up:
+# "when ask remain task work reminder timer it should fetch from main
+# table not done table" - the flip side of that is asking about the
+# *done* table, which nothing above covers). Deliberately requires BOTH
+# an entity word (task/reminder/timer) AND an explicit done/history/
+# cancelled word via lookaheads (order-independent, so "show completed
+# tasks" and "which tasks are done" both match) - the done/history/
+# cancelled requirement is what keeps this from ever intercepting a plain
+# "what tasks do I have" (no such word present, so LIST_TASKS_TRIGGER
+# above still wins) or a "what's the status of my task" check-on
+# question (CHECK_ON_TRIGGER, checked later) - neither contains a
+# done-style word either. See app/ai/db_glossary.py for how the matched
+# entity/status actually gets resolved into a real query.
+LIST_DONE_TRIGGER = re.compile(
+    r"\b(?:what|which|show(?:\s+me)?|list|any|see|view|do i have)\b"
+    r"(?=.*\b(?:task|tasks|reminder|reminders|timer|timers)\b)"
+    r"(?=.*\b(?:done|completed?|finished|history|archive[ds]?|cancell?ed)\b)",
+    re.IGNORECASE,
+)
 TASK_TRIGGER = re.compile(
     r"\b(remember (that )?i need to|add (a )?task|new task:?|create (a )?task|todo:?|task:)",
     re.IGNORECASE,
@@ -490,6 +519,19 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
     # Checked first, before the creation triggers below, so query phrasing
     # that happens to contain "remind me" (e.g. "remind me what tasks I
     # have") still resolves as a listing request, not a new reminder.
+    #
+    # LIST_DONE_TRIGGER goes first of all of these: "what tasks are done"
+    # contains both "what tasks" (which LIST_TASKS_TRIGGER below would
+    # also match) and "done" - checking the done-specific query first is
+    # what makes it answer with *finished* items instead of open ones.
+    if LIST_DONE_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="query_done",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from the real archive
+            tool_args={"query": text},
+        )
     if LIST_TASKS_TRIGGER.search(lowered):
         return DetectedIntent(
             name="list_tasks",
@@ -505,6 +547,14 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=CharacterState.THINKING,
             response="",  # chat_engine fills this in from the real reminder list
             tool="list_reminders",
+        )
+    if LIST_TIMERS_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="list_timers",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from the real timer list
+            tool="list_timers",
         )
 
     # --- Completing/cancelling an existing task/reminder/timer ---------

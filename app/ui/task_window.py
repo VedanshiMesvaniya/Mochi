@@ -97,7 +97,15 @@ class TaskWindow(TranslucentDialog):
     def refresh_list(self) -> None:
         manager.ensure_ready()
         self.task_list.clear()
-        tasks = [t for t in manager.list_tasks() if t.status in ("open", "done")]
+        # Open tasks live in `tasks` (the active table); finished ones are
+        # archived out into `tasks_done` the moment they're completed (see
+        # app/tasks/manager.py's complete_task()/list_archived_tasks()) so
+        # the checklist still shows a handful of recently-done items -
+        # capped at 20, newest-finished first - rather than the main table
+        # accumulating every task ever completed.
+        tasks = list(manager.list_tasks(status="open")) + list(
+            manager.list_archived_tasks(limit=20)
+        )
         if not tasks:
             item = QListWidgetItem("No tasks yet. Add one above!")
             item.setFlags(Qt.NoItemFlags)
@@ -140,7 +148,7 @@ class TaskWindow(TranslucentDialog):
         task_id = self._selected_task_id()
         if task_id is None:
             return
-        task = manager.get_task(task_id)
+        task = manager.get_task_any(task_id)
         if task is None:
             self.refresh_list()
             return

@@ -13,8 +13,9 @@ from __future__ import annotations
 import re
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 from app.core.config import settings
 from app.core.logger import get_logger
@@ -101,6 +102,61 @@ SCHEMA_STATEMENTS: list[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_meme_cache_expires ON meme_cache(expires_at);",
+    """
+    -- Archive table for finished reminders (spec follow-up: "after
+    -- reminder complete... move data to done table" / "when ask remain
+    -- ... it should fetch from main table not done table"). A completed
+    -- or cancelled reminder is moved here wholesale (see
+    -- app/memory/database.py's archive_row()) rather than just changing
+    -- its `status` in-place, so the `reminders` table only ever holds
+    -- reminders someone still cares about right now - list_reminders()
+    -- with no filter, and every "what's left" question, never has to
+    -- know to also exclude old finished rows. Same id as the original
+    -- row (not autoincrement) since it's a straight move, not a new
+    -- record; `archived_at` is when the move happened.
+    CREATE TABLE IF NOT EXISTS reminders_done (
+        id            INTEGER PRIMARY KEY,
+        title         TEXT NOT NULL,
+        due_at        TEXT NOT NULL,
+        repeat_rule   TEXT,
+        status        TEXT NOT NULL,       -- 'completed' or 'cancelled'
+        created_at    TEXT NOT NULL,
+        completed_at  TEXT,
+        notified_at   TEXT,
+        archived_at   TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_reminders_done_archived ON reminders_done(archived_at);",
+    """
+    -- Archive table for finished tasks - see reminders_done above for the
+    -- reasoning. reopen_task() (app/tasks/manager.py) is the one path
+    -- that moves a row back out of here into `tasks`.
+    CREATE TABLE IF NOT EXISTS tasks_done (
+        id            INTEGER PRIMARY KEY,
+        title         TEXT NOT NULL,
+        status        TEXT NOT NULL,       -- 'done' or 'cancelled'
+        created_at    TEXT NOT NULL,
+        completed_at  TEXT,
+        due_at        TEXT,
+        archived_at   TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tasks_done_archived ON tasks_done(archived_at);",
+    """
+    -- Archive table for finished timers - see reminders_done above for
+    -- the reasoning.
+    CREATE TABLE IF NOT EXISTS timers_done (
+        id                INTEGER PRIMARY KEY,
+        label             TEXT NOT NULL,
+        duration_seconds  INTEGER NOT NULL,
+        started_at        TEXT NOT NULL,
+        due_at            TEXT NOT NULL,
+        status            TEXT NOT NULL,   -- 'done' or 'cancelled'
+        notified_at       TEXT,
+        archived_at       TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_timers_done_archived ON timers_done(archived_at);",
 ]
 
 
@@ -170,6 +226,124 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def};")
             logger.info("Migrated database: added %s.%s", table, column)
+
+
+# Maps a "main" table to its archive ("done") table plus the exact column
+# list to copy across - used by archive_row()/restore_row() below. Kept
+# here (rather than duplicated in each of reminders/tasks/timers manager.py)
+# so there's exactly one place that knows the move logic; each manager
+# just calls archive_row("reminders", id) / restore_row("tasks", id).
+# Every name on the right is a literal in this file, never user input, but
+# still runs through _validate_identifier before interpolation - see that
+# function's docstring for why that guard exists even so.
+_ARCHIVE_MAP: dict[str, tuple[str, list[str]]] = {
+    "reminders": (
+        "reminders_done",
+        ["id", "title", "due_at", "repeat_rule", "status", "created_at", "completed_at", "notified_at"],
+    ),
+    "tasks": (
+        "tasks_done",
+        ["id", "title", "status", "created_at", "completed_at", "due_at"],
+    ),
+    "timers": (
+        "timers_done",
+        ["id", "label", "duration_seconds", "started_at", "due_at", "status", "notified_at"],
+    ),
+}
+
+ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+def archive_row(table: str, row_id: int) -> None:
+    """Move one row from `table` (reminders|tasks|timers) into its `_done`
+    archive table, stamped with `archived_at`. No-op if the row isn't
+    there (already archived, or never existed) - callers that already hold
+    the row's data in memory (e.g. to build a return value) should read it
+    *before* calling this, since it won't exist in `table` afterward.
+
+    This is what keeps the "main" tables holding only active records, per
+    the product rule: a "what's remaining" question only ever needs to
+    query `table` itself, never filter out finished rows by hand.
+    """
+    if table not in _ARCHIVE_MAP:
+        raise ValueError(f"Unknown archive source table: {table!r}")
+    done_table, columns = _ARCHIVE_MAP[table]
+    table = _validate_identifier(table, "table")
+    done_table = _validate_identifier(done_table, "table")
+    columns = [_validate_identifier(c, "column") for c in columns]
+
+    with get_connection() as conn:
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?;", (row_id,)).fetchone()
+        if row is None:
+            return
+        col_list = ", ".join(columns)
+        placeholders = ", ".join("?" for _ in columns)
+        values = [row[c] for c in columns]
+        conn.execute(
+            f"INSERT OR REPLACE INTO {done_table} ({col_list}, archived_at) "
+            f"VALUES ({placeholders}, ?);",
+            (*values, datetime.now().strftime(ISO_FORMAT)),
+        )
+        conn.execute(f"DELETE FROM {table} WHERE id = ?;", (row_id,))
+    logger.info("Archived %s #%s -> %s", table, row_id, done_table)
+
+
+def restore_row(table: str, row_id: int) -> bool:
+    """Move one row back from `table`'s `_done` archive into `table`
+    itself (e.g. reopening a task that was already archived as done).
+    Returns True if a row was actually moved, False if it wasn't in the
+    archive (e.g. it's still active, or never existed)."""
+    if table not in _ARCHIVE_MAP:
+        raise ValueError(f"Unknown archive source table: {table!r}")
+    done_table, columns = _ARCHIVE_MAP[table]
+    table = _validate_identifier(table, "table")
+    done_table = _validate_identifier(done_table, "table")
+    columns = [_validate_identifier(c, "column") for c in columns]
+
+    with get_connection() as conn:
+        row = conn.execute(f"SELECT * FROM {done_table} WHERE id = ?;", (row_id,)).fetchone()
+        if row is None:
+            return False
+        col_list = ", ".join(columns)
+        placeholders = ", ".join("?" for _ in columns)
+        values = [row[c] for c in columns]
+        conn.execute(
+            f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders});",
+            values,
+        )
+        conn.execute(f"DELETE FROM {done_table} WHERE id = ?;", (row_id,))
+    logger.info("Restored %s #%s from %s", table, row_id, done_table)
+    return True
+
+
+def get_archived(table: str, row_id: int) -> Optional[sqlite3.Row]:
+    """Look up one row by id directly in `table`'s `_done` archive,
+    without moving it - used where UI/tools need to know about an
+    already-archived record without restoring it (e.g. deleting an
+    already-completed task, or showing it read-only)."""
+    if table not in _ARCHIVE_MAP:
+        raise ValueError(f"Unknown archive source table: {table!r}")
+    done_table, _ = _ARCHIVE_MAP[table]
+    done_table = _validate_identifier(done_table, "table")
+    with get_connection() as conn:
+        return conn.execute(f"SELECT * FROM {done_table} WHERE id = ?;", (row_id,)).fetchone()
+
+
+def list_done(table: str, limit: int = 20) -> list[sqlite3.Row]:
+    """Most-recently-archived rows from `table`'s `_done` archive, newest
+    first - the read side for "what have I completed" style queries (see
+    app/ai/db_glossary.py). Returns raw sqlite3.Row objects; callers map
+    these through their own dataclass's from_row()."""
+    if table not in _ARCHIVE_MAP:
+        raise ValueError(f"Unknown archive source table: {table!r}")
+    done_table, _ = _ARCHIVE_MAP[table]
+    done_table = _validate_identifier(done_table, "table")
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM {done_table} ORDER BY archived_at DESC LIMIT ?;",
+            (limit,),
+        ).fetchall()
+    return rows
 
 
 def initialize_schema() -> None:
