@@ -275,6 +275,31 @@ AMBIGUOUS_DONE_TRIGGER = re.compile(
     r"i (?:did|finished) it)\b",
     re.IGNORECASE,
 )
+# Same reasoning as AMBIGUOUS_DONE_TRIGGER, but for cancelling rather than
+# completing - bug report ("chat loses context"/"forgets what it just
+# did"): "cancel it" / "delete it" / "scratch that" have no literal
+# "task"/"reminder"/"timer" word, so TASK_CANCEL_TRIGGER/
+# REMINDER_CANCEL_TRIGGER/TIMER_CANCEL_TRIGGER (which all require that
+# word) never matched them - the message fell all the way through to the
+# open-ended LLM fallback, which has no access to the real reminder/task/
+# timer tables and would happily reply as if it had cancelled something
+# ("Okay, cancelled!") without touching the database at all. That reads
+# exactly like Mochi forgetting what was just being discussed, even
+# though nothing was ever actually created to forget - it simply never
+# acted. See _cancel_ambiguous_reaction in chat_engine.py, which - same
+# as complete_ambiguous - resolves "it" against whatever's actually
+# open/pending/running across all three stores instead of guessing.
+#
+# Deliberately does NOT include bare "never mind"/"forget it" - those are
+# extremely common as plain conversational dismissals unrelated to any
+# reminder/task/timer (e.g. "eh, never mind, it's not important"), and
+# would make ordinary small talk get answered with "I don't have
+# anything open to cancel!" instead of just moving on. Only phrasing that
+# names a specific, unambiguous cancel action is matched here.
+AMBIGUOUS_CANCEL_TRIGGER = re.compile(
+    r"\b(cancel it|cancel that|delete it|remove it|scratch that|undo that|nix it)\b",
+    re.IGNORECASE,
+)
 # "count 1 to 10" / "count from 1 to 10" -> groups 1/2; "count to 10"
 # (implicit start of 1) -> group 3. See the count-handling block in
 # detect_intent() below for why this is deterministic rather than an LLM bit.
@@ -679,8 +704,36 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             tool_args={"query": body.strip(" ,.!?") or None},
         )
 
-    # --- Reminders -------------------------------------------------
-    if REMINDER_TRIGGER.search(lowered):
+    # --- Reminders / Timers / Tasks -------------------------------------
+    # Bug report ("timer/reminder/task mix up"): these three used to be
+    # three independent `if` blocks checked in a fixed order (reminder,
+    # then timer, then task), so ANY message that happened to contain a
+    # reminder-trigger phrase anywhere in it always won, even when a
+    # timer/task trigger was what the person was actually asking for -
+    # e.g. "start a timer and remind me when it's done" contains "remind
+    # me" and matched REMINDER_TRIGGER first, so it asked "but when?"
+    # for a reminder instead of starting the timer it was clearly asked
+    # to start; "remind me to add task buy milk" would silently create a
+    # reminder instead of the task explicitly named. Fixed at the root by
+    # checking all three triggers up front and resolving to whichever one
+    # actually matched *earliest* in what the person typed, rather than
+    # a fixed reminder > timer > task priority - the phrase they said
+    # first is what they meant, regardless of which category's regex
+    # happens to be checked first in this function. Ties (same start
+    # index, not achievable with these distinct trigger phrases in
+    # practice) fall back to the original reminder > timer > task order
+    # for determinism.
+    reminder_match = REMINDER_TRIGGER.search(lowered)
+    timer_match = TIMER_TRIGGER.search(lowered)
+    task_match = TASK_TRIGGER.search(lowered)
+    _creation_candidates = [
+        m.start()
+        for m in (reminder_match, timer_match, task_match)
+        if m is not None
+    ]
+    winner = min(_creation_candidates) if _creation_candidates else None
+
+    if reminder_match is not None and reminder_match.start() == winner:
         body = _strip_trigger(text, REMINDER_TRIGGER)
         due = _parse_absolute_time(body, now)
         minutes = _parse_relative_minutes(body)
@@ -707,8 +760,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             tool_args={"title": title, "datetime_iso": due.isoformat()},
         )
 
-    # --- Timers ------------------------------------------------------
-    if TIMER_TRIGGER.search(lowered):
+    if timer_match is not None and timer_match.start() == winner:
         seconds = _parse_duration_seconds(lowered)
         if not seconds:
             return DetectedIntent(
@@ -728,8 +780,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             tool_args={"duration_seconds": seconds, "label": "Timer"},
         )
 
-    # --- Tasks ---------------------------------------------------------
-    if TASK_TRIGGER.search(lowered):
+    if task_match is not None and task_match.start() == winner:
         body = TASK_TRIGGER.sub("", text, count=1).strip(" ,.!")
         # Tasks are checklist items with no required deadline (unlike
         # reminders) - but spec follow-up: "unless i give it deadline it
@@ -773,6 +824,14 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             name="complete_ambiguous",
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
+            response="",
+            tool_args={},
+        )
+    if AMBIGUOUS_CANCEL_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="cancel_ambiguous",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
             response="",
             tool_args={},
         )

@@ -505,6 +505,62 @@ def test_ambiguous_done_with_nothing_open_says_so(temp_db):
     assert reaction.emotion == Emotion.CONFUSED
 
 
+# --- Regression coverage for the "chat loses context" bug report: -------
+# "cancel it" / "delete it" with no literal task/reminder/timer word used
+# to fall through to the open-ended LLM fallback, which has no DB access
+# and would just claim success without cancelling anything real.
+
+
+def test_ambiguous_cancel_cancels_the_only_open_item(temp_db):
+    handle_message("remind me to message my aunt at 7pm")
+    reaction = handle_message("cancel it")
+    assert "message my aunt" in reaction.text.lower()
+    assert reminder_manager.list_reminders()[0].status == "cancelled"
+
+
+def test_ambiguous_cancel_covers_running_timers_too(temp_db):
+    handle_message("set a timer for 10 minutes")
+    reaction = handle_message("scratch that")
+    assert "timer" in reaction.text.lower()
+    assert timer_manager.list_active_timers() == []
+
+
+def test_ambiguous_cancel_asks_which_when_multiple_open_items(temp_db):
+    handle_message("remind me to message my aunt at 7pm")
+    handle_message("add task buy milk")
+    reaction = handle_message("cancel it")
+    assert reaction.emotion == Emotion.CONFUSED
+    assert "which one" in reaction.text.lower()
+
+
+def test_ambiguous_cancel_with_nothing_open_says_so(temp_db):
+    reaction = handle_message("cancel it")
+    assert reaction.emotion == Emotion.CONFUSED
+    assert "anything" in reaction.text.lower()
+
+
+def test_ambiguous_cancel_never_falsely_claims_success_via_llm(temp_db):
+    """The actual bug: without a deterministic handler this message has
+    no literal 'task'/'reminder'/'timer' word, so it used to reach the
+    open-ended LLM fallback (which has no real DB access) instead of a
+    real cancel. Confirm it never silently no-ops by checking the
+    reminder is genuinely untouched when it plainly doesn't match "it"."""
+    handle_message("remind me to message my aunt at 7pm")
+    handle_message("add task buy milk")
+    handle_message("cancel it")  # ambiguous - asks which, doesn't guess
+    assert reminder_manager.list_reminders()[0].status == "pending"
+    assert task_manager.list_tasks()[0].status == "open"
+
+
+def test_bare_never_mind_is_not_treated_as_a_cancel_command(temp_db):
+    """Deliberately NOT covered by AMBIGUOUS_CANCEL_TRIGGER - 'never
+    mind' is extremely common as a plain conversational dismissal
+    unrelated to any reminder/task/timer, and must not surface 'I don't
+    have anything open to cancel!' in the middle of ordinary chat."""
+    reaction = handle_message("never mind")
+    assert "cancel" not in reaction.text.lower()
+
+
 def test_count_command_end_to_end(temp_db):
     reaction = handle_message("mochi count 1 to 5")
     assert reaction.emotion == Emotion.EXCITED

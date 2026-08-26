@@ -10,6 +10,7 @@ build/
 venv/
 env/
 .pytest_cache/
+.pytest_tmp/
 .ruff_cache/
 
 # Environment

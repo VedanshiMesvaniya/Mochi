@@ -199,13 +199,29 @@ Two more phrasings that don't need the literal word "task"/"reminder":
 "check on <something>" reports the real status of whatever matches it in
 either store ("Yep - 'message my aunt' is set for 19:00", or "I don't
 have anything like that saved" if nothing matches) — it never invents an
-answer. And "mark it as done" / "that's done" / "I finished it" resolves
+answer. "Mark it as done" / "that's done" / "I finished it" resolves
 "it" against whatever's currently open across both tasks and reminders,
 auto-completing it if there's exactly one, or asking which one if there's
-more than one. Both exist specifically because falling through to the
-local LLM for phrasing like this used to produce a hallucinated reply —
-"I'll remind you..." or "Okay, I'll take care of it" — that sounded
-plausible but hadn't actually checked or changed anything.
+more than one. And its cancellation counterpart — "cancel it" / "delete
+it" / "scratch that" — resolves "it" the same way against whatever's
+currently open/pending/running across tasks, reminders, *and* active
+timers, auto-cancelling it if there's exactly one. All three exist
+specifically because falling through to the local LLM for phrasing like
+this used to produce a hallucinated reply — "I'll remind you...", "Okay,
+I'll take care of it", or "Okay, cancelled!" — that sounded plausible but
+hadn't actually checked or changed anything. (Deliberately narrow: a bare
+"never mind" on its own is *not* treated as a cancel command, since it's
+just as commonly a plain conversational dismissal unrelated to any
+reminder/task/timer — only phrasing that names an explicit cancel action
+triggers this.)
+
+If a single message could plausibly match more than one of
+reminder/timer/task creation (e.g. it contains both "remind me" and
+"timer" somewhere), Mochi resolves it to whichever trigger phrase
+actually appears *first* in what you typed, not a fixed priority order —
+so "start a 10 minute timer and remind me when it's done" starts the
+timer rather than getting stuck asking a reminder "but when?" just
+because "remind me" happens to also appear in the sentence.
 
 - **Reminders** — one-off or repeating (`DAILY`/`WEEKLY`/`MONTHLY`), with
   a background scheduler that checks for due reminders and surfaces them
@@ -344,6 +360,17 @@ Also install `requirements-calendar.txt` first if you want the Google
 Calendar-specific tests exercised against the real optional client
 libraries too (they pass either way - see `tests/test_google_calendar.py`).
 
+Test temp files are created under a repo-local `.pytest_tmp/` (see
+`pytest.ini`'s `--basetemp`, gitignored) rather than the OS default temp
+directory — on Windows, `%TEMP%\pytest-of-<user>` isn't always fully
+owned by the account running the tests (a previous run under another
+account, antivirus, OneDrive, etc. can leave it with permissions pytest
+itself can't scan), which surfaces as a wall of
+`PermissionError: [WinError 5] Access is denied` at collection time
+before any test even runs. If you still hit that on a very first run,
+delete `.pytest_tmp/` in this repo and re-run - it's always safe to
+delete, pytest recreates it.
+
 ### Linting
 
 ```bash
@@ -398,6 +425,11 @@ tests/              pytest suite
 - No paid APIs, no subscriptions, no API keys required for normal use —
   Google Calendar needs a one-time free OAuth client ID, not a key or a
   subscription.
+- The Google OAuth token cached at `config/token.json` is restricted to
+  the current OS user (`0600`) immediately after it's written, and
+  `config/` itself is restricted the same way — see
+  [`docs/VULNERABILITIES.md`](./docs/VULNERABILITIES.md) for the full
+  security review this and a couple of other hardening fixes came out of.
 
 ---
 
