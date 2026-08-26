@@ -8,6 +8,7 @@ below confirms).
 
 from __future__ import annotations
 
+from app.character import lock_watcher as lock_watcher_module
 from app.character.lock_watcher import LockWatcher, is_session_locked
 
 
@@ -61,7 +62,30 @@ def test_peek_timer_only_runs_while_locked(qapp):
     assert watcher._peek_timer.isActive() is False
 
 
-def test_start_is_a_safe_noop_off_windows(qapp):
+def test_start_is_a_safe_noop_off_windows(qapp, monkeypatch):
+    """Root-cause fix: this used to call watcher.start() and assert the
+    timer stayed inactive with no control over which platform it's
+    actually running on - which made the test's own name a lie whenever
+    it ran on real Windows (where start() is *supposed* to actually
+    poll, and correctly did), rather than testing the off-Windows
+    no-op path it claimed to. Force the condition it's meant to cover by
+    monkeypatching the module's platform flag directly, so the result is
+    the same on every OS the suite happens to run on."""
+    monkeypatch.setattr(lock_watcher_module, "_IS_WINDOWS", False)
     watcher = LockWatcher()
-    watcher.start()  # must not raise, must not actually poll on this platform
+    watcher.start()  # must not raise, must not actually poll when off Windows
     assert watcher._poll_timer.isActive() is False
+
+
+def test_start_actually_polls_on_windows(qapp, monkeypatch):
+    """The other half of the platform branch in start() - previously
+    untested in either direction on a single given machine. Also
+    monkeypatched rather than relying on the real OS, so both branches
+    are always exercised regardless of what platform the suite runs on."""
+    monkeypatch.setattr(lock_watcher_module, "_IS_WINDOWS", True)
+    watcher = LockWatcher()
+    try:
+        watcher.start()
+        assert watcher._poll_timer.isActive() is True
+    finally:
+        watcher.stop()

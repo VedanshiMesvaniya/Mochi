@@ -435,3 +435,42 @@ def test_mark_task_done_does_not_shadow_reminder_creation():
     completion just because it shares words like 'to'."""
     result = detect_intent("remind me to call aunt at 7pm", now=NOW)
     assert result.name == "create_reminder"
+
+
+# --- Regression coverage for the reported "timer/reminder/task mix up" --
+# bug: reminder/timer/task creation used to be three independent `if`
+# blocks checked in a fixed order (reminder, then timer, then task), so a
+# message containing a reminder-trigger phrase anywhere in it always won
+# even when a timer/task trigger was what was actually being asked for.
+# Fixed by resolving to whichever trigger phrase appears *earliest* in
+# what was actually typed - these lock that behavior in.
+
+
+def test_timer_request_is_not_shadowed_by_an_incidental_remind_me():
+    """'start a 10 minute timer' is said before 'remind me' in this
+    sentence, so the timer must win - previously ANY 'remind me'
+    anywhere in the message always won regardless of position, so this
+    used to ask 'but when?' for a reminder instead of starting the timer
+    it was actually, unambiguously asked to start."""
+    result = detect_intent(
+        "start a 10 minute timer and remind me when it's done", now=NOW
+    )
+    assert result.name == "start_timer"
+    assert result.tool == "start_timer"
+    assert result.tool_args["duration_seconds"] == 600
+
+
+def test_task_request_is_not_shadowed_by_a_later_remind_me():
+    """'add task' is said before 'remind me' here, so the explicit task
+    request must win over the later, incidental 'remind me' phrase."""
+    result = detect_intent("add task buy milk, remind me later", now=NOW)
+    assert result.name == "create_task"
+    assert result.tool_args["title"].startswith("Buy milk")
+
+
+def test_reminder_still_wins_when_it_is_said_first():
+    """Inverse case: when the reminder phrase genuinely comes first, it
+    must still win - this isn't a blanket 'timer/task always beats
+    reminder' change, just earliest-mention-wins."""
+    result = detect_intent("remind me to start a timer for the oven", now=NOW)
+    assert result.name == "create_reminder_needs_time"

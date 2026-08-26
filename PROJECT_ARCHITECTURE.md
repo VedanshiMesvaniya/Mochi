@@ -316,11 +316,20 @@ invent a plausible-sounding reply ("I'll remind you...", "Okay, I'll take
 care of it") without anything actually being checked or changed. Two
 fixes for this, in order of preference:
 
-1. `check_on`/`complete_ambiguous` intents (see `CHECK_ON_TRIGGER`/
-   `AMBIGUOUS_DONE_TRIGGER` in `app/ai/intent.py`) catch the common
-   phrasings for this *before* they'd ever reach `unknown`, and answer
-   from the real DB the same way the keyword-requiring complete/cancel
-   intents do.
+1. `check_on`/`complete_ambiguous`/`cancel_ambiguous` intents (see
+   `CHECK_ON_TRIGGER`/`AMBIGUOUS_DONE_TRIGGER`/`AMBIGUOUS_CANCEL_TRIGGER`
+   in `app/ai/intent.py`) catch the common phrasings for this *before*
+   they'd ever reach `unknown`, and answer from the real DB the same way
+   the keyword-requiring complete/cancel intents do.
+   `cancel_ambiguous` ("cancel it" / "delete it" / "scratch that") is
+   `complete_ambiguous`'s cancellation counterpart, resolving "it"
+   against whatever's open across tasks, reminders, *and* running
+   timers - added because it had the exact same "quietly falls through
+   to a DB-blind LLM that claims success anyway" gap as the completion
+   case, just for cancelling instead of completing. Deliberately
+   excludes bare "never mind" - too common as a plain conversational
+   dismissal to safely treat as "cancel the last thing" - only phrasing
+   that names an explicit cancel action is matched.
 
    A closely related bug: complaint/accusation phrasing like "you forgot
    to remind me" or "did you forget to remind me" contains the literal
@@ -333,6 +342,28 @@ fixes for this, in order of preference:
    it to `check_on` instead - while leaving `CHECK_ON_TRIGGER` itself at
    its original later position so legitimate creation requests like
    "remind me to check on my aunt at 7pm" still create a reminder.
+
+   A sibling bug in the *creation* triggers rather than the
+   check-status ones: reminder/timer/task creation used to be three
+   independent `if REMINDER_TRIGGER.search(...)` /
+   `if TIMER_TRIGGER.search(...)` / `if TASK_TRIGGER.search(...)` blocks
+   checked in that fixed order, so a message containing a
+   reminder-trigger phrase *anywhere* in it always won regardless of
+   what else was said - "start a 10 minute timer and remind me when
+   it's done" matched `REMINDER_TRIGGER` first (on "remind me") and
+   asked "but when?" for a reminder instead of starting the clearly-
+   requested timer at all; "add task buy milk, remind me later" would
+   have hit the same problem in the other direction. Fixed by computing
+   all three triggers' matches up front in `detect_intent()` and routing
+   to whichever one's match *starts earliest* in the actual message text
+   - the phrase the person said first is what they meant, rather than a
+   fixed reminder > timer > task priority baked into the code's read
+   order. See `tests/test_intent.py`'s
+   `test_timer_request_is_not_shadowed_by_an_incidental_remind_me` /
+   `test_task_request_is_not_shadowed_by_a_later_remind_me` /
+   `test_reminder_still_wins_when_it_is_said_first` for the exact cases
+   this covers (including confirming the fix isn't "timer/task always
+   beat reminder" - it's genuinely position-based both ways).
 
 2. Defense in depth for whatever still isn't caught: `app/ai/llm.py`'s
    `SYSTEM_PROMPT` explicitly forbids the model from claiming to have
@@ -459,6 +490,49 @@ running Qt app window or a live Ollama server:
 a session-scoped `qapp` fixture (`tests/conftest.py`) running Qt in
 offscreen mode.
 
+**Test isolation from ambient machine state.** Two tests used to pass or
+fail depending on facts about the machine running them rather than the
+code under test - a real bug in the tests themselves, not just flaky CI:
+
+- `test_ask_raises_llmunavailable_when_unreachable` (`test_llm.py`)
+  originally just called `ask()` and relied on there being no real
+  Ollama server reachable in the test environment. On a machine that
+  *does* have Ollama installed and running (a completely normal
+  development setup for this project), the call would actually succeed
+  and the test would fail with "DID NOT RAISE LLMUnavailable" - not
+  because anything was broken, but because the test's premise depended
+  on an absence it never controlled for. Fixed by monkeypatching
+  `urllib.request.urlopen` to always raise, so the test's result depends
+  only on `app/ai/llm.py`'s error handling, never on whether Ollama
+  happens to be running on whatever machine runs the suite.
+- `test_start_is_a_safe_noop_off_windows` (`test_lock_watcher.py`)
+  asserted the off-Windows no-op branch of `LockWatcher.start()` without
+  controlling which branch actually runs - `_IS_WINDOWS` is computed
+  once from the real `sys.platform` at import time, so on an actual
+  Windows machine `start()` correctly takes the *other* branch (it
+  really does poll on Windows) and the assertion fails, guaranteed,
+  every time, on the OS this project primarily targets. Fixed by
+  monkeypatching the module's `_IS_WINDOWS` flag directly instead of
+  trusting the host OS, and added a companion
+  `test_start_actually_polls_on_windows` so both branches are always
+  exercised regardless of which platform the suite happens to run on.
+
+**Windows temp-directory permission errors.** Separately from the two
+tests above, a Windows-only failure mode was reported where the *entire*
+suite failed at collection with a wall of
+`PermissionError: [WinError 5] Access is denied:
+'C:\Users\<user>\AppData\Local\Temp\pytest-of-<user>'` - before a single
+test body even ran. `tmp_path`'s default base lives under the OS temp
+directory, a location pytest itself doesn't fully own the ACLs of; if
+that directory was ever touched by a different process/user context (a
+previous run under another account, antivirus, OneDrive, etc.), every
+later run can fail trying to `os.scandir()` it. `pytest.ini` now sets
+`addopts = --basetemp=.pytest_tmp`, pointing all `tmp_path`/`tmp_path_factory`
+usage at a plain folder inside the repo that pytest creates and fully
+owns itself, sidestepping the ACL problem entirely rather than asking
+users to manually fix permissions on a system directory. `.pytest_tmp/`
+is gitignored and always safe to delete.
+
 There is no CI pipeline in this repo. Before opening a PR, run
 `ruff check .` locally (a narrow pyflakes/syntax-error rule set - see
 `pyproject.toml`'s `[tool.ruff]` comment for why it's not a full style
@@ -466,6 +540,33 @@ enforcer) plus this entire test suite, ideally once with
 `requirements-calendar.txt` installed so the "optional Google libraries
 present" path gets exercised too, and once without. No live network
 calls or real Google/Ollama services are needed for any of it.
+
+---
+
+## 8a. Security review
+
+A source-level security review was done covering everything in `app/`;
+findings, exact fixes, and what was checked and found *not* to be a
+problem are all recorded permanently in
+[`docs/VULNERABILITIES.md`](../docs/VULNERABILITIES.md) - kept even
+after every finding is fixed, as a running record rather than a
+throwaway checklist. Summary of what was fixed:
+
+1. **SQL identifier interpolation** in the schema migration runner
+   (`app/memory/database.py`) - table/column names were f-string'd into
+   `PRAGMA`/`ALTER TABLE` rather than parameter-bound (SQLite's `?`
+   binding only covers values, never identifiers). Not exploitable today
+   since the migration list is a hardcoded literal, but now guarded by a
+   strict identifier allow-list regardless, so it can't become one.
+2. **OAuth token file permissions** (`app/calendar/google_calendar.py`)
+   - `config/token.json` (a live Google access + refresh token) is now
+   `chmod 0600`'d immediately after every write, and `config/` itself is
+   restricted the same way in `Settings.ensure_directories()`.
+3. **Config-driven path traversal** (`app/core/config.py`) - the
+   `MOCHI_GOOGLE_CLIENT_SECRET_FILENAME`/`MOCHI_GOOGLE_TOKEN_FILENAME`
+   `.env` values are now validated to be bare filenames before being
+   joined onto `config_dir`, since `Path.__truediv__` doesn't sandbox
+   `..` segments or (worse) absolute paths on the right-hand side.
 
 ---
 

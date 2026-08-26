@@ -55,6 +55,8 @@ anything about the google-api-python-client types underneath.
 from __future__ import annotations
 
 import datetime as _dt
+import os
+import stat
 from pathlib import Path
 from typing import Optional
 
@@ -224,7 +226,7 @@ def _load_credentials():
                 "Google Calendar's sign-in expired and couldn't be "
                 "refreshed. Say \"connect my calendar\" to reconnect."
             ) from exc
-        token_path.write_text(creds.to_json(), encoding="utf-8")
+        _write_token(token_path, creds.to_json())
         return creds
 
     raise GoogleCalendarNotConnected(
@@ -288,7 +290,7 @@ def connect() -> None:
         ) from exc
 
     settings.ensure_directories()
-    settings.google_token_path.write_text(creds.to_json(), encoding="utf-8")
+    _write_token(settings.google_token_path, creds.to_json())
     global _service_cache
     _service_cache = None  # force a fresh build with the new credentials
     logger.info("Google Calendar connected (token saved to %s)", settings.google_token_path)
@@ -307,6 +309,26 @@ def disconnect() -> bool:
         logger.info("Google Calendar disconnected (removed %s)", token_path)
         return True
     return False
+
+
+def _write_token(token_path: Path, contents: str) -> None:
+    """Save the OAuth token (access + refresh token - full account-level
+    calendar access, not just a session cookie) and restrict it to the
+    current OS user. `write_text()` alone creates the file with whatever
+    permissions the process' default umask gives it - on a shared/
+    multi-user machine that can mean group/world-readable, letting any
+    other local account read out a live refresh token. chmod 0600
+    (owner read/write only) right after writing closes that; wrapped in
+    try/except since `os.chmod` support for POSIX mode bits is
+    best-effort on Windows (NTFS ACLs, normally already user-scoped via
+    the profile folder, aren't controlled by this call) and must never
+    turn a successful token save into a crash.
+    """
+    token_path.write_text(contents, encoding="utf-8")
+    try:
+        os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:  # pragma: no cover - best-effort, platform-dependent
+        logger.debug("Could not restrict permissions on %s", token_path, exc_info=True)
 
 
 def _iso(dt: _dt.datetime) -> str:

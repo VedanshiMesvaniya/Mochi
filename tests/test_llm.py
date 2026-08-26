@@ -1,6 +1,7 @@
 import http.server
 import json
 import threading
+import urllib.error
 from datetime import datetime
 
 import pytest
@@ -11,10 +12,27 @@ from app.ai.llm import LLMUnavailable, ask
 from app.character.state_machine import Emotion
 
 
-def test_ask_raises_llmunavailable_when_unreachable():
-    """No Ollama running in the test environment - must fail fast and
-    with the specific exception callers know to catch, never hang or
-    raise something generic."""
+def test_ask_raises_llmunavailable_when_unreachable(monkeypatch):
+    """Must fail fast and with the specific exception callers know to
+    catch, never hang or raise something generic, whenever Ollama can't
+    be reached.
+
+    Root-cause fix: this used to just call ask("anything") and rely on
+    no Ollama happening to be running in the test environment - which is
+    an assumption about the machine, not the code, and silently passed
+    or failed depending on whether the person running the suite happens
+    to have Ollama installed and started locally (exactly the setup
+    every other test in this file's `fake_ollama` fixture goes out of
+    its way to avoid depending on). Force the unreachable condition
+    directly by making the HTTP call itself always raise, so this test's
+    result depends only on app/ai/llm.py's error handling - never on
+    ambient machine state.
+    """
+
+    def _always_unreachable(*_args, **_kwargs):
+        raise urllib.error.URLError("connection refused (simulated)")
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", _always_unreachable)
     with pytest.raises(LLMUnavailable):
         ask("anything")
 

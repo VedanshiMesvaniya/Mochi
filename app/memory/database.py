@@ -10,6 +10,7 @@ will extend `SCHEMA_STATEMENTS` rather than replacing this module.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -140,8 +141,31 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
 ]
 
 
+# SQLite has no way to bind table/column names as query parameters ("?"
+# placeholders only work for values), so PRAGMA/ALTER TABLE statements
+# below build their SQL with an f-string. `_COLUMN_MIGRATIONS` is a
+# hardcoded literal in this file today, so there's no live injection
+# path - but an f-string built from an identifier is exactly the shape of
+# a SQL-injection bug waiting to happen the moment anyone (or any future
+# feature) makes one of these values configurable/derived. Validate every
+# identifier against a strict allow-list pattern *before* it's ever
+# interpolated, so this stays safe even if that assumption changes later.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(name: str, what: str) -> str:
+    if not _IDENTIFIER_RE.match(name):
+        # Intentionally a hard failure, not a silent skip - a migration
+        # entry that doesn't look like a plain identifier must never
+        # reach string interpolation into SQL.
+        raise ValueError(f"Refusing to use unsafe {what} identifier: {name!r}")
+    return name
+
+
 def _run_migrations(conn: sqlite3.Connection) -> None:
     for table, column, column_def in _COLUMN_MIGRATIONS:
+        table = _validate_identifier(table, "table")
+        column = _validate_identifier(column, "column")
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table});")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def};")

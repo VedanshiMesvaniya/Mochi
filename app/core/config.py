@@ -49,6 +49,34 @@ def _float(value: str | None, default: float) -> float:
         return default
 
 
+def _safe_filename(value: str, default: str) -> str:
+    """Reject anything that isn't a bare filename.
+
+    `google_client_secret_filename`/`google_token_filename` are always
+    joined onto `config_dir` with `Path.__truediv__` (see
+    `google_client_secret_path`/`google_token_path` below). Pathlib's `/`
+    operator does NOT sandbox that join - `Path("/a/b") / "../../x"`
+    walks outside `config_dir`, and `Path("/a/b") / "/etc/passwd"`
+    (an absolute right-hand side) discards the left side entirely and
+    resolves to `/etc/passwd`. These two values come from `.env`, which
+    is locally-trusted config rather than remote input, but they're still
+    an env var away from pointing Mochi's OAuth client secret/token I/O
+    at an arbitrary path on disk - a config value should not be able to
+    do that just because it wasn't validated. Reject anything containing
+    a path separator, `..`, or an absolute-path form, and fall back to
+    the documented default rather than silently using a mangled value.
+    """
+    if (
+        not value
+        or "/" in value
+        or "\\" in value
+        or value in {".", ".."}
+        or Path(value).is_absolute()
+    ):
+        return default
+    return value
+
+
 @dataclass
 class Settings:
     """Typed, validated view over environment configuration."""
@@ -180,11 +208,12 @@ class Settings:
             google_calendar_write_enabled=_bool(
                 os.getenv("MOCHI_GOOGLE_CALENDAR_WRITE_ENABLED"), False
             ),
-            google_client_secret_filename=os.getenv(
-                "MOCHI_GOOGLE_CLIENT_SECRET_FILENAME", "google_credentials.json"
+            google_client_secret_filename=_safe_filename(
+                os.getenv("MOCHI_GOOGLE_CLIENT_SECRET_FILENAME", "google_credentials.json"),
+                "google_credentials.json",
             ),
-            google_token_filename=os.getenv(
-                "MOCHI_GOOGLE_TOKEN_FILENAME", "token.json"
+            google_token_filename=_safe_filename(
+                os.getenv("MOCHI_GOOGLE_TOKEN_FILENAME", "token.json"), "token.json"
             ),
             humor_enabled=_bool(os.getenv("MOCHI_HUMOR_ENABLED"), True),
             trend_awareness_enabled=_bool(
@@ -206,6 +235,20 @@ class Settings:
         """Create local data directories if they don't exist yet."""
         for path in (self.data_dir, self.models_dir, self.config_dir):
             path.mkdir(parents=True, exist_ok=True)
+        # config_dir holds the Google OAuth client secret and cached
+        # token (see google_client_secret_path/google_token_path) - both
+        # are sensitive local credentials. Restrict the directory itself
+        # to the current user, best-effort, on top of the per-file chmod
+        # google_calendar.py already applies to the token - defense in
+        # depth against a permissive umask on a shared machine. Never
+        # allowed to break startup if the platform doesn't support it.
+        try:
+            import os
+            import stat
+
+            os.chmod(self.config_dir, stat.S_IRWXU)
+        except OSError:  # pragma: no cover - best-effort, platform-dependent
+            pass
 
 
 # Singleton settings instance used throughout the app.

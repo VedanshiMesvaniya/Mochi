@@ -632,6 +632,64 @@ def _complete_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
     )
 
 
+def _cancel_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
+    """Handles "cancel it" / "delete it" / "scratch that" - the
+    cancellation counterpart to _complete_ambiguous_reaction above (see
+    AMBIGUOUS_CANCEL_TRIGGER in app/ai/intent.py for the full bug report).
+    Resolves "it" against whatever's actually open/pending/running across
+    all three stores (tasks, reminders, AND running timers - unlike
+    completion, an active timer is a perfectly normal thing to want to
+    cancel); only auto-cancels when that's unambiguous, and never
+    silently claims success without a real write."""
+    task_manager.ensure_ready()
+    reminder_manager.ensure_ready()
+    timer_manager.ensure_ready()
+    open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
+    pending_reminders = reminder_manager.list_reminders(
+        status=reminder_manager.ReminderStatus.PENDING
+    )
+    active_timers = timer_manager.list_active_timers()
+    combined = (
+        [("task", t) for t in open_tasks]
+        + [("reminder", r) for r in pending_reminders]
+        + [("timer", t) for t in active_timers]
+    )
+
+    if not combined:
+        return ChatReaction(
+            text="I don't have anything open to cancel!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    if len(combined) > 1:
+        def _label(kind: str, item) -> str:
+            title = item.label if kind == "timer" else item.title
+            return f"{kind}: {title}"
+
+        shown = "; ".join(_label(kind, item) for kind, item in combined[:5])
+        return ChatReaction(
+            text=f"Which one do you mean? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    kind, item = combined[0]
+    if kind == "task":
+        task_manager.cancel_task(item.id)
+        label = item.title
+    elif kind == "reminder":
+        reminder_manager.cancel_reminder(item.id)
+        label = item.title
+    else:
+        timer_manager.cancel_timer(item.id)
+        label = item.label
+    return ChatReaction(
+        text=f'Okay, cancelled "{label}".',
+        emotion=Emotion.NEUTRAL,
+        animation=CharacterState.IDLE,
+    )
+
+
 _PROPOSAL_HANDLERS = {
     "calendar_create_event": _calendar_create_proposal,
     "calendar_delete_event": _calendar_delete_proposal,
@@ -723,6 +781,7 @@ _ACTION_HANDLERS = {
     "cancel_timer": _cancel_timer_reaction,
     "check_on": _check_on_reaction,
     "complete_ambiguous": _complete_ambiguous_reaction,
+    "cancel_ambiguous": _cancel_ambiguous_reaction,
 }
 
 
