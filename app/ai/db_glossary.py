@@ -51,8 +51,9 @@ ENTITY_SYNONYMS: dict[str, str] = {
     "alerts": "reminders", "notification": "reminders",
     "notifications": "reminders", "ping": "reminders",
     # timers
-    "timer": "timers", "timers": "timers", "countdown": "timers",
-    "countdowns": "timers", "stopwatch": "timers",
+    "timer": "timers", "timers": "timers", "timmer": "timers",
+    "timmers": "timers", "countdown": "timers", "countdowns": "timers",
+    "stopwatch": "timers",
 }
 
 # Every phrase for "still open" vs "already finished" vs "called off" ->

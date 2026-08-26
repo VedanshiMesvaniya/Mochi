@@ -80,6 +80,23 @@ def test_timer_trigger_variants():
     )
 
 
+def test_timer_trigger_tolerates_the_common_timmer_typo():
+    """Bug report: "set 10 second timmer" (doubled 'm') fell through to
+    intent=unknown entirely, so no timer was ever created and Mochi never
+    notified - not a notification bug, a trigger-matching gap. See
+    _TIMER_WORD in app/ai/intent.py."""
+    result = detect_intent("set 10 second timmer", now=NOW)
+    assert result.tool == "start_timer", result.name
+    assert result.tool_args["duration_seconds"] == 10
+
+    result = detect_intent("set a timmer for 5 minutes", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["duration_seconds"] == 300
+
+    assert detect_intent("cancel my timmer", now=NOW).name == "cancel_timer"
+    assert detect_intent("what timmers do i have", now=NOW).name == "list_timers"
+
+
 def test_task_trigger_variants():
     for phrase, expected_title in [
         ("new task clean my room", "Clean my room"),

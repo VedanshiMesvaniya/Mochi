@@ -112,6 +112,17 @@ def test_cancel_timer_actually_cancels_it(temp_db):
     assert timer_manager.list_active_timers() == []
 
 
+def test_start_timer_end_to_end_with_the_common_timmer_typo(temp_db):
+    """Bug report: "set 10 second timmer" produced intent=unknown and no
+    timer was ever created (and so, correctly, no notification ever
+    fired for it) - reproduces the exact reported message end-to-end
+    through handle_message(), not just detect_intent()."""
+    handle_message("set 10 second timmer")
+    active = timer_manager.list_active_timers()
+    assert len(active) == 1
+    assert active[0].duration_seconds == 10
+
+
 def test_cancel_timer_with_none_running(temp_db):
     reaction = handle_message("cancel the timer")
     assert "don't have any timers running" in reaction.text.lower()

@@ -170,9 +170,17 @@ REMINDER_TRIGGER = re.compile(
     r"don'?t let me forget)\b",
     re.IGNORECASE,
 )
+# Bug report: "set 10 second timmer" (a doubled-letter typo, the most
+# common way people mistype this word) fell through to the open-ended
+# LLM fallback entirely - TIMER_TRIGGER only recognized the exact
+# spelling "timer". `tim+er` tolerates one-or-more `m`s ("timer",
+# "timmer", "timmmer", ...) everywhere the literal word would otherwise
+# appear below, without loosening anything else about the match.
+_TIMER_WORD = r"tim+er"
+
 TIMER_TRIGGER = re.compile(
-    r"\b(set a timer|start a timer|timer for|start a countdown|countdown for|"
-    r"\d+\s*(?:second|sec|minute|min|hour|hr)s?\s+timer)\b",
+    rf"\b(set a {_TIMER_WORD}|start a {_TIMER_WORD}|{_TIMER_WORD} for|start a countdown|countdown for|"
+    rf"\d+\s*(?:second|sec|minute|min|hour|hr)s?\s+{_TIMER_WORD})\b",
     re.IGNORECASE,
 )
 # Listing/query phrasing, checked BEFORE the creation triggers above so
@@ -200,8 +208,8 @@ LIST_REMINDERS_TRIGGER = re.compile(
 # and would have to guess or deflect. Same shape as LIST_TASKS_TRIGGER/
 # LIST_REMINDERS_TRIGGER above.
 LIST_TIMERS_TRIGGER = re.compile(
-    r"\b(do i have (any )?timers?|what timers?|list (my )?timers?|"
-    r"show (me )?(my )?timers?|any timers?( running)?|timers? (left|remaining))\b",
+    rf"\b(do i have (any )?{_TIMER_WORD}s?|what {_TIMER_WORD}s?|list (my )?{_TIMER_WORD}s?|"
+    rf"show (me )?(my )?{_TIMER_WORD}s?|any {_TIMER_WORD}s?( running)?|{_TIMER_WORD}s? (left|remaining))\b",
     re.IGNORECASE,
 )
 # Glossary-driven "what have I finished/cancelled" query (spec follow-up:
@@ -219,7 +227,7 @@ LIST_TIMERS_TRIGGER = re.compile(
 # entity/status actually gets resolved into a real query.
 LIST_DONE_TRIGGER = re.compile(
     r"\b(?:what|which|show(?:\s+me)?|list|any|see|view|do i have)\b"
-    r"(?=.*\b(?:task|tasks|reminder|reminders|timer|timers)\b)"
+    rf"(?=.*\b(?:task|tasks|reminder|reminders|{_TIMER_WORD}|{_TIMER_WORD}s)\b)"
     r"(?=.*\b(?:done|completed?|finished|history|archive[ds]?|cancell?ed)\b)",
     re.IGNORECASE,
 )
@@ -259,7 +267,7 @@ REMINDER_CANCEL_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 TIMER_CANCEL_TRIGGER = re.compile(
-    r"\b(?:cancel|stop|delete|remove)\b(?=.*\btimer\b)|\btimer\b.*\b(?:cancel|stop)\b",
+    rf"\b(?:cancel|stop|delete|remove)\b(?=.*\b{_TIMER_WORD}\b)|\b{_TIMER_WORD}\b.*\b(?:cancel|stop)\b",
     re.IGNORECASE,
 )
 # Bug report: "check on X" / "mark it as done" (without the literal word
@@ -342,8 +350,8 @@ COUNT_TRIGGER = re.compile(
 # free-text query to fuzzy-match against real titles in chat_engine.py.
 # e.g. "mark my task to call aunt as done" -(strip "task")-> "call aunt".
 _ACTION_STOPWORDS = re.compile(
-    r"\b(?:mark|complete(?:d)?|finish(?:ed)?|cancel|delete|remove|stop|"
-    r"task|reminder|timer|as|is|my|the|to|done)\b",
+    rf"\b(?:mark|complete(?:d)?|finish(?:ed)?|cancel|delete|remove|stop|"
+    rf"task|reminder|{_TIMER_WORD}|as|is|my|the|to|done)\b",
     re.IGNORECASE,
 )
 
