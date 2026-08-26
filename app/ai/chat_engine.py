@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from app.ai.db_glossary import QueryPlan, build_plan
 from app.ai.intent import DetectedIntent, detect_intent
-from app.ai.llm import LLMUnavailable, ask as ask_llm
+from app.ai.llm import LLMUnavailable, ask as ask_llm, phrase_data_answer
 from app.calendar import google_calendar
 from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
 from app.core.config import settings
@@ -113,11 +114,9 @@ def _list_tasks_reaction() -> "ChatReaction":
     def _label(t) -> str:
         return f"{t.title} (due {t.due_at:%m-%d %I:%M %p})" if t.due_at else t.title
 
-    shown = "; ".join(_label(t) for t in tasks[:5])
-    more = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
     plural = "task" if len(tasks) == 1 else "tasks"
     return ChatReaction(
-        text=f"You've got {len(tasks)} open {plural}: {shown}{more}.",
+        text=f"You've got {len(tasks)} open {plural}:\n{_format_bullet_list([_label(t) for t in tasks])}",
         emotion=Emotion.CURIOUS,
         animation=CharacterState.THINKING,
     )
@@ -133,14 +132,122 @@ def _list_reminders_reaction() -> "ChatReaction":
             animation=CharacterState.HAPPY,
             sound="chirp",
         )
-    shown = "; ".join(f"{r.title} at {r.due_at:%I:%M %p}" for r in reminders[:5])
-    more = f" (+{len(reminders) - 5} more)" if len(reminders) > 5 else ""
+    shown_labels = [f"{r.title} at {r.due_at:%I:%M %p}" for r in reminders]
     plural = "reminder" if len(reminders) == 1 else "reminders"
     return ChatReaction(
-        text=f"You've got {len(reminders)} {plural}: {shown}{more}.",
+        text=f"You've got {len(reminders)} {plural}:\n{_format_bullet_list(shown_labels)}",
         emotion=Emotion.CURIOUS,
         animation=CharacterState.THINKING,
     )
+
+
+def _format_bullet_list(labels: list[str], max_shown: int = 6) -> str:
+    """Render a handful of items as a short, line-broken bullet list
+    instead of one long "; "-joined sentence (spec follow-up: "give
+    little format to answer... make chat a little [nicer], it is
+    inconvenient look and all same") - a QLabel in plain-text mode still
+    breaks on "\\n", so no rich text is needed for this to render as
+    actual separate lines in the chat bubble (see app/ui/chat_window.py).
+    """
+    shown = labels[:max_shown]
+    lines = "\n".join(f"• {label}" for label in shown)
+    if len(labels) > max_shown:
+        lines += f"\n… +{len(labels) - max_shown} more"
+    return lines
+
+
+def _list_timers_reaction() -> "ChatReaction":
+    timer_manager.ensure_ready()
+    timers = timer_manager.list_active_timers()
+    if not timers:
+        return ChatReaction(
+            text="No timers running right now!",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+
+    def _label(t) -> str:
+        minutes, seconds = divmod(int(t.seconds_remaining), 60)
+        remaining = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        return f"{t.label} - {remaining} left"
+
+    plural = "timer" if len(timers) == 1 else "timers"
+    return ChatReaction(
+        text=f"You've got {len(timers)} {plural} running:\n{_format_bullet_list([_label(t) for t in timers])}",
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+    )
+
+
+# --- Glossary-driven "what have I finished" query (spec follow-up: "when
+# ask remain task work reminder timer it should fetch from main table not
+# done table" - this is the read side for the archive/done tables, see
+# app/ai/db_glossary.py for the synonym matching and why the query itself
+# is built deterministically rather than left to the LLM). -------------
+_DONE_LIST_FNS = {
+    "tasks": lambda: task_manager.list_archived_tasks(),
+    "reminders": lambda: reminder_manager.list_archived_reminders(),
+    "timers": lambda: timer_manager.list_archived_timers(),
+}
+_ALL_LIST_FNS = {
+    "tasks": lambda: task_manager.list_tasks(),
+    "reminders": lambda: reminder_manager.list_reminders(),
+    "timers": lambda: timer_manager.list_active_timers() + timer_manager.list_archived_timers(),
+}
+_ENTITY_LABEL_ATTR = {"tasks": "title", "reminders": "title", "timers": "label"}
+_ENTITY_NOUN = {"tasks": "task", "reminders": "reminder", "timers": "timer"}
+
+
+def _query_done_reaction(tool_args: dict) -> "ChatReaction":
+    text = tool_args.get("query", "")
+    task_manager.ensure_ready()
+    reminder_manager.ensure_ready()
+    timer_manager.ensure_ready()
+
+    plan: Optional[QueryPlan] = build_plan(text)
+    if plan is None:
+        # Shouldn't happen (LIST_DONE_TRIGGER already requires an entity
+        # word), but never crash chat over a glossary miss - fall back to
+        # "done tasks" as a sane default.
+        plan = QueryPlan(entity="tasks", status="done")
+    # LIST_DONE_TRIGGER always implies a finished-state question, so make
+    # sure "active" (the glossary's default when no status word is found)
+    # never accidentally wins here.
+    status = plan.status if plan.status != "active" else "done"
+
+    fn_map = _ALL_LIST_FNS if status == "all" else _DONE_LIST_FNS
+    items = fn_map[plan.entity]()
+    if status == "cancelled":
+        items = [i for i in items if getattr(i, "status", "") == "cancelled"]
+    elif status == "done":
+        items = [i for i in items if getattr(i, "status", "") in ("done", "completed")]
+
+    label_attr = _ENTITY_LABEL_ATTR[plan.entity]
+    noun = _ENTITY_NOUN[plan.entity]
+    labels = [getattr(i, label_attr) for i in items]
+
+    if not items:
+        facts = f"{plan.entity}: 0 items with status={status}."
+        deterministic_text = f"Nothing there - no {status} {noun}s yet!"
+    else:
+        facts = f"{plan.entity} ({status}, {len(items)} total): " + "; ".join(labels[:10])
+        plural = noun if len(items) == 1 else f"{noun}s"
+        deterministic_text = (
+            f"You've got {len(items)} {status} {plural}:\n{_format_bullet_list(labels)}"
+        )
+
+    try:
+        phrased = phrase_data_answer(text or f"what {status} {noun}s do I have", facts)
+        response_text = phrased["response"]
+        emotion, animation = _emotion_and_animation(phrased["emotion"])
+    except LLMUnavailable:
+        # No local LLM available - the deterministic, already-correct
+        # text above is the full answer either way, just less flowery.
+        response_text = deterministic_text
+        emotion, animation = Emotion.CURIOUS, CharacterState.THINKING
+
+    return ChatReaction(text=response_text, emotion=emotion, animation=animation)
 
 
 def _fuzzy_find(query: str, items: list, title_attr: str = "title"):
@@ -760,6 +867,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
 _LIST_HANDLERS = {
     "list_tasks": _list_tasks_reaction,
     "list_reminders": _list_reminders_reaction,
+    "list_timers": _list_timers_reaction,
     "calendar_today": _calendar_today_reaction,
     "calendar_tomorrow": _calendar_tomorrow_reaction,
     "calendar_upcoming": _calendar_upcoming_reaction,
@@ -782,6 +890,7 @@ _ACTION_HANDLERS = {
     "check_on": _check_on_reaction,
     "complete_ambiguous": _complete_ambiguous_reaction,
     "cancel_ambiguous": _cancel_ambiguous_reaction,
+    "query_done": _query_done_reaction,
 }
 
 

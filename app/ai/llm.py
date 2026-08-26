@@ -343,6 +343,84 @@ def _extract_json_object(raw_text: str) -> dict:
     return {"response": raw_text, "emotion": "neutral"}
 
 
+_DATA_ANSWER_SYSTEM_PROMPT = """You are Mochi, a small pixel-face cat desktop
+companion, phrasing the result of a real database lookup for the person who
+just asked about it. A separate deterministic system (not you) already
+queried their actual tasks/reminders/timers - the FACTS section below is
+the complete, ground-truth result. Your only job is to phrase those exact
+facts back to them naturally, warmly, and in Mochi's voice (playful,
+affectionate, never robotic).
+
+CRITICAL RULES:
+- Only state what's in the FACTS section. Never invent, guess, or add any
+  title, count, time, or item that isn't listed there.
+- If FACTS says there are zero items, say so plainly (and warmly) - do not
+  imply there might be more you didn't check.
+- Do not claim to have just performed any action (created/completed/
+  cancelled anything) - you're only reporting what's already there.
+- Keep it short: 1-3 sentences.
+- Reply with ONLY a single JSON object, no markdown, no code fences:
+{"response": "<your reply>", "emotion": "<one of: neutral, happy, excited, curious, sleepy, sad, confused, annoyed, surprised, playful, amused>"}
+"""
+
+
+def phrase_data_answer(user_text: str, facts: str, familiarity: str = "new") -> dict:
+    """Ask the local model to phrase an already-fetched, ground-truth
+    result nicely (spec: "go to llm and it answer[s] and answers should
+    be proper"). `facts` is a short, deterministic plain-text summary the
+    caller (see app/ai/chat_engine.py) built from a real DB read via
+    app/ai/db_glossary.py - never raw/unbounded data (same "reasoning
+    model receives summaries, not raw logs" principle as the roadmap's
+    V3.0 section). Raises LLMUnavailable exactly like ask() - callers
+    must fall back to their own plain-text formatting of the same facts.
+    """
+    hint = _FAMILIARITY_HINTS.get(familiarity, _FAMILIARITY_HINTS["new"])
+    prompt = (
+        f"{_DATA_ANSWER_SYSTEM_PROMPT}\n{hint}\n"
+        f"\nFACTS (the complete, real result - nothing outside this exists):\n{facts}\n"
+        f"\nPerson's question: {user_text}\nMochi (JSON only):"
+    )
+    payload = {
+        "model": settings.llm_model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": min(settings.llm_temperature, 0.4),  # less flourish, more accuracy
+            "num_predict": settings.llm_max_tokens,
+        },
+    }
+    request = urllib.request.Request(
+        OLLAMA_GENERATE_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise LLMUnavailable(f"Ollama unreachable at {OLLAMA_GENERATE_URL}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise LLMUnavailable(f"Ollama returned invalid JSON envelope: {exc}") from exc
+
+    if error := body.get("error"):
+        raise LLMUnavailable(f"Ollama error: {error}")
+
+    raw_text = str(body.get("response", "")).strip()
+    if not raw_text:
+        raise LLMUnavailable("Empty response body from Ollama")
+
+    parsed = _extract_json_object(raw_text)
+    response_text = str(parsed.get("response", "")).strip()
+    if not response_text:
+        raise LLMUnavailable("Model reply had no usable 'response' text")
+
+    return {
+        "response": response_text[:400],
+        "emotion": str(parsed.get("emotion", "neutral")).strip().lower(),
+    }
+
+
 def is_configured() -> bool:
     """Cheap reachability probe. Not used on the hot path (ask() already
     fails fast and gracefully), but useful for a settings/status panel."""

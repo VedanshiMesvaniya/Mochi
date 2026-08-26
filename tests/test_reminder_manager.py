@@ -69,7 +69,11 @@ def test_complete_reminder_with_repeat_creates_next_occurrence():
 
     next_reminder = manager.complete_reminder(reminder.id)
 
-    original = manager.get_reminder(reminder.id)
+    # The just-completed original is archived out of `reminders` (see
+    # complete_reminder()'s archive_row() call) - it now lives in
+    # reminders_done instead of being fetchable via get_reminder().
+    assert manager.get_reminder(reminder.id) is None
+    original = manager.list_archived_reminders()[0]
     assert original.status == "completed"
 
     assert next_reminder.id != reminder.id
@@ -81,7 +85,10 @@ def test_complete_reminder_with_repeat_creates_next_occurrence():
 def test_cancel_reminder_sets_status():
     reminder = manager.create_reminder("Cancel me", datetime.now())
     manager.cancel_reminder(reminder.id)
-    fetched = manager.get_reminder(reminder.id)
+    # Cancelled reminders are archived out of `reminders` - see
+    # cancel_reminder()'s archive_row() call.
+    assert manager.get_reminder(reminder.id) is None
+    fetched = manager.list_archived_reminders()[0]
     assert fetched.status == "cancelled"
 
 
@@ -135,9 +142,15 @@ def test_list_reminders_filters_by_status():
     manager.cancel_reminder(r2.id)
 
     pending = manager.list_reminders(status="pending")
-    cancelled = manager.list_reminders(status="cancelled")
+    # Cancelled reminders are archived out of `reminders` entirely now, so
+    # list_reminders(status="cancelled") - which only ever queries the
+    # active table - correctly finds none; the cancelled one is read back
+    # via list_archived_reminders() instead.
+    cancelled_in_main = manager.list_reminders(status="cancelled")
+    cancelled = manager.list_archived_reminders()
 
     assert [r.id for r in pending] == [r1.id]
+    assert cancelled_in_main == []
     assert [r.id for r in cancelled] == [r2.id]
 
 

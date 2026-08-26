@@ -36,7 +36,11 @@ def test_complete_and_reopen_task():
 def test_cancel_task():
     task = manager.create_task("Skip this")
     manager.cancel_task(task.id)
-    assert manager.get_task(task.id).status == "cancelled"
+    # Cancelled tasks are archived out of `tasks` (see cancel_task()'s
+    # archive_row() call) - get_task() (main table only) now finds
+    # nothing; get_task_any() also checks the archive.
+    assert manager.get_task(task.id) is None
+    assert manager.get_task_any(task.id).status == "cancelled"
 
 
 def test_create_task_with_due_date():
@@ -117,7 +121,13 @@ def test_list_tasks_filters_by_status():
     manager.complete_task(t2.id)
 
     open_tasks = manager.list_tasks(status="open")
-    done_tasks = manager.list_tasks(status="done")
+    # Completed tasks are archived out of `tasks` entirely now, so
+    # list_tasks(status="done") - which only ever queries the active
+    # table - correctly finds none; the done one is read back via
+    # list_archived_tasks() instead.
+    done_in_main = manager.list_tasks(status="done")
+    done_tasks = manager.list_archived_tasks()
 
     assert [t.id for t in open_tasks] == [t1.id]
+    assert done_in_main == []
     assert [t.id for t in done_tasks] == [t2.id]
