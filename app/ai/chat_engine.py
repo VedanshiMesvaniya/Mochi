@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from app.ai import semantic_intent
 from app.ai.db_glossary import QueryPlan, build_plan
-from app.ai.intent import DetectedIntent, detect_intent
+from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent
 from app.ai.llm import LLMUnavailable, ask as ask_llm, phrase_data_answer
 from app.calendar import google_calendar
 from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
@@ -894,6 +895,38 @@ _ACTION_HANDLERS = {
 }
 
 
+# Human-friendly rephrasing hints for the hybrid semantic layer's
+# medium-confidence band (see semantic_intent.CONFIDENCE_LOW/CONFIDENCE_ACT
+# and _semantic_clarify_intent below) - shown when the model has a guess
+# but isn't confident enough to just act on it.
+_SEMANTIC_CLARIFY_HINTS = {
+    "create_reminder": ('set a reminder - try "remind me to ... at ..."'),
+    "create_task": 'add a task - try "add task ..."',
+    "start_timer": 'start a timer - try "timer for 10 minutes"',
+    "list_reminders": 'check your reminders - try "what reminders do I have"',
+    "list_tasks": 'check your tasks - try "what tasks do I have"',
+    "list_timers": 'check your timers - try "what timers are running"',
+    "complete_ambiguous": 'mark something as done - try "mark my task ... as done"',
+    "cancel_ambiguous": 'cancel something - try "cancel my reminder ..."',
+}
+
+
+def _semantic_clarify_intent(guessed_name: str) -> DetectedIntent:
+    """Medium-confidence semantic guess (roadmap section 6: 50-75% ->
+    'soft suggestion / ask') - Mochi has a plausible read on what was
+    meant but isn't sure enough to actually create/change anything, so it
+    asks instead of guessing. Named anything other than "unknown" so the
+    open-ended LLM fallback below in handle_message() doesn't overwrite
+    this response - see that block's docstring note."""
+    hint = _SEMANTIC_CLARIFY_HINTS.get(guessed_name, "do that")
+    return DetectedIntent(
+        name="semantic_clarify",
+        emotion=Emotion.CONFUSED,
+        animation=CharacterState.CONFUSED,
+        response=f"Hmm, sounds like you might want to {hint} - mind rephrasing it a little more directly so I get it right?",
+    )
+
+
 def handle_message(
     text: str,
     history: Optional[list[tuple[str, str]]] = None,
@@ -933,13 +966,57 @@ def handle_message(
         # forward at every return point past this one.
 
     intent: DetectedIntent = detect_intent(text)
+
+    # --- Hybrid semantic fallback (understand intent by MEANING, not
+    # just keywords) --------------------------------------------------
+    # The keyword/regex matcher above is fast and fully deterministic,
+    # but it only ever recognizes a message that happens to contain one
+    # of its literal trigger phrases - a paraphrase like "don't let this
+    # slip my mind, dentist thing at 4" means create_reminder just as
+    # clearly as "remind me..." does, but shares none of its trigger
+    # words, so it falls through to "unknown". This block is only ever
+    # reached when the keyword pass found NOTHING at all - it never
+    # overrides an actual keyword match, so it can only recognize MORE
+    # messages, never change how an already-recognized one is handled.
+    # See app/ai/semantic_intent.py for the model call + confidence bands
+    # and app/ai/intent.py's build_semantic_intent() for why the actual
+    # entity extraction (time/title/duration) still goes through the
+    # exact same deterministic regex parsing as the keyword path, never
+    # the model's own judgement - it only ever decides WHICH bucket a
+    # message belongs to.
+    if intent.name == "unknown":
+        try:
+            guess = semantic_intent.classify(text)
+        except semantic_intent.SemanticUnavailable as exc:
+            logger.info("Semantic intent classification unavailable: %s", exc)
+            guess = None
+
+        if guess is not None and guess.intent != "small_talk":
+            if guess.confidence >= semantic_intent.CONFIDENCE_ACT:
+                built = build_semantic_intent(guess.intent, text)
+                if built is not None:
+                    logger.info(
+                        "Message %r -> semantic intent=%s confidence=%.2f (acting)",
+                        text, guess.intent, guess.confidence,
+                    )
+                    intent = built
+            elif guess.confidence >= semantic_intent.CONFIDENCE_LOW:
+                logger.info(
+                    "Message %r -> semantic intent=%s confidence=%.2f (asking, not acting)",
+                    text, guess.intent, guess.confidence,
+                )
+                intent = _semantic_clarify_intent(guess.intent)
+            # else: below CONFIDENCE_LOW - stays "unknown", falls through
+            # to the open-ended LLM chat reply exactly as before.
+
     # Observability (bug report: reminders/timers/tasks "not getting set"
     # with nothing in the logs to say why): log what every message was
     # actually classified as *before* any handler runs, so a message that
     # silently fails to match create_reminder/start_timer/create_task -
     # e.g. because the phrasing didn't match app/ai/intent.py's regex
-    # triggers - is visible in the log as "unknown"/some other intent
-    # instead of leaving no trace at all.
+    # triggers (and the semantic fallback above also had nothing) - is
+    # visible in the log as "unknown"/some other intent instead of
+    # leaving no trace at all.
     logger.info("Message %r -> intent=%s tool=%s args=%s", text, intent.name, intent.tool, intent.tool_args)
 
     if intent.name in _LIST_HANDLERS:

@@ -312,24 +312,41 @@ meant to scale beyond one desktop app instance.
 User text
       │
       ▼
-app/ai/intent.py — rule-based match
+app/ai/intent.py — rule-based (keyword/regex) match
       │
       ├─ actionable (reminder/task/timer) ─────► app/tools/*.py
       │                                            │
       │                                    schema/permission-checked,
       │                                    executes against SQLite
       │
-      └─ "unknown" ─────► app/ai/llm.py ─► Ollama (localhost)
-                                │
-                          success: structured {response, emotion}
-                          failure: LLMUnavailable → canned fallback reply
+      └─ "unknown" ─────► app/ai/semantic_intent.py — semantic (meaning-based) match
+                                │                              │ Ollama (localhost)
+                                │                              │
+                    confident (≥0.75) ──────────────┐          │
+                    guess + entities found      build_semantic_intent()
+                    (app/ai/intent.py)  ─────────────┘  reuses the SAME regex
+                                │                        entity parsing as the
+                                │                        keyword path above
+                                ▼
+                    ├─ actionable ─────► app/tools/*.py  (same validated path)
+                    │
+                    ├─ unsure (0.50-0.75) ─► ask a clarifying question, act on nothing
+                    │
+                    └─ low/unavailable (<0.50, or Ollama unreachable) ─► app/ai/llm.py
+                                                                              │ Ollama (localhost)
+                                                                        success: {response, emotion}
+                                                                        failure: canned fallback reply
 ```
 
-The rule-based matcher is intentionally the only thing allowed to trigger
-data changes. The LLM path only ever produces a `{response, emotion}` pair
-for display — it has no tool-calling ability and cannot create, modify, or
-delete anything. This means a bad or hallucinated LLM reply is, at worst,
-a wrong sentence in the chat window, never a wrong reminder.
+The rule-based matcher is intentionally the *first and cheapest* filter for
+triggering data changes, but it only recognizes phrasing it was explicitly
+written to expect. Section "5a" below covers what happens when it finds
+nothing at all - a second, semantic pass that understands paraphrases by
+meaning rather than exact wording, still gated by the exact same
+schema/permission-checked tool layer, never given direct write access
+itself. Either way, this means a bad or hallucinated model guess is, at
+worst, a wrong sentence (or a clarifying question) in the chat window,
+never a wrong reminder silently created from a misread.
 
 That said, "at worst a wrong sentence" was itself a real bug: phrasing
 like "check on my aunt" or "mark it as done" (no literal "task"/
@@ -403,6 +420,111 @@ whatsoever. `TIME_QUERY_TRIGGER`/`DATE_QUERY_TRIGGER` in `app/ai/intent.py`
 answer this directly from `now` (the same injectable real-clock value
 every other date/time parsing in this file already uses), so it always
 works with zero setup.
+
+---
+
+## 5a. Hybrid keyword + semantic intent understanding
+
+Problem this fixes: `app/ai/intent.py`'s matcher only recognizes a message
+if it contains one of a fixed set of literal trigger phrases ("remind me",
+"set a timer", ...). A paraphrase with none of those exact words - "don't
+let this slip my mind, dentist thing at 4" or "yeah that's sorted now,
+thanks" - always fell all the way through to `unknown` and got sent to the
+open-ended chat model, which has no database access and would just
+converse about it instead of actually doing anything. Widening the keyword
+list forever doesn't scale and never actually understands *meaning* - it
+just adds more exact strings to match.
+
+`app/ai/semantic_intent.py` is a second pass, only ever consulted when the
+keyword pass found nothing (never overrides an actual keyword match, so it
+can only recognize *more* messages, never change how an already-recognized
+one is handled):
+
+```text
+detect_intent(text) == "unknown"
+        │
+        ▼
+semantic_intent.classify(text)  ── asks Ollama to pick ONE of a fixed,
+        │                          closed taxonomy (ALLOWED_INTENTS) by
+        │                          MEANING, plus a confidence 0.0-1.0
+        ▼
+confidence ≥ 0.75 (CONFIDENCE_ACT)
+        │
+        ▼
+build_semantic_intent(guessed_name, text)   ← app/ai/intent.py
+        │
+        │  reuses the EXACT SAME deterministic regex helpers the keyword
+        │  path already uses (_parse_absolute_time / _parse_relative_minutes /
+        │  _parse_duration_seconds / _title_from) to pull the actual time/
+        │  title/duration back out of the ORIGINAL text
+        ▼
+a normal DetectedIntent, routed through chat_engine.py's existing
+_LIST_HANDLERS / _ACTION_HANDLERS / tool-dispatch code - identical
+downstream path to a keyword match, same schema/permission validation
+```
+
+This is a deliberate split, matching the roadmap's core rule ("the LLM
+should reason about actions; it should not be trusted to directly perform
+actions" - see `MOCHI_VERSIONED_ROADMAP.md` section 60): the model is only
+ever trusted to answer "which of these ~9 fixed buckets does this message
+belong to, and how sure am I" - never to invent the title, time, or
+duration that actually gets written to SQLite. Those still go through the
+same regex parsing that's been validated for years on the keyword path.
+
+Confidence controls autonomy, per the roadmap's section 6 confidence-band
+table (`CONFIDENCE_LOW` / `CONFIDENCE_ACT` in `semantic_intent.py`):
+
+| Confidence | Behavior |
+|---|---|
+| < 0.50 | Treated exactly like a keyword miss - stays `unknown`, falls through to the open-chat LLM reply, same as before this feature existed. |
+| 0.50 - 0.75 | "Soft suggestion" - Mochi asks a clarifying, rephrase-it question naming what it thinks was meant (`chat_engine._semantic_clarify_intent`), but creates/changes nothing. |
+| ≥ 0.75 | Acts - but the entities still have to actually be found in the text (e.g. a real time for a reminder); if they aren't, the same `*_needs_time`/`*_needs_duration` clarifying-question shape the keyword path already uses is returned instead of guessing a default. |
+| Ollama unreachable | `SemanticUnavailable` - identical to a low-confidence miss; chat degrades to exactly the pre-existing keyword-only behavior with zero setup required, same philosophy as `app/ai/llm.py`. |
+
+`small_talk` is in the taxonomy but is never acted on regardless of
+confidence - it's how the model says "I don't think this is one of the
+actionable categories," and just falls through to the normal open-chat
+reply.
+
+See `tests/test_semantic_intent.py` (the model-call layer in isolation)
+and `tests/test_semantic_chat_engine.py` (the routing behavior: act / ask
+/ ignore, and proof a keyword match is never reached by this code at all).
+
+---
+
+## 5b. Crawled reference data (`app/humor/subreddit_crawler.py`)
+
+A separate, much simpler local-storage feature: given a markdown file full
+of `[title](url)` links (e.g. a curated subreddit/reference list), crawl
+each link and store its page text in SQLite for later use, without ever
+needing a live network call again for URLs already fetched.
+
+```text
+markdown file
+      │  extract_links() - regex over [title](url) syntax
+      ▼
+list of (title, url)
+      │  _already_crawled() - one SELECT ... WHERE url IN (...)
+      ▼
+skip anything already in crawled_sources ──► done, no network call made
+      │
+      ▼  (only genuinely new URLs reach here)
+_fetch_page(url) ──► stdlib urllib + a small dependency-free HTML→text
+      │              reduction (app/humor/subreddit_crawler._html_to_text)
+      ▼
+INSERT OR IGNORE INTO crawled_sources (...)
+```
+
+Deliberately the opposite lifecycle from `trend_cache`/`meme_cache`
+(section 3's other `app/humor/` tables), which are small rolling windows
+wiped and replaced on every fetch: `crawled_sources` is **append-only** -
+`url` is `UNIQUE`, there is no delete/refresh function for this table at
+all, and a URL that already has a row is never re-fetched (checked before
+any network call, not just deduped afterward - see
+`app/humor/subreddit_crawler.crawl_links`). A failed fetch (network error,
+timeout, 404) is logged and skipped, never stored, so it stays eligible to
+be retried on a later run - only a *successful* fetch counts as "already
+stored." Run it via `python scripts/crawl_sources.py path/to/list.md`.
 
 ---
 

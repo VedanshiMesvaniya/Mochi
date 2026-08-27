@@ -1066,3 +1066,128 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         animation=CharacterState.THINKING,
         response="Hmm, I'm not sure what you mean yet, but I'm listening!",
     )
+
+
+# ---------------------------------------------------------------------------
+# Hybrid semantic fallback (see app/ai/semantic_intent.py)
+# ---------------------------------------------------------------------------
+
+
+def build_semantic_intent(name: str, raw_text: str, now: Optional[datetime] = None) -> Optional[DetectedIntent]:
+    """Build the same structured DetectedIntent contract detect_intent()
+    produces above, but for a message the keyword pass above did NOT
+    recognize (it fell all the way through to "unknown") and that
+    app/ai/semantic_intent.py's model classified as `name` based on
+    MEANING rather than exact phrasing - e.g. "don't let this slip my
+    mind, dentist thing at 4" has none of REMINDER_TRIGGER's literal
+    words, so detect_intent() above never matches it, but it is
+    unambiguously a create_reminder.
+
+    Deliberately reuses the EXACT SAME deterministic entity-extraction
+    helpers the keyword path above uses (_parse_absolute_time /
+    _parse_relative_minutes / _parse_duration_seconds / _title_from) -
+    the semantic layer only ever decides WHICH bucket a message belongs
+    to; it never invents the actual title/time/duration values that get
+    written to the database. This is spec section 60's rule ("the LLM
+    should reason about actions; it should not be trusted to directly
+    perform actions") applied to intent detection itself: a small local
+    model proposes a category, and this function's own regex-based
+    parsing - the same parsing already trusted for the keyword path - is
+    what actually turns that into a validated tool call.
+
+    Returns None if `name` isn't one this function knows how to build
+    (defensive - app/ai/semantic_intent.ALLOWED_INTENTS should always
+    match what's handled here). Returns a "*_needs_time"/"*_needs_duration"
+    DetectedIntent (same shape detect_intent() itself returns) if the
+    semantic layer's category was right but no actual time/duration could
+    be found in the text - callers should treat that as a clarifying
+    question, never guess a default value silently.
+    """
+    now = now or datetime.now()
+    text = raw_text.strip()
+
+    if name == "create_reminder":
+        due = _parse_absolute_time(text, now)
+        minutes = _parse_relative_minutes(text)
+        if due is None and minutes is not None:
+            due = now + timedelta(minutes=minutes)
+        title = _title_from(text)
+        if due is None:
+            return DetectedIntent(
+                name="create_reminder_needs_time",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+                response=(
+                    f"Sounds like you want a reminder for \"{title}\" - but when? "
+                    "Try \"at 7pm\" or \"in 30 minutes\"."
+                ),
+            )
+        return DetectedIntent(
+            name="create_reminder",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+            response=f"Okay! I'll remind you to {title.lower()} at {due:%I:%M %p}.",
+            tool="create_reminder",
+            tool_args={"title": title, "datetime_iso": due.isoformat()},
+        )
+
+    if name == "start_timer":
+        seconds = _parse_duration_seconds(text.lower())
+        if not seconds:
+            return DetectedIntent(
+                name="create_timer_needs_duration",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+                response="How long should the timer be? e.g. \"timer for 10 minutes\".",
+            )
+        return DetectedIntent(
+            name="start_timer",
+            emotion=Emotion.EXCITED,
+            animation=CharacterState.EXCITED,
+            sound="chirp",
+            response=f"Timer started for {seconds // 60 or seconds}"
+            f"{' min' if seconds >= 60 else ' sec'}! I'll let you know.",
+            tool="start_timer",
+            tool_args={"duration_seconds": seconds, "label": "Timer"},
+        )
+
+    if name == "create_task":
+        due = _parse_absolute_time(text, now)
+        minutes = _parse_relative_minutes(text)
+        if due is None and minutes is not None:
+            due = now + timedelta(minutes=minutes)
+        title = _title_from(text, fallback="New task")
+        due_note = f" (due {due:%I:%M %p})" if due else ""
+        tool_args: dict = {"title": title}
+        if due is not None:
+            tool_args["due_at_iso"] = due.isoformat()
+        return DetectedIntent(
+            name="create_task",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+            response=f"Noted! I'll remember: {title.lower()}{due_note}.",
+            tool="create_task",
+            tool_args=tool_args,
+        )
+
+    if name in ("list_reminders", "list_tasks", "list_timers"):
+        return DetectedIntent(
+            name=name,
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",
+            tool=name,
+        )
+
+    if name in ("complete_ambiguous", "cancel_ambiguous"):
+        return DetectedIntent(
+            name=name,
+            emotion=Emotion.HAPPY if name == "complete_ambiguous" else Emotion.NEUTRAL,
+            animation=CharacterState.HAPPY if name == "complete_ambiguous" else CharacterState.IDLE,
+            response="",
+            tool_args={},
+        )
+
+    return None

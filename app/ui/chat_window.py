@@ -36,6 +36,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import QThread, Qt, QTimer, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -85,7 +86,25 @@ class ChatBubble(QWidget):
     """One message rendered as a rounded speech-bubble row - Mochi's
     replies left-aligned, the user's messages right-aligned, matching how
     the floating speech bubble above the character itself looks (spec:
-    'make chat bubble for answer'), rather than plain list-row text."""
+    'make chat bubble for answer'), rather than plain list-row text.
+
+    Bug fix ("chat is messy / horizontal scroll"): a QLabel with
+    setWordWrap(True) plus only setMaximumWidth() still reports its
+    *unwrapped* single-line width from sizeHint() until Qt has actually
+    laid it out at a constrained width - and this widget's sizeHint() is
+    read exactly once, immediately after construction, via
+    item.setSizeHint(bubble.sizeHint()) in _append()/_start_typing_indicator()
+    below. For any reply longer than the bubble's max width, that stored
+    row width came out far wider than the visible bubble, so the
+    QListWidget grew a horizontal scrollbar and each row's actual
+    clickable/visual area no longer matched what was drawn - the "messy"
+    look. Computing and setting a FIXED label width up front (the
+    narrower of the text's natural width or the max bubble width, using
+    QFontMetrics so it's correct before the widget is ever shown) means
+    sizeHint() is accurate from the very first read, so short replies
+    still hug their content and long ones wrap within the bubble - no
+    row is ever wider than the log itself.
+    """
 
     def __init__(self, sender: str, text: str, parent=None) -> None:
         super().__init__(parent)
@@ -93,9 +112,9 @@ class ChatBubble(QWidget):
 
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setMaximumWidth(_BUBBLE_MAX_WIDTH)
         label.setStyleSheet(_USER_BUBBLE_STYLE if self._is_user else _MOCHI_BUBBLE_STYLE)
         label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        label.setFixedWidth(_bubble_label_width(text, label))
         self.label = label  # kept accessible so the typing indicator can
         # update this bubble's text in place instead of adding/removing rows
 
@@ -107,6 +126,32 @@ class ChatBubble(QWidget):
         else:
             layout.addWidget(label)
             layout.addStretch(1)
+
+    def set_text(self, text: str) -> None:
+        """Update this bubble's text in place (used by the typing
+        indicator's "thinking..." animation) - re-measures the fixed
+        width too, so it doesn't stay clamped to whatever the very first
+        ("thinking") text happened to need."""
+        self.label.setText(text)
+        self.label.setFixedWidth(_bubble_label_width(text, self.label))
+
+
+def _bubble_label_width(text: str, label: QLabel) -> int:
+    """The narrower of (a) how wide `text` would naturally be on one
+    line, or (b) the bubble's max width - so a short reply hugs its own
+    content instead of always stretching to the max. Multi-line text
+    (chat_engine's bullet-list replies, or any embedded "\\n") measures
+    its single widest line instead of the whole string, since
+    QFontMetrics.horizontalAdvance() has no concept of line breaks."""
+    metrics = QFontMetrics(label.font())
+    lines = text.splitlines() or [text]
+    natural_width = max((metrics.horizontalAdvance(line) for line in lines), default=0)
+    # + padding/margin so the fixed width doesn't clip glyphs right at
+    # the edge (label.setStyleSheet above already applies real CSS
+    # padding, but that padding is layout-time, not counted by
+    # horizontalAdvance) and never let a bubble shrink to zero for an
+    # empty/whitespace message.
+    return max(min(natural_width + 12, _BUBBLE_MAX_WIDTH), 24)
 
 
 class ChatWorker(QThread):
@@ -202,6 +247,13 @@ class ChatWindow(TranslucentDialog):
         # on each side, just adding real gap between rows too.
         self.message_log.setSpacing(3)
         self.message_log.setStyleSheet("QListWidget { border: none; background: transparent; }")
+        # Safety net on top of ChatBubble's fixed-width fix above: no row
+        # should ever need a horizontal scrollbar in a single-column chat
+        # log, so force it off outright rather than leaving it to
+        # "ScrollBarAsNeeded" (Qt's default) ever kicking in again for a
+        # future message shape (very long unbroken URL/word, emoji, etc.)
+        # that isn't caught by the width math above.
+        self.message_log.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.content_layout.addWidget(self.message_log, stretch=1)
 
         input_row = QHBoxLayout()
@@ -256,7 +308,9 @@ class ChatWindow(TranslucentDialog):
         if self._typing_bubble is None:
             return
         self._typing_frame = (self._typing_frame + 1) % 3
-        self._typing_bubble.label.setText("thinking" + "." * (self._typing_frame + 1))
+        self._typing_bubble.set_text("thinking" + "." * (self._typing_frame + 1))
+        if self._typing_item is not None:
+            self._typing_item.setSizeHint(self._typing_bubble.sizeHint())
 
     def _stop_typing_indicator(self) -> None:
         self._typing_timer.stop()
