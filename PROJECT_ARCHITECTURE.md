@@ -551,6 +551,26 @@ underlying ground truth. Same fully-optional philosophy as the rest of
 `app/ai/llm.py`: if Ollama isn't running, `summary` is simply left `NULL`
 and the raw extracted `content` is still stored either way.
 
+**Triggering it.** Two ways, both call the exact same
+`crawl_markdown_file()`:
+
+1. `python scripts/crawl_sources.py path/to/list.md` - manual CLI, any
+   time.
+2. Mochi's right-click **"Refresh trends & memes"** menu action
+   (`app/character/pet.py::_RefreshTrendsWorker`) - if
+   `settings.crawl_sources_path` is set (`MOCHI_CRAWL_SOURCES_PATH` in
+   `.env`), the same click that refreshes `trend_fetcher`/`meme_fetcher`
+   also crawls that file, off the UI thread, and the resulting speech
+   bubble reports a combined count ("...plus N new page(s) crawled").
+   Deliberately reuses `trend_awareness_enabled` as its gate rather than
+   introducing a third on/off flag (it's the same category of
+   "reaches the open internet on your behalf" feature), but a path still
+   has to be explicitly configured on top of that for anything to
+   actually crawl - turning trend awareness on alone does not start
+   crawling anything. A crawl failure is caught and logged separately
+   from the trend/meme fetch, so it can never suppress an otherwise-
+   successful refresh's results (see `_RefreshTrendsWorker.run()`).
+
 ---
 
 ## 6. Reminders, tasks & timers

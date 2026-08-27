@@ -109,9 +109,19 @@ class _RefreshTrendsWorker(QThread):
     scheduling note" at the bottom of each) - lets the person force an
     immediate re-crawl right before chatting, instead of waiting for the
     next scheduled interval.
+
+    Also runs app/humor/subreddit_crawler.py's link crawler, but only if
+    settings.crawl_sources_path is actually configured - unlike the two
+    fetches above, this has no "always on if trend awareness is enabled"
+    default of its own; a person has to point it at a real markdown file
+    first (see Settings.crawl_sources_path's docstring in
+    app/core/config.py). A crawl failure (bad path, all links already
+    stored, network trouble) is isolated from the trend/meme fetches
+    above so it can never suppress an otherwise-successful refresh's
+    results.
     """
 
-    finished_ok = Signal(int, int)  # (trend_count, meme_count)
+    finished_ok = Signal(int, int, int)  # (trend_count, meme_count, crawled_count)
     finished_error = Signal()
 
     def run(self) -> None:  # noqa: D102 - QThread override
@@ -127,7 +137,24 @@ class _RefreshTrendsWorker(QThread):
             logger.exception("Manual trend/meme refresh failed unexpectedly")
             self.finished_error.emit()
             return
-        self.finished_ok.emit(trend_count, meme_count)
+
+        crawled_count = 0
+        if settings.crawl_sources_path:
+            from app.humor.subreddit_crawler import crawl_markdown_file
+
+            try:
+                result = crawl_markdown_file(
+                    settings.crawl_sources_path,
+                    settings.crawl_source_list_name or None,
+                )
+                crawled_count = result.fetched
+            except Exception:  # noqa: BLE001 - same "never crash the app" reasoning as above; a bad/missing crawl_sources_path must not take down the trend/meme refresh that already succeeded
+                logger.exception(
+                    "Manual link crawl failed unexpectedly (path=%s)",
+                    settings.crawl_sources_path,
+                )
+
+        self.finished_ok.emit(trend_count, meme_count, crawled_count)
 
 
 def _is_dark_mode() -> bool:
@@ -516,10 +543,12 @@ class PetWindow(QWidget):
         """"Refresh trends & memes" menu action - manually force an
         immediate re-crawl of app/humor/trend_fetcher.py +
         app/humor/meme_fetcher.py rather than waiting for the next
-        scheduled background interval. No-ops (with an explanatory
-        speech bubble) if the feature is off entirely, since firing a
-        network call the person has explicitly disabled would be wrong
-        even on an explicit manual request.
+        scheduled background interval. Also runs the link crawler
+        (app/humor/subreddit_crawler.py) if settings.crawl_sources_path
+        is configured - see _RefreshTrendsWorker's docstring. No-ops
+        (with an explanatory speech bubble) if the feature is off
+        entirely, since firing a network call the person has explicitly
+        disabled would be wrong even on an explicit manual request.
         """
         if not settings.trend_awareness_enabled:
             self.show_speech_bubble(
@@ -536,20 +565,24 @@ class PetWindow(QWidget):
         self._refresh_trends_worker.finished_error.connect(self._on_refresh_trends_failed)
         self._refresh_trends_worker.start()
 
-    def _on_refresh_trends_done(self, trend_count: int, meme_count: int) -> None:
+    def _on_refresh_trends_done(self, trend_count: int, meme_count: int, crawled_count: int) -> None:
         if self._refresh_trends_worker is not None:
             self._refresh_trends_worker.deleteLater()
             self._refresh_trends_worker = None
-        if trend_count == 0 and meme_count == 0:
+        if trend_count == 0 and meme_count == 0 and crawled_count == 0:
             self.show_speech_bubble(
                 "Couldn't reach anything new just now - might be offline. I'll try again later!",
                 duration_ms=6000,
             )
             return
-        self.show_speech_bubble(
-            f"All caught up! Got {trend_count} trend(s) and {meme_count} meme(s) fresh.",
-            duration_ms=6000,
-        )
+        message = f"All caught up! Got {trend_count} trend(s) and {meme_count} meme(s) fresh."
+        if crawled_count > 0:
+            # Only mentioned when it actually did something - most people
+            # never configure crawl_sources_path (see app/core/config.py),
+            # so this stays silent for them rather than always reporting
+            # "0 pages crawled".
+            message = message[:-1] + f", plus {crawled_count} new page(s) crawled."
+        self.show_speech_bubble(message, duration_ms=6000)
 
     def _on_refresh_trends_failed(self) -> None:
         if self._refresh_trends_worker is not None:

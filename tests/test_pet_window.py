@@ -351,3 +351,71 @@ def test_refresh_trends_action_reports_nothing_new(qapp, monkeypatch):
 
     assert "offline" in window.speech_bubble.text()
     window.close()
+
+
+def test_refresh_trends_action_also_crawls_when_source_path_configured(qapp, monkeypatch, tmp_path, temp_db):
+    """When settings.crawl_sources_path is set, the same manual
+    'Refresh trends & memes' click must also run the link crawler and
+    report how many new pages it stored - see _RefreshTrendsWorker."""
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+    from app.humor import subreddit_crawler
+
+    md_file = tmp_path / "links.md"
+    md_file.write_text("[r/funny](https://www.reddit.com/r/funny/)\n")
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+    monkeypatch.setattr(settings, "crawl_sources_path", str(md_file))
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 0)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 0)
+    monkeypatch.setattr(subreddit_crawler, "_fetch_page", lambda url: ("Funny", "some jokes"))
+
+    window._on_refresh_trends_requested()
+    assert window._refresh_trends_worker is not None
+    assert window._refresh_trends_worker.wait(3000)
+
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._refresh_trends_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "1 new page(s) crawled" in window.speech_bubble.text()
+    window.close()
+
+
+def test_refresh_trends_action_never_crawls_when_source_path_unset(qapp, monkeypatch):
+    """No crawl_sources_path configured (the default) -> the crawler must
+    never even be imported/called, same 'opt-in, off unless explicitly
+    configured' philosophy as every other network feature here."""
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", True)
+    monkeypatch.setattr(settings, "crawl_sources_path", "")
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 1)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 1)
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("crawl_markdown_file must not be called when crawl_sources_path is unset")
+
+    monkeypatch.setattr(
+        "app.humor.subreddit_crawler.crawl_markdown_file", _must_not_be_called
+    )
+
+    window._on_refresh_trends_requested()
+    assert window._refresh_trends_worker.wait(3000)
+
+    from PySide6.QtWidgets import QApplication
+    for _ in range(20):
+        QApplication.processEvents()
+        if window._refresh_trends_worker is None:
+            break
+        time.sleep(0.05)
+
+    assert "1 trend(s) and 1 meme(s)" in window.speech_bubble.text()
+    assert "crawled" not in window.speech_bubble.text()
+    window.close()
