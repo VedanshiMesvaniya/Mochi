@@ -43,3 +43,6 @@ Thumbs.db
 # Google OAuth secrets - never commit
 config/google_credentials.json
 config/token.json
+
+# modification notes
+update_note_list.md
