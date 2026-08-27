@@ -326,12 +326,22 @@ which is why it's opt-in rather than on by default.
 Separately from the two rolling caches above, `app/humor/subreddit_crawler.py`
 is a manual/CLI tool for a different job: given a markdown file full of
 `[title](url)` links (a curated subreddit list, a reference page, etc.),
-fetch each link once and keep its page text permanently in a dedicated
-`crawled_sources` SQLite table.
+fetch the actual **content** behind each link once — not just confirm the
+link exists — and keep it permanently in a dedicated `crawled_sources`
+SQLite table.
 
 ```bash
 python scripts/crawl_sources.py path/to/list.md
 ```
+
+A subreddit's own page is mostly an empty JS-rendered shell over a plain
+fetch, so `reddit.com` links go through Reddit's public read-only `.json`
+endpoint instead (no login needed) and store the subreddit's actual
+current top post titles/text; other links get a plain HTML-to-text
+extraction. If a local Ollama model is running, it also gets a pass at
+reading that raw content and writing a clean summary, stored alongside it
+in a `summary` column — purely additive, never replacing the raw text, and
+simply skipped (left `NULL`) if no model is available.
 
 This is **append-only, unlike the rolling caches above** — once a URL has
 been crawled successfully, it's kept forever and never re-fetched. Running

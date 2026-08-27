@@ -171,7 +171,8 @@ SCHEMA_STATEMENTS: list[str] = [
         url           TEXT NOT NULL UNIQUE,
         source_list   TEXT NOT NULL,   -- which source file/list this URL came from
         title         TEXT,
-        content       TEXT NOT NULL,
+        content       TEXT NOT NULL,   -- raw extracted page content (ground truth)
+        summary       TEXT,            -- optional model-cleaned read of `content` (see app/humor/subreddit_crawler.py); NULL if no local model was available at crawl time
         content_hash  TEXT NOT NULL,
         crawled_at    TEXT NOT NULL
     );
@@ -214,6 +215,11 @@ def get_connection() -> Iterator[sqlite3.Connection]:
 # "ADD COLUMN IF NOT EXISTS". Each entry: (table, column, column_def).
 _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("tasks", "due_at", "TEXT"),
+    # Model-cleaned version of a crawled page's raw extracted text (see
+    # app/humor/subreddit_crawler.py) - added after crawled_sources first
+    # shipped with only a raw `content` column, so existing rows/DBs need
+    # this migrated in rather than recreated.
+    ("crawled_sources", "summary", "TEXT"),
 ]
 
 

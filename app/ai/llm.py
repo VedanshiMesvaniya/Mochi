@@ -429,3 +429,73 @@ def is_configured() -> bool:
             return True
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
+
+
+_SUMMARIZE_SYSTEM_PROMPT = """You will be given the raw extracted text of \
+one web page. Read it and write a clean, factual summary of what the page \
+actually contains - real content only (topics discussed, key points, \
+notable items/posts named), never navigation labels, cookie/ad banners, \
+"sign up" prompts, or other page-chrome you can tell isn't real content. \
+Plain prose, no markdown, no headers, no preamble like "This page is \
+about" - just the summary itself, in 3-6 sentences. If the text has \
+basically no real content in it (e.g. it's just an empty JS-rendered \
+shell), say so plainly in one short sentence instead of inventing \
+anything - never guess at content that isn't actually present in the text."""
+
+_SUMMARIZE_REQUEST_TIMEOUT_SECONDS = 25
+_SUMMARIZE_MAX_INPUT_CHARS = 6000  # keep the prompt itself bounded/fast, not the full stored content
+
+
+def summarize_page_content(raw_text: str) -> str:
+    """Ask the local model to read a crawled page's raw extracted text
+    (see app/humor/subreddit_crawler.py) and produce a clean, human-
+    readable summary of it - the "put another model to read [it] and
+    store in db" step, so what actually lands in `crawled_sources` is
+    real content rather than a slab of barely-cleaned HTML remnants.
+
+    Plain text in, plain text out - no JSON schema here (unlike ask()/
+    phrase_data_answer() above), since this has nothing to route or
+    react to; it's a one-shot read of already-fetched, already-local
+    text. Raises LLMUnavailable on any failure - callers must fall back
+    to storing the raw extracted text unmodified, exactly the same
+    "nice-to-have layered on top of a fully-working feature" philosophy
+    as the rest of this module (see the module docstring above).
+    """
+    text = raw_text.strip()
+    if not text:
+        raise LLMUnavailable("Nothing to summarize - raw extracted text was empty")
+
+    prompt = (
+        f"{_SUMMARIZE_SYSTEM_PROMPT}\n\n"
+        f"PAGE TEXT:\n{text[:_SUMMARIZE_MAX_INPUT_CHARS]}\n\nSummary:"
+    )
+    payload = {
+        "model": settings.llm_model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.2,  # factual extraction, not creative writing
+            "num_predict": 400,
+        },
+    }
+    request = urllib.request.Request(
+        OLLAMA_GENERATE_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_SUMMARIZE_REQUEST_TIMEOUT_SECONDS) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise LLMUnavailable(f"Ollama unreachable at {OLLAMA_GENERATE_URL}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise LLMUnavailable(f"Ollama returned invalid JSON envelope: {exc}") from exc
+
+    if error := body.get("error"):
+        raise LLMUnavailable(f"Ollama error: {error}")
+
+    summary = str(body.get("response", "")).strip()
+    if not summary:
+        raise LLMUnavailable("Model reply had no usable summary text")
+    return summary[:2000]
