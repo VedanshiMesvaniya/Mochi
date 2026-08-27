@@ -157,6 +157,26 @@ SCHEMA_STATEMENTS: list[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_timers_done_archived ON timers_done(archived_at);",
+    """
+    -- Crawled-link store (see app/humor/subreddit_crawler.py). Holds the
+    -- result of fetching one URL taken from a source markdown file (e.g.
+    -- a curated subreddit list). `url` is UNIQUE on purpose: this table is
+    -- append-only by design (there is no delete/archive path for it, unlike
+    -- reminders/tasks/timers above) - once a URL has been crawled
+    -- successfully it is never crawled again and never removed, so the
+    -- crawler only ever has to check "does this url already have a row?"
+    -- before doing any network work.
+    CREATE TABLE IF NOT EXISTS crawled_sources (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        url           TEXT NOT NULL UNIQUE,
+        source_list   TEXT NOT NULL,   -- which source file/list this URL came from
+        title         TEXT,
+        content       TEXT NOT NULL,
+        content_hash  TEXT NOT NULL,
+        crawled_at    TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_crawled_sources_list ON crawled_sources(source_list);",
 ]
 
 

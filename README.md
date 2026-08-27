@@ -129,22 +129,38 @@ chat popup — messages render as rounded speech bubbles (yours on the
 right, Mochi's on the left), like the floating bubble above the
 character itself. It stays pinned on top of other windows while open
 (toggle via the green dot) so it doesn't get buried mid-conversation, and
-only goes away when you actually close it. Messages are handled in two
+only goes away when you actually close it. Messages are handled in three
 layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
    greetings, common small talk, and `what time is it`/`what day is it`
-   are recognized by a rule-based matcher and handled directly, reading
-   straight from the system clock. This is intentional: things that
-   create/delete data, and basic facts like the current time, should
-   never depend on whether an optional language model happens to be
-   installed and running.
-2. **Local LLM fallback** — anything that bucket doesn't recognize is
-   sent to a locally-running [Ollama](https://ollama.com) model (default
-   `qwen3:0.6b`, configurable) for a real conversational reply, on a
-   background thread so a slow reply never freezes the chat window. The
-   prompt always includes the actual current local date/time, so
-   relative phrasing like "remind me tonight" or "is it late" has real
+   are recognized by a rule-based (keyword/regex) matcher and handled
+   directly, reading straight from the system clock. This is intentional:
+   things that create/delete data, and basic facts like the current time,
+   should never depend on whether an optional language model happens to
+   be installed and running.
+2. **Semantic fallback (understands paraphrases, not just exact phrasing)**
+   — if the rule-based matcher finds nothing at all, a second local-model
+   pass asks "which of a fixed, small set of intents does this message
+   mean, and how sure am I" (`app/ai/semantic_intent.py`). A message like
+   "don't let this slip my mind, dentist thing at 4" has none of the
+   keyword matcher's exact trigger words but is still clearly a reminder
+   request — this layer catches that. The model only ever picks *which*
+   category a message belongs to; the actual time/title/duration it acts
+   on is still pulled out by the exact same regex parsing the keyword
+   layer uses, never invented by the model. How confident the guess is
+   decides what happens next: confident enough → act (through the same
+   validated path as a keyword match); somewhat confident → Mochi asks a
+   clarifying "did you mean...?" question instead of guessing; not
+   confident (or Ollama isn't running) → falls through to layer 3 below,
+   exactly like it always did. See `PROJECT_ARCHITECTURE.md` section 5a
+   for the full design and confidence bands.
+3. **Local LLM fallback (open-ended chat)** — anything neither layer above
+   recognizes is sent to a locally-running [Ollama](https://ollama.com)
+   model (default `qwen3:0.6b`, configurable) for a real conversational
+   reply, on a background thread so a slow reply never freezes the chat
+   window. The prompt always includes the actual current local date/time,
+   so relative phrasing like "remind me tonight" or "is it late" has real
    ground truth to reason from instead of the model guessing. If Ollama
    isn't installed, isn't running, or the model hasn't been pulled, Mochi
    says so directly ("my brain's offline right now...") rather than
@@ -305,6 +321,25 @@ preferred over a generic headline when both are available. Talks to the
 open internet (Google News' RSS feed + Reddit's public JSON endpoints),
 which is why it's opt-in rather than on by default.
 
+### Crawling a reference list into permanent local storage
+
+Separately from the two rolling caches above, `app/humor/subreddit_crawler.py`
+is a manual/CLI tool for a different job: given a markdown file full of
+`[title](url)` links (a curated subreddit list, a reference page, etc.),
+fetch each link once and keep its page text permanently in a dedicated
+`crawled_sources` SQLite table.
+
+```bash
+python scripts/crawl_sources.py path/to/list.md
+```
+
+This is **append-only, unlike the rolling caches above** — once a URL has
+been crawled successfully, it's kept forever and never re-fetched. Running
+the command again is always safe and cheap: every already-stored URL is
+skipped before any network call is made, so only genuinely new links in
+the file get fetched. A failed fetch (offline, timeout, 404) is logged and
+simply not stored, so it's still eligible to be picked up on a later run.
+
 ---
 
 ## Calendar
@@ -432,17 +467,19 @@ app/
 ├── main.py          application entry point / wiring
 ├── core/             config, logging, event bus, exceptions
 ├── character/        the pixel face, its behavior/personality, the window
-├── ai/                intent detection, local-LLM fallback, chat orchestration
+├── ai/                intent detection (keyword + semantic hybrid), local-LLM fallback, chat orchestration
 ├── memory/            SQLite connection + schema, familiarity tracking
 ├── reminders/         local reminder engine (manager, scheduler, notifications)
 ├── tasks/             local to-do list
 ├── timers/            local countdown timers (manager, scheduler, notifications)
 ├── calendar/          Google Calendar integration (read-only, opt-in)
+├── humor/             joke/trend caches + the permanent link crawler (subreddit_crawler.py)
 ├── tools/             JSON-in/JSON-out functions chat's intent layer calls
 └── ui/                chat/reminders/tasks/timers windows, tray icon
 
 config/             OAuth client secret + token cache (gitignored, calendar only)
 data/               local SQLite database (gitignored)
+scripts/            one-off CLI utilities (e.g. crawl_sources.py)
 tests/              pytest suite
 ```
 
