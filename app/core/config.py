@@ -150,6 +150,22 @@ class Settings:
     trend_awareness_enabled: bool = False
     trend_fetch_interval_hours: int = 6
 
+    # Optional: a markdown file of `[title](url)` links (e.g. a curated
+    # subreddit list) to crawl into the permanent `crawled_sources` table
+    # (see app/humor/subreddit_crawler.py) every time "Refresh trends &
+    # memes" runs - manually via the right-click menu, or on
+    # trend_fetcher/meme_fetcher's own periodic schedule. Empty/unset by
+    # default: this reuses the SAME opt-in gate as trend_awareness_enabled
+    # above (no separate on/off flag) since it's the same category of
+    # "reaches the open internet on your behalf" feature, but only
+    # actually fires if a path is configured - so turning on trend
+    # awareness alone does not, by itself, start crawling anything.
+    crawl_sources_path: str = ""
+    # Optional override for the `source_list` label stored in
+    # crawled_sources rows (see subreddit_crawler.crawl_markdown_file).
+    # Left empty, it defaults to the source file's own name.
+    crawl_source_list_name: str = ""
+
     # General behavior
     start_with_windows: bool = False
     always_on_top: bool = True
@@ -222,6 +238,8 @@ class Settings:
             trend_fetch_interval_hours=_int(
                 os.getenv("MOCHI_TREND_FETCH_INTERVAL_HOURS"), 6
             ),
+            crawl_sources_path=os.getenv("MOCHI_CRAWL_SOURCES_PATH", ""),
+            crawl_source_list_name=os.getenv("MOCHI_CRAWL_SOURCE_LIST_NAME", ""),
             start_with_windows=_bool(os.getenv("MOCHI_START_WITH_WINDOWS"), False),
             always_on_top=_bool(os.getenv("MOCHI_ALWAYS_ON_TOP"), True),
             autonomous_behavior=_bool(os.getenv("MOCHI_AUTONOMOUS_BEHAVIOR"), True),

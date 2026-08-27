@@ -324,15 +324,28 @@ which is why it's opt-in rather than on by default.
 ### Crawling a reference list into permanent local storage
 
 Separately from the two rolling caches above, `app/humor/subreddit_crawler.py`
-is a manual/CLI tool for a different job: given a markdown file full of
-`[title](url)` links (a curated subreddit list, a reference page, etc.),
-fetch the actual **content** behind each link once — not just confirm the
-link exists — and keep it permanently in a dedicated `crawled_sources`
-SQLite table.
+is a tool for a different job: given a markdown file full of `[title](url)`
+links (a curated subreddit list, a reference page, etc.), fetch the actual
+**content** behind each link once — not just confirm the link exists — and
+keep it permanently in a dedicated `crawled_sources` SQLite table.
+
+You can run it manually:
 
 ```bash
 python scripts/crawl_sources.py path/to/list.md
 ```
+
+...or wire it into Mochi's right-click **"Refresh trends & memes"** menu
+action so it runs alongside the trend/meme fetches above, on the same
+click, without leaving the app: set `MOCHI_CRAWL_SOURCES_PATH` in `.env` to
+the markdown file's path (optionally `MOCHI_CRAWL_SOURCE_LIST_NAME` to
+label the rows something other than the file's own name). Left unset (the
+default), the menu action behaves exactly as before and never touches the
+crawler at all — this reuses trend-awareness's opt-in gate
+(`MOCHI_TREND_AWARENESS_ENABLED`), but only actually crawls anything once
+a source file is configured on top of that. When it does run, Mochi's
+speech bubble reports how many new pages it found (e.g. *"All caught up!
+Got 3 trend(s) and 2 meme(s) fresh, plus 4 new page(s) crawled."*).
 
 A subreddit's own page is mostly an empty JS-rendered shell over a plain
 fetch, so `reddit.com` links go through Reddit's public read-only `.json`
