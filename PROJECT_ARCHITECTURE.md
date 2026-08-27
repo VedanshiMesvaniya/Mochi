@@ -509,10 +509,17 @@ list of (title, url)
 skip anything already in crawled_sources ──► done, no network call made
       │
       ▼  (only genuinely new URLs reach here)
-_fetch_page(url) ──► stdlib urllib + a small dependency-free HTML→text
-      │              reduction (app/humor/subreddit_crawler._html_to_text)
+_fetch_page(url)
+      ├─ reddit.com/r/xxx ──► Reddit .json endpoint: real post titles/text
+      └─ anything else ─────► stdlib urllib + small dependency-free
+                               HTML→text reduction (_html_to_text)
+      │
       ▼
-INSERT OR IGNORE INTO crawled_sources (...)
+summarize_page_content(content) ── best-effort, Ollama (localhost)
+      │                             success: clean summary stored too
+      │                             unavailable: summary left NULL
+      ▼
+INSERT OR IGNORE INTO crawled_sources (..., content, summary, ...)
 ```
 
 Deliberately the opposite lifecycle from `trend_cache`/`meme_cache`
@@ -525,6 +532,24 @@ any network call, not just deduped afterward - see
 timeout, 404) is logged and skipped, never stored, so it stays eligible to
 be retried on a later run - only a *successful* fetch counts as "already
 stored." Run it via `python scripts/crawl_sources.py path/to/list.md`.
+
+**Stores the link's actual content, not just the link.** A subreddit's own
+HTML page is mostly an empty client-side-rendered shell over a plain GET,
+so for `reddit.com` URLs the crawler instead hits Reddit's public
+read-only `.json` endpoint (same no-login approach `meme_fetcher.py`
+already uses) and pulls in the subreddit's real current top post
+titles/text as the stored `content` - genuine content, not page chrome.
+Non-Reddit URLs fall back to a small dependency-free HTML-to-text
+reduction of the fetched page.
+
+**Optional model read-through.** After the raw content is extracted, a
+local Ollama model (`app/ai/llm.summarize_page_content`) gets a chance to
+read it and write a clean, factual summary, stored in a separate
+`summary` column right alongside the raw `content` - never in place of
+it, so a bad or unavailable summarization pass can never lose the
+underlying ground truth. Same fully-optional philosophy as the rest of
+`app/ai/llm.py`: if Ollama isn't running, `summary` is simply left `NULL`
+and the raw extracted `content` is still stored either way.
 
 ---
 

@@ -1,3 +1,4 @@
+import json
 import urllib.error
 
 from app.humor import subreddit_crawler as crawler
@@ -136,3 +137,109 @@ def test_crawled_sources_table_has_unique_url_constraint(temp_db):
         ).fetchall()
     assert len(rows) == 1
     assert rows[0]["title"] == "T"
+
+
+def _fake_urlopen_json(payload: dict):
+    """Build a fake urllib.request.urlopen() replacement that returns a
+    fixed JSON payload, for testing Reddit's .json endpoint handling
+    without any real network access."""
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    return lambda *args, **kwargs: _FakeResponse()
+
+
+def test_reddit_url_is_detected_and_uses_json_endpoint(monkeypatch, temp_db):
+    """A subreddit link must fetch REAL post content via Reddit's public
+    .json endpoint, not the near-empty HTML shell a plain GET of the page
+    itself would return."""
+    reddit_payload = {
+        "data": {
+            "children": [
+                {"data": {"title": "Funniest thing today", "score": 4200, "selftext": ""}},
+                {"data": {"title": "A relatable meme", "score": 1500, "selftext": "so real"}},
+            ]
+        }
+    }
+    seen_urls = []
+
+    def fake_urlopen(request, timeout=None):
+        seen_urls.append(request.full_url)
+        return _fake_urlopen_json(reddit_payload)()
+
+    monkeypatch.setattr(crawler.urllib.request, "urlopen", fake_urlopen)
+
+    title, content = crawler._fetch_page("https://www.reddit.com/r/funny/")
+
+    assert title == "r/funny"
+    assert "Funniest thing today" in content
+    assert "A relatable meme" in content
+    assert "so real" in content
+    assert seen_urls[0].startswith("https://www.reddit.com/r/funny/.json")
+
+
+def test_reddit_url_with_no_posts_is_still_a_success_not_a_failure(monkeypatch, temp_db):
+    empty_payload = {"data": {"children": []}}
+    monkeypatch.setattr(
+        crawler.urllib.request, "urlopen", lambda *a, **k: _fake_urlopen_json(empty_payload)()
+    )
+    title, content = crawler._fetch_page("https://www.reddit.com/r/emptysub/")
+    assert title == "r/emptysub"
+    assert "no accessible posts" in content.lower()
+
+
+def test_non_reddit_url_uses_html_fallback_not_json_endpoint(monkeypatch, temp_db):
+    calls = []
+
+    class _FakeHtmlResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def read(self):
+            return b"<html><title>Hi</title><body>Hello world</body></html>"
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request.full_url)
+        return _FakeHtmlResponse()
+
+    monkeypatch.setattr(crawler.urllib.request, "urlopen", fake_urlopen)
+    title, content = crawler._fetch_page("https://example.com/some-article")
+
+    assert title == "Hi"
+    assert "Hello world" in content
+    assert ".json" not in calls[0]
+
+
+def test_store_page_saves_model_summary_when_available(monkeypatch, temp_db):
+    initialize_schema()
+    monkeypatch.setattr(crawler, "summarize_page_content", lambda text: "A clean summary.")
+    crawler._store_page("https://example.com/a", "list", "Title", "raw extracted content")
+
+    row = crawler.get_stored_page("https://example.com/a")
+    assert row["content"] == "raw extracted content"
+    assert row["summary"] == "A clean summary."
+
+
+def test_store_page_leaves_summary_null_when_model_unavailable(monkeypatch, temp_db):
+    initialize_schema()
+
+    def _unavailable(text):
+        raise crawler.LLMUnavailable("no ollama")
+
+    monkeypatch.setattr(crawler, "summarize_page_content", _unavailable)
+    crawler._store_page("https://example.com/b", "list", "Title", "raw extracted content")
+
+    row = crawler.get_stored_page("https://example.com/b")
+    assert row["content"] == "raw extracted content"
+    assert row["summary"] is None
