@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time as time_of_day, timedelta
 from typing import Optional
 
 from app.character.state_machine import CharacterState, Emotion
@@ -508,10 +508,23 @@ def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
         # but transparent and easy to override by typing "7 am"/"19:00".
         hour += 12
 
-    due = now.replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
-    if due <= now:
-        due += timedelta(days=1)
-    if "tomorrow" in text.lower():
+    # Resolve the target *date* first, then apply the clock time to it -
+    # NOT the other way around. The previous version applied today's date,
+    # rolled forward a day whenever the clock time had already passed
+    # today, and THEN separately added another day for "tomorrow" - so
+    # "tomorrow at 5pm" typed after 5pm today ("5pm today already passed"
+    # -> +1 day, PLUS "contains tomorrow" -> +1 day again) landed on the
+    # day after tomorrow instead of tomorrow. An explicit "tomorrow"
+    # always means "the next calendar day", full stop, regardless of what
+    # time it is right now.
+    explicit_tomorrow = "tomorrow" in text.lower()
+    target_date = (now + timedelta(days=1)).date() if explicit_tomorrow else now.date()
+    due = datetime.combine(target_date, time_of_day(hour=hour % 24, minute=minute))
+    # Only roll forward to the next day when no explicit date word was
+    # given and the clock time has already passed today - "at 7" said at
+    # 9pm should mean tomorrow morning, but "tomorrow at 5pm" already has
+    # its date pinned down above and must never roll again here.
+    if not explicit_tomorrow and due <= now:
         due += timedelta(days=1)
     return due
 

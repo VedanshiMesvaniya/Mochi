@@ -70,7 +70,7 @@ STATUS_SYNONYMS: dict[str, str] = {
     "finished": "done", "finish": "done", "closed": "done",
     "checked off": "done", "wrapped up": "done", "history": "done",
     "past": "done", "archive": "done", "archived": "done",
-    "did": "done", "have i done": "done", "have i completed": "done",
+    "have i done": "done", "have i completed": "done",
     "have i finished": "done",
     # cancelled
     "cancelled": "cancelled", "canceled": "cancelled",

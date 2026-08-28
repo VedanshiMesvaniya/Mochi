@@ -251,29 +251,53 @@ def _query_done_reaction(tool_args: dict) -> "ChatReaction":
     return ChatReaction(text=response_text, emotion=emotion, animation=animation)
 
 
+class Ambiguous:
+    """Sentinel returned by `_fuzzy_find` when two or more items tie for
+    the best match score. Previously `_fuzzy_find` silently kept "the
+    first item encountered" on a tie, which meant a message like "mark my
+    task call as done" could complete/cancel the wrong record when the
+    user had both "Call Mom" and "Call Dad" open (each word-overlap score
+    of 1). Callers must check for this and ask the user which one they
+    meant instead of ever acting on a guess - see spec section 41 and the
+    README's promise to ask when more than one thing matches."""
+
+    __slots__ = ("candidates",)
+
+    def __init__(self, candidates: list):
+        self.candidates = candidates
+
+
 def _fuzzy_find(query: str, items: list, title_attr: str = "title"):
     """Best-matching item for `query` among `items` by word overlap, or
-    None if nothing shares a word with it. Simple, deterministic scoring
-    - good enough for resolving "mark X as done" against someone's own
-    short task/reminder list; not meant to be a real search engine, and
-    deliberately never guesses when the overlap is zero rather than
-    silently completing the wrong thing."""
+    None if nothing shares a word with it, or an `Ambiguous` sentinel if
+    two or more items tie for the best score. Simple, deterministic
+    scoring - good enough for resolving "mark X as done" against
+    someone's own short task/reminder list; not meant to be a real search
+    engine, and deliberately never guesses when the overlap is zero, or
+    when multiple items are equally good, rather than silently acting on
+    the wrong thing."""
     if not items or not query:
         return None
     query_words = set(re.findall(r"[a-z0-9]+", query.lower()))
     if not query_words:
         return None
     query_lower = query.lower()
-    best, best_score = None, 0
+    scored = []
     for item in items:
         title_lower = getattr(item, title_attr).lower()
         title_words = set(re.findall(r"[a-z0-9]+", title_lower))
         score = len(query_words & title_words)
         if query_lower in title_lower or title_lower in query_lower:
             score += 1
-        if score > best_score:
-            best, best_score = item, score
-    return best
+        if score > 0:
+            scored.append((score, item))
+    if not scored:
+        return None
+    best_score = max(score for score, _ in scored)
+    top = [item for score, item in scored if score == best_score]
+    if len(top) > 1:
+        return Ambiguous(top)
+    return top[0]
 
 
 def _complete_task_reaction(tool_args: dict) -> "ChatReaction":
@@ -287,6 +311,13 @@ def _complete_task_reaction(tool_args: dict) -> "ChatReaction":
         )
     query = tool_args.get("query", "")
     match = _fuzzy_find(query, open_tasks)
+    if isinstance(match, Ambiguous):
+        shown = "; ".join(t.title for t in match.candidates[:5])
+        return ChatReaction(
+            text=f"I've got a few tasks that could match - which one? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
     if match is None and not query and len(open_tasks) == 1:
         match = open_tasks[0]
     if match is None:
@@ -316,6 +347,13 @@ def _cancel_task_reaction(tool_args: dict) -> "ChatReaction":
         )
     query = tool_args.get("query", "")
     match = _fuzzy_find(query, open_tasks)
+    if isinstance(match, Ambiguous):
+        shown = "; ".join(t.title for t in match.candidates[:5])
+        return ChatReaction(
+            text=f"I've got a few tasks that could match - which one? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
     if match is None and not query and len(open_tasks) == 1:
         match = open_tasks[0]
     if match is None:
@@ -344,6 +382,13 @@ def _complete_reminder_reaction(tool_args: dict) -> "ChatReaction":
         )
     query = tool_args.get("query", "")
     match = _fuzzy_find(query, pending)
+    if isinstance(match, Ambiguous):
+        shown = "; ".join(r.title for r in match.candidates[:5])
+        return ChatReaction(
+            text=f"I've got a few reminders that could match - which one? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
     if match is None and not query and len(pending) == 1:
         match = pending[0]
     if match is None:
@@ -373,6 +418,13 @@ def _cancel_reminder_reaction(tool_args: dict) -> "ChatReaction":
         )
     query = tool_args.get("query", "")
     match = _fuzzy_find(query, pending)
+    if isinstance(match, Ambiguous):
+        shown = "; ".join(r.title for r in match.candidates[:5])
+        return ChatReaction(
+            text=f"I've got a few reminders that could match - which one? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
     if match is None and not query and len(pending) == 1:
         match = pending[0]
     if match is None:
@@ -401,6 +453,13 @@ def _cancel_timer_reaction(tool_args: dict) -> "ChatReaction":
         )
     query = tool_args.get("query", "")
     match = _fuzzy_find(query, active, title_attr="label")
+    if isinstance(match, Ambiguous):
+        shown = "; ".join(t.label for t in match.candidates[:5])
+        return ChatReaction(
+            text=f"I've got a few timers that could match - which one? {shown}.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
     if match is None and not query and len(active) == 1:
         match = active[0]
     if match is None:
@@ -663,6 +722,23 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
 
     task_match = _fuzzy_find(query, open_tasks)
     reminder_match = _fuzzy_find(query, pending_reminders)
+
+    if isinstance(task_match, Ambiguous) or isinstance(reminder_match, Ambiguous):
+        candidates = []
+        if isinstance(reminder_match, Ambiguous):
+            candidates += [r.title for r in reminder_match.candidates]
+        elif reminder_match is not None:
+            candidates.append(reminder_match.title)
+        if isinstance(task_match, Ambiguous):
+            candidates += [t.title for t in task_match.candidates]
+        elif task_match is not None:
+            candidates.append(task_match.title)
+        shown = "; ".join(candidates[:5])
+        return ChatReaction(
+            text=f"I've got a few things that could match - which one? {shown}.",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+        )
 
     if reminder_match is not None and task_match is not None:
         return ChatReaction(
@@ -995,15 +1071,20 @@ def handle_message(
             if guess.confidence >= semantic_intent.CONFIDENCE_ACT:
                 built = build_semantic_intent(guess.intent, text)
                 if built is not None:
+                    # No raw message text here (security review S1) - the
+                    # logger's own policy in app/core/logger.py says user
+                    # content shouldn't be logged, and this text can be a
+                    # private reminder/task/appointment. Intent name and
+                    # confidence are enough to debug misclassification.
                     logger.info(
-                        "Message %r -> semantic intent=%s confidence=%.2f (acting)",
-                        text, guess.intent, guess.confidence,
+                        "Semantic intent=%s confidence=%.2f (acting)",
+                        guess.intent, guess.confidence,
                     )
                     intent = built
             elif guess.confidence >= semantic_intent.CONFIDENCE_LOW:
                 logger.info(
-                    "Message %r -> semantic intent=%s confidence=%.2f (asking, not acting)",
-                    text, guess.intent, guess.confidence,
+                    "Semantic intent=%s confidence=%.2f (asking, not acting)",
+                    guess.intent, guess.confidence,
                 )
                 intent = _semantic_clarify_intent(guess.intent)
             # else: below CONFIDENCE_LOW - stays "unknown", falls through
@@ -1017,7 +1098,15 @@ def handle_message(
     # triggers (and the semantic fallback above also had nothing) - is
     # visible in the log as "unknown"/some other intent instead of
     # leaving no trace at all.
-    logger.info("Message %r -> intent=%s tool=%s args=%s", text, intent.name, intent.tool, intent.tool_args)
+    #
+    # Deliberately NOT logging the raw message or the full tool_args dict
+    # (security review S1) - both can contain private reminder/task
+    # titles, appointment names, or other personal content, and
+    # app/core/logger.py's own stated policy is that Mochi's logs must
+    # not carry unnecessary sensitive user content. The intent/tool name
+    # alone is enough to see *whether* a message was classified and
+    # *which* handler it will hit, without persisting what it actually said.
+    logger.info("Message classified: intent=%s tool=%s", intent.name, intent.tool)
 
     if intent.name in _LIST_HANDLERS:
         try:
@@ -1029,7 +1118,21 @@ def handle_message(
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
-        reaction.pending_action = pending_action
+        # Expire any old calendar confirmation instead of carrying it
+        # forward - reaching this branch means the message wasn't a
+        # yes/no for it (that was already checked above) but instead a
+        # concrete, unrelated database read. A bare "yes" typed later
+        # should not be able to confirm a stale proposal the user has
+        # moved on from (spec section 23 / V4 confirmation flow).
+        if pending_action is not None:
+            # Log the kind only, not the full dict - it can carry a
+            # calendar event title (private content), same reasoning as
+            # the "Message classified" log above.
+            logger.info(
+                "Expiring stale pending_action kind=%s after unrelated query",
+                pending_action.get("kind"),
+            )
+        reaction.pending_action = None
         return reaction
 
     if intent.name in _ACTION_HANDLERS:
@@ -1049,7 +1152,14 @@ def handle_message(
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
-        reaction.pending_action = pending_action
+        # Same reasoning as the list-handler branch above: a concrete,
+        # unrelated action (create/complete/cancel a task, reminder,
+        # timer, etc.) means the user has moved on from the old calendar
+        # proposal, so it should expire rather than survive to be
+        # accidentally confirmed by a later standalone "yes".
+        if pending_action is not None:
+            logger.info("Expiring stale pending_action %r after unrelated action", pending_action)
+        reaction.pending_action = None
         return reaction
 
     if intent.name in _PROPOSAL_HANDLERS:

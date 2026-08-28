@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +28,21 @@ DATA_DIR = PROJECT_ROOT / "data"
 ASSETS_DIR = PROJECT_ROOT / "assets"
 MODELS_DIR = PROJECT_ROOT / "models"
 CONFIG_DIR = PROJECT_ROOT / "config"
+
+
+def harden_directory(path: Path) -> None:
+    """Best-effort: restrict a directory to owner-only access on platforms
+    that support POSIX permission bits (security review S2). Used for any
+    local directory holding personal data or secrets - the Google OAuth
+    config directory, the SQLite database/logs directory, etc. On a
+    shared machine with a permissive umask, a newly created directory can
+    otherwise be readable by other local accounts. Never allowed to break
+    startup if the platform doesn't support this (e.g. some Windows
+    setups fall back to ACL-based permissions instead)."""
+    try:
+        os.chmod(path, stat.S_IRWXU)
+    except OSError:  # pragma: no cover - best-effort, platform-dependent
+        pass
 
 
 def _bool(value: str | None, default: bool) -> bool:
@@ -254,19 +270,16 @@ class Settings:
         for path in (self.data_dir, self.models_dir, self.config_dir):
             path.mkdir(parents=True, exist_ok=True)
         # config_dir holds the Google OAuth client secret and cached
-        # token (see google_client_secret_path/google_token_path) - both
-        # are sensitive local credentials. Restrict the directory itself
-        # to the current user, best-effort, on top of the per-file chmod
-        # google_calendar.py already applies to the token - defense in
-        # depth against a permissive umask on a shared machine. Never
-        # allowed to break startup if the platform doesn't support it.
-        try:
-            import os
-            import stat
-
-            os.chmod(self.config_dir, stat.S_IRWXU)
-        except OSError:  # pragma: no cover - best-effort, platform-dependent
-            pass
+        # token (see google_client_secret_path/google_token_path); data_dir
+        # holds mochi.db and data/logs/mochi.log, which can contain task/
+        # reminder/appointment titles and other personal content. Restrict
+        # both directories to the current user, best-effort, on top of the
+        # per-file chmod google_calendar.py already applies to the token -
+        # defense in depth against a permissive umask on a shared machine
+        # (security review S2 - previously only config_dir was hardened,
+        # leaving the database/logs directory unprotected).
+        harden_directory(self.config_dir)
+        harden_directory(self.data_dir)
 
 
 # Singleton settings instance used throughout the app.

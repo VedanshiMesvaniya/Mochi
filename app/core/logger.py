@@ -38,6 +38,12 @@ def get_logger(name: str = "mochi") -> logging.Logger:
 
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        # Same reasoning as Settings.ensure_directories() (security review
+        # S2): mochi.log can contain personal content, so the directory
+        # holding it should be owner-only just like config_dir already is.
+        from app.core.config import harden_directory
+
+        harden_directory(LOG_DIR)
         file_handler = RotatingFileHandler(
             LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
         )

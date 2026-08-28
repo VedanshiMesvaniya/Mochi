@@ -35,6 +35,17 @@ def test_match_status_recognizes_done_synonyms():
     assert db_glossary.match_status("show my history") == "done"
 
 
+def test_match_status_does_not_treat_bare_did_as_done():
+    """Regression test for the security review's I7 finding: "did" used
+    to be a bare status synonym for "done", so an ordinary question like
+    "what did I have for tasks?" (grammatical "did", not a status word)
+    was misread as a completed-task query instead of an open-task one."""
+    assert db_glossary.match_status("what did i have for tasks") == "active"
+    assert db_glossary.match_status("what did i set as a reminder") == "active"
+    # The explicit phrase-level synonyms should still work.
+    assert db_glossary.match_status("have i done my tasks") == "done"
+
+
 def test_match_status_recognizes_cancelled_synonyms():
     assert db_glossary.match_status("what got cancelled") == "cancelled"
 
