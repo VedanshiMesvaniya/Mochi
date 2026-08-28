@@ -127,10 +127,13 @@ expression are timed together so they appear and clear as one reaction.
 Double-click Mochi (or right-click → Chat) to open a small translucent
 chat popup — messages render as rounded speech bubbles (yours on the
 right, Mochi's on the left), like the floating bubble above the
-character itself. It stays pinned on top of other windows while open
-(toggle via the green dot) so it doesn't get buried mid-conversation, and
-only goes away when you actually close it. Messages are handled in three
-layers:
+character itself. It opens anchored next to wherever the character
+currently is (and the character's own speech bubble does too), clamped
+so it always stays fully on-screen even when the character is docked
+right at a screen edge or corner. It stays pinned on top of other windows
+while open (toggle via the green dot) so it doesn't get buried
+mid-conversation, and only goes away when you actually close it. Messages
+are handled in three layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
    greetings, common small talk, and `what time is it`/`what day is it`
@@ -214,9 +217,12 @@ separate right-click menu for any of this — one consistent way in via
 chat, rather than a manual window/form duplicating what chat already
 does end to end. Chat recognizes a fairly wide range of everyday
 phrasing (see `TASK_TRIGGER`/`REMINDER_TRIGGER`/`TIMER_TRIGGER` in
-`app/ai/intent.py`); every message's detected intent is also logged
-(`mochi.ai.chat_engine`), so if a phrasing genuinely doesn't match yet
-it's visible in the log rather than silently doing nothing.
+`app/ai/intent.py`), including spelled-out numbers alongside digits —
+"in one minute", "for five minutes", "a couple minutes" work exactly like
+"in 1 minute"/"for 5 minutes"/"in 2 minutes" would; every message's
+detected intent is also logged (`mochi.ai.chat_engine`), so if a phrasing
+genuinely doesn't match yet it's visible in the log rather than silently
+doing nothing.
 
 Two more phrasings that don't need the literal word "task"/"reminder":
 "check on <something>" reports the real status of whatever matches it in
