@@ -157,6 +157,13 @@ class _RefreshTrendsWorker(QThread):
         self.finished_ok.emit(trend_count, meme_count, crawled_count)
 
 
+def _clamp(value: int, low: int, high: int) -> int:
+    """Clamp `value` into [low, high] - safe even when high < low (e.g. a
+    window wider than the available screen), in which case `low` wins so
+    the result never ends up further out of range than `value` started."""
+    return max(low, min(value, high))
+
+
 def _is_dark_mode() -> bool:
     """Best-effort OS/desktop dark-mode detection (Qt6's cross-platform
     color-scheme API - Windows, macOS, and most Linux desktop environments
@@ -654,6 +661,16 @@ class PetWindow(QWidget):
 
         bubble_x = self.x() + (self.width() // 2) - (self.speech_bubble.width() // 2)
         bubble_y = self.y() - self.speech_bubble.height() - 8
+
+        # Same clamp as _position_chat_window above, same reason: a
+        # character docked near a screen edge/corner must never push the
+        # bubble itself past the visible display area.
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+        if avail is not None:
+            bubble_x = _clamp(bubble_x, avail.left(), avail.right() - self.speech_bubble.width())
+            bubble_y = _clamp(bubble_y, avail.top(), avail.bottom() - self.speech_bubble.height())
+
         self.speech_bubble.move(bubble_x, bubble_y)
 
         self.speech_bubble.show()
@@ -721,9 +738,56 @@ class PetWindow(QWidget):
                 on_thinking=self._on_chat_thinking,
                 parent=self,
             )
+        self._position_chat_window()
         self._chat_window.show()
         self._chat_window.raise_()
         self._chat_window.activateWindow()
+
+    def _position_chat_window(self) -> None:
+        """Anchor the chat popup near the character, but never let any of
+        it render past the edge of the screen.
+
+        Bug report ("chat is went out of screen"): this window previously
+        had no explicit position at all - it relied entirely on Qt's
+        default placement for a frameless Tool-flagged dialog, which does
+        nothing to keep it on-screen. A desktop pet is very often parked
+        right at a screen edge/corner (that's the whole point of a
+        corner-docked companion), so the chat window - being much wider
+        than the character itself - could easily open with a large chunk
+        of it, including the newest message bubble, rendered past the
+        visible display area with no way to scroll or drag it back short
+        of moving the character first.
+
+        Opens to whichever side of the character actually has room
+        (prefers the left, since bottom-right corner docking is the most
+        common case), then clamps the result to the character's own
+        screen's available geometry - so the window is always fully
+        visible no matter where the character currently sits, including
+        after the character has been dragged around.
+        """
+        window = self._chat_window
+        size = window.size()
+        if size.width() < window.minimumWidth() or size.height() < window.minimumHeight():
+            # Not shown/sized yet (first open) - fall back to the known
+            # minimum rather than whatever tiny default QDialog size Qt
+            # hands back before a widget has ever been laid out.
+            size = window.minimumSize()
+
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+
+        x = self.x() - size.width() - 12
+        if avail is not None and x < avail.left():
+            # No room to the left (character is near the left edge) -
+            # try the right side instead.
+            x = self.x() + self.width() + 12
+        y = self.y() + self.height() - size.height()
+
+        if avail is not None:
+            x = _clamp(x, avail.left(), avail.right() - size.width())
+            y = _clamp(y, avail.top(), avail.bottom() - size.height())
+
+        window.move(x, y)
 
     def _on_chat_thinking(self) -> None:
         """Called the instant a message is sent, before a reply exists -

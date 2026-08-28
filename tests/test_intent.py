@@ -37,6 +37,55 @@ def test_reminder_without_time_asks_for_one():
     assert result.tool is None
 
 
+# --- Spelled-out ("word") numbers in relative time/duration -------------
+# Bug report: "in one minute remind me to check output" fell through to
+# "create_reminder_needs_time" ("but when?") even though a time WAS
+# given, just spelled out rather than digits - see
+# app/ai/intent.py's _normalize_word_numbers.
+
+
+def test_reminder_with_word_number_relative_time():
+    result = detect_intent("in one minute remind me to check output", now=NOW)
+    assert result.name == "create_reminder"
+    assert result.tool == "create_reminder"
+    assert result.tool_args["datetime_iso"] == "2026-08-14T15:01:00"
+    assert result.tool_args["title"] == "Check output"
+
+
+def test_reminder_with_word_number_after_remind_me():
+    result = detect_intent("remind me to stretch in twenty minutes", now=NOW)
+    assert result.name == "create_reminder"
+    assert result.tool_args["datetime_iso"] == "2026-08-14T15:20:00"
+
+
+def test_reminder_with_indefinite_article_as_one():
+    result = detect_intent("remind me to check the oven in a minute", now=NOW)
+    assert result.name == "create_reminder"
+    assert result.tool_args["datetime_iso"] == "2026-08-14T15:01:00"
+
+
+def test_timer_with_word_number_duration():
+    result = detect_intent("set a timer for five minutes", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["duration_seconds"] == 300
+
+
+def test_timer_with_couple_as_two():
+    result = detect_intent("timer for a couple minutes", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["duration_seconds"] == 120
+
+
+def test_word_number_does_not_corrupt_unrelated_article():
+    """"a break" must stay "a break" - only a number word DIRECTLY
+    followed by a time unit word gets rewritten, never a bare "a"/"an"
+    elsewhere in the sentence."""
+    result = detect_intent("remind me to take a break in 10 minutes", now=NOW)
+    assert result.name == "create_reminder"
+    assert result.tool_args["title"] == "Take a break"
+    assert result.tool_args["datetime_iso"] == "2026-08-14T15:10:00"
+
+
 def test_timer_with_duration():
     result = detect_intent("set a timer for 10 minutes", now=NOW)
     assert result.tool == "start_timer"

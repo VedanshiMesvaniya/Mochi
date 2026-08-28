@@ -419,3 +419,61 @@ def test_refresh_trends_action_never_crawls_when_source_path_unset(qapp, monkeyp
     assert "1 trend(s) and 1 meme(s)" in window.speech_bubble.text()
     assert "crawled" not in window.speech_bubble.text()
     window.close()
+
+
+def test_chat_window_position_stays_within_screen_when_character_near_edge(qapp, temp_db):
+    """Bug report ('chat is went out of screen'): a character docked at
+    or beyond a screen edge must never produce a chat window position
+    that renders any part of the window off-screen."""
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    screen = window.screen()
+    assert screen is not None, "test requires a screen (even the offscreen QPA provides one)"
+    avail = screen.availableGeometry()
+
+    # Park the character right at the screen's far edge - the exact
+    # scenario from the bug report (a corner-docked desktop pet).
+    window.move(avail.right() - window.width() // 2, avail.bottom() - window.height() // 2)
+
+    window.on_open_chat_requested()
+    chat = window._chat_window
+    assert chat is not None
+
+    chat_size = chat.size()
+    if chat_size.width() < chat.minimumWidth() or chat_size.height() < chat.minimumHeight():
+        chat_size = chat.minimumSize()
+
+    assert chat.x() >= avail.left()
+    assert chat.y() >= avail.top()
+    assert chat.x() + chat_size.width() <= avail.right()
+    assert chat.y() + chat_size.height() <= avail.bottom()
+    window.close()
+
+
+def test_speech_bubble_position_stays_within_screen_when_character_near_edge(qapp, temp_db):
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    screen = window.screen()
+    assert screen is not None
+    avail = screen.availableGeometry()
+
+    window.move(avail.left(), avail.top())  # top-left corner this time
+    window.show_speech_bubble("Hello!")
+
+    assert window.speech_bubble.x() >= avail.left()
+    assert window.speech_bubble.y() >= avail.top()
+    assert window.speech_bubble.x() + window.speech_bubble.width() <= avail.right()
+    window.close()
+
+
+def test_clamp_helper_handles_widget_larger_than_screen():
+    from app.character.pet import _clamp
+
+    # A window/bubble wider than the whole available screen must still
+    # resolve to a real, in-range position (the left/top edge) rather
+    # than a nonsensical negative-width range.
+    assert _clamp(500, 0, -50) == 0
+    assert _clamp(-999, 0, 800) == 0
+    assert _clamp(400, 0, 800) == 400

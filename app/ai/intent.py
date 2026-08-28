@@ -435,6 +435,56 @@ DURATION_ONLY = re.compile(
     r"(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|second|seconds|sec|secs)"
 )
 
+# Bug report ("it can not reason ... one minute means current time plus
+# one minute"): TIME_IN/DURATION_ONLY above only ever matched a DIGIT
+# immediately before the unit word, so "in one minute" (spelled out, no
+# digit at all) silently matched nothing and fell straight through to
+# the "but when?" clarifying question - even though "in 1 minute" right
+# next to it works fine. Rather than trying to teach two already-tricky
+# regexes to also understand English number words directly, this
+# normalizes spelled-out numbers to digits FIRST (deterministically, no
+# model involved) so the exact same TIME_IN/DURATION_ONLY regexes above
+# keep being the single source of truth for what "N <unit>" means.
+#
+# Only ever rewrites a number word when it's immediately followed by a
+# time-unit word - "buy a book" or "renew a task" must never turn into
+# "buy 1 book"/"renew 1 task" (which would corrupt _title_from's output),
+# so this is intentionally much narrower than a general word-to-number
+# converter.
+_WORD_TO_NUM = {
+    "a": "1", "an": "1", "couple": "2", "few": "3",
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+    "fifteen": "15", "sixteen": "16", "seventeen": "17", "eighteen": "18",
+    "nineteen": "19", "twenty": "20", "thirty": "30", "forty": "40",
+    "fifty": "50", "sixty": "60",
+}
+_TIME_UNIT_WORDS = (
+    r"minute|minutes|min|mins|hour|hours|hr|hrs|second|seconds|sec|secs"
+)
+# Longest-word-first so e.g. "thirteen" isn't cut short by "three"/"ten"
+# matching part of it first.
+_WORD_NUMBER_BEFORE_UNIT_RE = re.compile(
+    r"\b(" + "|".join(sorted(_WORD_TO_NUM, key=len, reverse=True)) + r")"
+    rf"(\s+(?:{_TIME_UNIT_WORDS}))\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_word_numbers(text: str) -> str:
+    """"in one minute" / "a couple minutes" / "in twenty mins" -> "in 1
+    minute" / "a 2 minutes" / "in 20 mins", so TIME_IN/DURATION_ONLY
+    above can parse them with the exact same digit-only regex used for
+    "in 30 minutes". See the block comment above _WORD_TO_NUM for why
+    this only ever touches a number word directly glued to a time unit.
+    """
+
+    def _replace(match: re.Match) -> str:
+        return _WORD_TO_NUM[match.group(1).lower()] + match.group(2)
+
+    return _WORD_NUMBER_BEFORE_UNIT_RE.sub(_replace, text)
+
 
 def _strip_trigger(text: str, trigger: re.Pattern) -> str:
     return trigger.sub("", text, count=1).strip(" ,.!")
@@ -467,7 +517,7 @@ def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
 
 
 def _parse_relative_minutes(text: str) -> Optional[int]:
-    match = TIME_IN.search(text)
+    match = TIME_IN.search(_normalize_word_numbers(text))
     if not match:
         return None
     amount = int(match.group(1))
@@ -476,7 +526,7 @@ def _parse_relative_minutes(text: str) -> Optional[int]:
 
 
 def _parse_duration_seconds(text: str) -> Optional[int]:
-    match = DURATION_ONLY.search(text)
+    match = DURATION_ONLY.search(_normalize_word_numbers(text))
     if not match:
         return None
     amount = int(match.group(1))
@@ -489,8 +539,12 @@ def _parse_duration_seconds(text: str) -> Optional[int]:
 
 
 def _title_from(text: str, fallback: str = "Reminder") -> str:
-    # Drop a trailing time clause so "call mom at 7pm" -> "call mom"
-    cleaned = TIME_AT.sub("", text)
+    # Drop a trailing time clause so "call mom at 7pm" -> "call mom" -
+    # normalize word-numbers first so "in one minute" strips the same way
+    # "in 1 minute" already did (otherwise "one minute" would be left
+    # stuck in the title, since TIME_IN's regex only ever matches digits).
+    cleaned = _normalize_word_numbers(text)
+    cleaned = TIME_AT.sub("", cleaned)
     cleaned = TIME_IN.sub("", cleaned)
     cleaned = re.sub(r"\btomorrow\b", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^to\s+", "", cleaned.strip(), flags=re.IGNORECASE)
