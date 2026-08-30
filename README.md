@@ -160,7 +160,7 @@ are handled in three layers:
    for the full design and confidence bands.
 3. **Local LLM fallback (open-ended chat)** — anything neither layer above
    recognizes is sent to a locally-running [Ollama](https://ollama.com)
-   model (default `qwen3:0.6b`, configurable) for a real conversational
+   model (default `qwen2.5:1.5b`, configurable) for a real conversational
    reply, on a background thread so a slow reply never freezes the chat
    window. The prompt always includes the actual current local date/time,
    so relative phrasing like "remind me tonight" or "is it late" has real
@@ -446,7 +446,7 @@ python -m app.main
 
 Chat, reminders, tasks, and timers all work out of the box with no
 further setup. For richer open-ended chat replies, install
-[Ollama](https://ollama.com), run `ollama pull qwen3:0.6b` (or your
+[Ollama](https://ollama.com), run `ollama pull qwen2.5:1.5b` (or your
 preferred model, set via `MOCHI_LLM_MODEL` in `.env`), and make sure
 Ollama is running — Mochi will start using it automatically.
 

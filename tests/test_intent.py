@@ -31,6 +31,28 @@ def test_reminder_with_relative_time():
     assert result.tool_args["datetime_iso"] == "2026-08-14T15:30:00"
 
 
+def test_reminder_tomorrow_at_time_already_passed_today_lands_on_tomorrow():
+    """Regression test for the security review's I1 finding: "tomorrow at
+    5pm" typed after 5pm today used to land on the day AFTER tomorrow,
+    because the parser rolled the date forward once for "the clock time
+    already passed today" and then a second time for "the text contains
+    tomorrow". An explicit "tomorrow" must always mean the very next
+    calendar day, no matter what time it currently is."""
+    evening = datetime(2026, 8, 14, 20, 0, 0)  # 8:00 PM - already past 5pm
+    result = detect_intent("remind me to call mom tomorrow at 5pm", now=evening)
+    assert result.name == "create_reminder"
+    assert result.tool_args["datetime_iso"] == "2026-08-15T17:00:00"  # tomorrow, not the 16th
+
+
+def test_reminder_tomorrow_at_time_not_yet_passed_today_still_lands_on_tomorrow():
+    """Same phrase, but asked before 5pm today - must resolve to the same
+    tomorrow-at-5pm regardless of what time "now" happens to be."""
+    morning = datetime(2026, 8, 14, 9, 0, 0)  # 9:00 AM - well before 5pm
+    result = detect_intent("remind me to call mom tomorrow at 5pm", now=morning)
+    assert result.name == "create_reminder"
+    assert result.tool_args["datetime_iso"] == "2026-08-15T17:00:00"
+
+
 def test_reminder_without_time_asks_for_one():
     result = detect_intent("remind me to push code", now=NOW)
     assert result.name == "create_reminder_needs_time"

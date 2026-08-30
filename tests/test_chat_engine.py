@@ -68,6 +68,37 @@ def test_mark_task_done_with_no_matching_task_asks_instead_of_guessing(temp_db):
     assert tasks[-1].status == task_manager.TaskStatus.OPEN  # untouched
 
 
+def test_mark_task_done_with_tied_match_asks_instead_of_picking_first(temp_db):
+    """Regression test for the security review's I2 finding: two tasks
+    that score equally against the query ("call mom" and "call dad" both
+    share only the word "call" with "mark my task call as done") used to
+    silently complete whichever one was created first. Mochi must ask
+    instead of guessing which one the user meant."""
+    handle_message("remember that i need to call mom")
+    handle_message("remember that i need to call dad")
+
+    reaction = handle_message("mark my task call as done")
+
+    assert "which one" in reaction.text.lower()
+    assert "call mom" in reaction.text.lower()
+    assert "call dad" in reaction.text.lower()
+    # Neither task was touched.
+    open_tasks = task_manager.list_tasks()
+    assert len(open_tasks) == 2
+    assert all(t.status == task_manager.TaskStatus.OPEN for t in open_tasks)
+
+
+def test_cancel_task_with_tied_match_asks_instead_of_picking_first(temp_db):
+    handle_message("remember that i need to call mom")
+    handle_message("remember that i need to call dad")
+
+    reaction = handle_message("cancel my task call")
+
+    assert "which one" in reaction.text.lower()
+    open_tasks = task_manager.list_tasks()
+    assert len(open_tasks) == 2  # neither cancelled
+
+
 def test_mark_task_done_with_no_tasks_at_all(temp_db):
     reaction = handle_message("mark my task as done")
     assert "don't have any open tasks" in reaction.text.lower()
@@ -466,17 +497,28 @@ def test_confirming_delete_event_calls_calendar_tools_with_confirmed_true(
     assert "cancelled" in reaction.text.lower()
 
 
-def test_unrelated_query_while_pending_action_open_keeps_it_alive(temp_db, monkeypatch):
+def test_unrelated_query_while_pending_action_open_expires_it(temp_db, monkeypatch):
     """A pending calendar confirmation shouldn't block an unrelated
-    message (e.g. checking reminders) from working normally, and
-    shouldn't be silently dropped either."""
+    message (e.g. checking reminders) from working normally - but it also
+    should not survive it. Previously it did (see the security review's
+    S3 finding): a later standalone "yes" could then confirm a calendar
+    write the user had already moved on from. A concrete, unrelated
+    database read is exactly the kind of "unrelated conversation" that
+    should expire the old proposal, per spec section 23 / V4."""
     proposal = handle_message("schedule a meeting tomorrow at 5pm")
     pending = proposal.pending_action
 
     reaction = handle_message("do i have any reminders", pending_action=pending)
 
-    assert reaction.pending_action == pending
+    assert reaction.pending_action is None  # stale proposal expired
     assert reaction.text  # the reminders query still answered normally
+
+    # And a later bare "yes" must NOT be able to resurrect/confirm it,
+    # since handle_message is only ever called with pending_action=None
+    # from here on by the real chat window (it passes back exactly what
+    # the previous reaction returned).
+    follow_up = handle_message("yes", pending_action=reaction.pending_action)
+    assert follow_up.pending_action is None
 
 
 # --- "check on X" / ambiguous "mark it as done" ------------------------
