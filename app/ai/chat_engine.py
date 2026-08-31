@@ -1023,9 +1023,10 @@ def handle_message(
     answer for - also owned by the calling chat window, which is expected
     to pass back whatever the previous ChatReaction.pending_action was.
     If the message is an unambiguous confirmation/cancellation, it's
-    resolved here before anything else runs; otherwise it's carried
-    forward unchanged in the returned ChatReaction so an unrelated
-    message in between doesn't silently drop it.
+    resolved here before anything else runs. Any other message expires
+    it immediately (see the block below) rather than carrying it forward,
+    so a stale proposal can never be confirmed by an unrelated later
+    "yes".
     """
     if pending_action is not None:
         confirmation = _classify_confirmation(text)
@@ -1037,9 +1038,28 @@ def handle_message(
                 emotion=Emotion.NEUTRAL,
                 animation=CharacterState.IDLE,
             )
-        # Anything else: not a clear yes/no, so fall through to normal
-        # handling below and keep waiting - the pending_action is carried
-        # forward at every return point past this one.
+        # Anything else is not a clear yes/no, so the proposal is treated
+        # as abandoned rather than carried forward (security review:
+        # "pending calendar proposal can survive unrelated open-ended
+        # conversation" - a stray later "yes" must not be able to confirm
+        # a proposal the user has moved on from, whether the intervening
+        # message is a deterministic list/action, the semantic
+        # clarification path, or plain small talk/LLM chat).
+        #
+        # Reassigning the local `pending_action` to None HERE, once, is
+        # deliberate: every return point below this line already reads
+        # from this same local variable rather than re-deciding for
+        # itself, so a single decision here keeps every branch correct by
+        # construction instead of relying on each handler to remember to
+        # expire it individually (that's exactly how the previous fix
+        # regressed - see the removed `%r`-logging block that used to sit
+        # in the _ACTION_HANDLERS branch below).
+        if pending_action is not None:
+            logger.info(
+                "Expiring stale pending_action kind=%s (not a yes/no)",
+                pending_action.get("kind"),
+            )
+        pending_action = None
 
     intent: DetectedIntent = detect_intent(text)
 
@@ -1118,20 +1138,9 @@ def handle_message(
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
-        # Expire any old calendar confirmation instead of carrying it
-        # forward - reaching this branch means the message wasn't a
-        # yes/no for it (that was already checked above) but instead a
-        # concrete, unrelated database read. A bare "yes" typed later
-        # should not be able to confirm a stale proposal the user has
-        # moved on from (spec section 23 / V4 confirmation flow).
-        if pending_action is not None:
-            # Log the kind only, not the full dict - it can carry a
-            # calendar event title (private content), same reasoning as
-            # the "Message classified" log above.
-            logger.info(
-                "Expiring stale pending_action kind=%s after unrelated query",
-                pending_action.get("kind"),
-            )
+        # `pending_action` is guaranteed None here (expired above unless
+        # this message was a literal yes/no, which already returned) -
+        # nothing further to carry forward or log.
         reaction.pending_action = None
         return reaction
 
@@ -1152,13 +1161,9 @@ def handle_message(
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
-        # Same reasoning as the list-handler branch above: a concrete,
-        # unrelated action (create/complete/cancel a task, reminder,
-        # timer, etc.) means the user has moved on from the old calendar
-        # proposal, so it should expire rather than survive to be
-        # accidentally confirmed by a later standalone "yes".
-        if pending_action is not None:
-            logger.info("Expiring stale pending_action %r after unrelated action", pending_action)
+        # `pending_action` is guaranteed None here - see the comment
+        # above the docstring's `pending_action` paragraph and the
+        # expiration block near the top of this function.
         reaction.pending_action = None
         return reaction
 
@@ -1175,6 +1180,10 @@ def handle_message(
                 text="Oops, something went wrong setting that up.",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
+                # `pending_action` is guaranteed None here too (see the
+                # expiration block near the top of this function) - kept
+                # explicit rather than omitted so this doesn't look like
+                # an oversight to a future reader.
                 pending_action=pending_action,
             )
 

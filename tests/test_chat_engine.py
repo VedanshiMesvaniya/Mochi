@@ -13,6 +13,26 @@ def test_greeting_reaction_has_no_side_effects(temp_db):
     assert reaction.text
 
 
+def test_expiring_pending_action_never_logs_the_private_title(temp_db, caplog):
+    """Regression test for the updated security review's remaining
+    privacy finding: the "Expiring stale pending_action..." log line
+    used to interpolate the pending_action dict itself with %r, which
+    included the private calendar event title. Assert the title text
+    never appears anywhere in the logs once the proposal expires."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="mochi.ai.chat_engine")
+
+    proposal = handle_message("schedule a meeting with PRIVATE_TEST_EVENT tomorrow at 5pm")
+    pending = proposal.pending_action
+    assert pending is not None
+    assert "PRIVATE_TEST_EVENT" in pending["title"]  # sanity check on the fixture itself
+
+    handle_message("what reminders do i have", pending_action=pending)
+
+    assert "PRIVATE_TEST_EVENT" not in caplog.text
+
+
 def test_reminder_message_actually_creates_a_reminder(temp_db):
     reaction = handle_message("remind me to test the chat engine in 5 minutes")
     assert reaction.text
@@ -412,9 +432,18 @@ def test_declining_create_event_never_calls_calendar_tools(temp_db, monkeypatch)
     assert "never mind" in reaction.text.lower()
 
 
-def test_ambiguous_reply_keeps_pending_action_alive(temp_db, monkeypatch):
+def test_ambiguous_reply_expires_pending_action_instead_of_keeping_it_alive(temp_db, monkeypatch):
+    """Regression test for the updated security review's finding: a
+    reply that merely *sounds* like it's about the pending calendar
+    proposal ("what time was that again?") isn't a real yes/no, and
+    without deterministic entity/context tracking (the review's
+    recommended ConversationState - a bigger, separate architecture
+    change) Mochi cannot safely tell "clarifying the same proposal" apart
+    from "unrelated new conversation". The safe default is to expire the
+    proposal rather than let it sit around waiting for a bare "yes" that
+    might really be about something else entirely."""
     def _fail_if_called(*_a, **_kw):
-        raise AssertionError("must not execute on an ambiguous reply")
+        raise AssertionError("must not execute on an ambiguous, non-yes/no reply")
 
     monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _fail_if_called)
 
@@ -423,7 +452,43 @@ def test_ambiguous_reply_keeps_pending_action_alive(temp_db, monkeypatch):
 
     reaction = handle_message("what time was that again?", pending_action=pending)
 
-    assert reaction.pending_action == pending  # still waiting
+    assert reaction.pending_action is None  # expired, not carried forward
+
+    # A later bare "yes" must not be able to resurrect/confirm it.
+    follow_up = handle_message("yes", pending_action=reaction.pending_action)
+    assert follow_up.pending_action is None
+
+
+def test_small_talk_reply_expires_pending_action(temp_db):
+    """Same scenario as above, but with plain small talk instead of
+    something clarification-shaped - covers the review's "Test 2"
+    (pending action after small talk)."""
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    pending = proposal.pending_action
+
+    reaction = handle_message("haha okay", pending_action=pending)
+
+    assert reaction.pending_action is None
+
+
+def test_semantic_clarify_reply_expires_pending_action(temp_db, monkeypatch):
+    """Covers the review's "Test 3": the intervening message being routed
+    through the medium-confidence semantic-clarification path (rather
+    than the keyword matcher's "unknown" bucket) must expire the pending
+    proposal too, not just the deterministic list/action paths."""
+    from app.ai import semantic_intent as si
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    pending = proposal.pending_action
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.semantic_intent.classify",
+        lambda *_a, **_kw: si.SemanticGuess(intent="create_reminder", confidence=0.6),
+    )
+
+    reaction = handle_message("dont forget the thing", pending_action=pending)
+
+    assert reaction.pending_action is None
 
 
 def test_create_event_failure_after_confirmation_reports_error(temp_db, monkeypatch):
