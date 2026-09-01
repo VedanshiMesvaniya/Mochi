@@ -306,9 +306,19 @@ REMINDER_ACCUSATION_TRIGGER = re.compile(
     r"|\bdid (?:you|i) forget to remind\b",
     re.IGNORECASE,
 )
+# Shared fragment: what a bare/ordinal reference to "the thing we're
+# talking about" can look like inside a trigger phrase (security review
+# I1/I3 - see app/ai/conversation_state.py for how these get resolved to
+# a real database row deterministically). Kept in one place so
+# AMBIGUOUS_DONE_TRIGGER and AMBIGUOUS_CANCEL_TRIGGER below both support
+# "cancel the second one" the same way they already support "cancel it".
+_REFERENCE_TARGET = r"(?:it|that|this|the (?:first|second|third|fourth|fifth|last) one)"
+
 AMBIGUOUS_DONE_TRIGGER = re.compile(
-    r"\b(mark (?:it|that|this) (?:as )?done|(?:it|that|this)(?:'s| is) done|"
-    r"(?:it|that|this)(?:'s| is) finished|complete it|finish it|"
+    r"\b(mark " + _REFERENCE_TARGET + r" (?:as )?done|"
+    + _REFERENCE_TARGET + r"(?:'s| is) done|"
+    + _REFERENCE_TARGET + r"(?:'s| is) finished|"
+    r"complete " + _REFERENCE_TARGET + r"|finish " + _REFERENCE_TARGET + r"|"
     r"i (?:did|finished) it)\b",
     re.IGNORECASE,
 )
@@ -334,7 +344,31 @@ AMBIGUOUS_DONE_TRIGGER = re.compile(
 # anything open to cancel!" instead of just moving on. Only phrasing that
 # names a specific, unambiguous cancel action is matched here.
 AMBIGUOUS_CANCEL_TRIGGER = re.compile(
-    r"\b(cancel it|cancel that|delete it|remove it|scratch that|undo that|nix it)\b",
+    r"\b(cancel " + _REFERENCE_TARGET + r"|delete " + _REFERENCE_TARGET + r"|"
+    r"remove " + _REFERENCE_TARGET + r"|scratch that|undo that|nix it)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_reference_target(text: str) -> str:
+    """Pulls out just the "it"/"that"/"the second one" part of an
+    AMBIGUOUS_DONE_TRIGGER/AMBIGUOUS_CANCEL_TRIGGER match, so
+    chat_engine.py's resolve_typed() gets the actual phrase the user
+    said instead of a hardcoded "it" - needed for ordinal references
+    ("the second one") to work through this path at all."""
+    match = re.search(_REFERENCE_TARGET, text, re.IGNORECASE)
+    return match.group(0).lower() if match else "it"
+# "make it 8" / "change it to 8:30pm" / "move that to tomorrow at 9" -
+# reschedule counterpart to AMBIGUOUS_DONE_TRIGGER/AMBIGUOUS_CANCEL_TRIGGER
+# above (security review I1/I3 - "conversational reference resolution").
+# "it"/"that"/"this" here is resolved deterministically against
+# app/ai/conversation_state.py's remembered last entity in
+# chat_engine.py's _reschedule_reference_reaction, never guessed at.
+# Deliberately requires "it"/"that"/"this" (not a bare "make 8") so this
+# can't accidentally swallow an unrelated sentence that happens to start
+# with "make"/"change"/"move"/"set".
+RESCHEDULE_TRIGGER = re.compile(
+    r"\b(?:make|change|move|set|reschedule) (?:it|that|this)\b(?:\s+to)?\s*",
     re.IGNORECASE,
 )
 # "count 1 to 10" / "count from 1 to 10" -> groups 1/2; "count to 10"
@@ -490,14 +524,7 @@ def _strip_trigger(text: str, trigger: re.Pattern) -> str:
     return trigger.sub("", text, count=1).strip(" ,.!")
 
 
-def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
-    match = TIME_AT.search(text)
-    if not match:
-        return None
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    meridiem = (match.group(3) or "").lower()
-
+def _resolve_time_from_parts(hour: int, minute: int, meridiem: str, text: str, now: datetime) -> datetime:
     if meridiem == "pm" and hour != 12:
         hour += 12
     elif meridiem == "am" and hour == 12:
@@ -527,6 +554,38 @@ def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
     if not explicit_tomorrow and due <= now:
         due += timedelta(days=1)
     return due
+
+
+def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
+    match = TIME_AT.search(text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = (match.group(3) or "").lower()
+    return _resolve_time_from_parts(hour, minute, meridiem, text, now)
+
+
+# Bare clock time with no leading "at" - only used by the reschedule-
+# reference path ("make it 8" / "change it to 8:30pm"). The "make it"/
+# "change it to" trigger phrase itself already establishes that a time
+# follows, so requiring the word "at" too would make an already-terse
+# follow-up message even more awkward to type than it needs to be.
+BARE_TIME = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
+
+
+def _parse_bare_time(text: str, now: datetime) -> Optional[datetime]:
+    match = BARE_TIME.search(text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    if hour > 23:
+        return None  # not a plausible clock hour - avoid misreading a stray number
+    minute = int(match.group(2) or 0)
+    if minute > 59:
+        return None
+    meridiem = (match.group(3) or "").lower()
+    return _resolve_time_from_parts(hour, minute, meridiem, text, now)
 
 
 def _parse_relative_minutes(text: str) -> Optional[int]:
@@ -679,6 +738,32 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             animation=CharacterState.IDLE,
             response="",
             tool_args={"query": _extract_action_query(text)},
+        )
+    if RESCHEDULE_TRIGGER.search(lowered):
+        body = _strip_trigger(text, RESCHEDULE_TRIGGER)
+        # Relative ("in 20 minutes") is checked first and, if it matches,
+        # bare-time parsing is skipped entirely - BARE_TIME has no "at"
+        # requirement and would otherwise misread the "20" in "in 20
+        # minutes" as a clock hour.
+        minutes = _parse_relative_minutes(body)
+        due = _parse_absolute_time(body, now)
+        if due is None and minutes is None:
+            due = _parse_bare_time(body, now)
+        if due is None and minutes is not None:
+            due = now + timedelta(minutes=minutes)
+        if due is None:
+            return DetectedIntent(
+                name="reschedule_reference_needs_time",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+                response='Change it to when? Try a time like "8pm" or "in 20 minutes".',
+            )
+        return DetectedIntent(
+            name="reschedule_reference",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="",  # chat_engine fills this in once it resolves which entity "it" means
+            tool_args={"due_iso": due.isoformat()},
         )
 
     # --- Google Calendar (spec sections 22-24, V3: read-only) -----------
@@ -950,7 +1035,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
             response="",
-            tool_args={},
+            tool_args={"query": _extract_reference_target(text)},
         )
     if AMBIGUOUS_CANCEL_TRIGGER.search(lowered):
         return DetectedIntent(
@@ -958,7 +1043,7 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.NEUTRAL,
             animation=CharacterState.IDLE,
             response="",
-            tool_args={},
+            tool_args={"query": _extract_reference_target(text)},
         )
 
     # --- On-demand expression command --------------------------------

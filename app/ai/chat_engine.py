@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.ai import semantic_intent
+from app.ai import conversation_state as convo
 from app.ai.db_glossary import QueryPlan, build_plan
 from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent
 from app.ai.llm import LLMUnavailable, ask as ask_llm, phrase_data_answer
@@ -50,6 +51,17 @@ _TOOL_MODULES = {
     "create_reminder": reminder_tools.create_reminder,
     "start_timer": timer_tools.start_timer,
     "create_task": task_tools.create_task,
+}
+
+# Which conversation_state "entity_type" a successful _TOOL_MODULES create
+# call should be remembered as (security review I1/I3) - lets an immediate
+# follow-up like "actually delete it" or "make it 8" resolve without
+# repeating the title. Only creation tools produce a new entity worth
+# remembering this way.
+_CREATE_TOOL_ENTITY_KINDS = {
+    "create_reminder": "reminder",
+    "start_timer": "timer",
+    "create_task": "task",
 }
 
 # Reminders/timers get their tables created by their background schedulers
@@ -87,6 +99,13 @@ class ChatReaction:
     # is otherwise stateless between calls, same as everything else here.
     # None means "nothing awaiting confirmation."
     pending_action: Optional[dict] = None
+    # Deterministic conversational-reference memory (security review I1/I3
+    # - see app/ai/conversation_state.py) - what "it"/"that"/"the second
+    # one" should resolve to on the *next* handle_message() call. Owned
+    # and threaded by the caller exactly like `pending_action` above
+    # (app/ui/chat_window.py's `_conversation_state`). None means "nothing
+    # in particular to remember right now."
+    conversation_state: Optional[dict] = None
 
 
 def _emotion_and_animation(name: str) -> tuple[Emotion, CharacterState]:
@@ -120,6 +139,10 @@ def _list_tasks_reaction() -> "ChatReaction":
         text=f"You've got {len(tasks)} open {plural}:\n{_format_bullet_list([_label(t) for t in tasks])}",
         emotion=Emotion.CURIOUS,
         animation=CharacterState.THINKING,
+        # Remembered in the exact order shown, so a follow-up "the second
+        # one" means the second bullet actually displayed, not database
+        # insertion order (see app/ai/conversation_state.py).
+        conversation_state=convo.remember_candidates("task", [(t.id, t.title) for t in tasks]),
     )
 
 
@@ -139,6 +162,9 @@ def _list_reminders_reaction() -> "ChatReaction":
         text=f"You've got {len(reminders)} {plural}:\n{_format_bullet_list(shown_labels)}",
         emotion=Emotion.CURIOUS,
         animation=CharacterState.THINKING,
+        conversation_state=convo.remember_candidates(
+            "reminder", [(r.id, r.title) for r in reminders]
+        ),
     )
 
 
@@ -178,6 +204,9 @@ def _list_timers_reaction() -> "ChatReaction":
         text=f"You've got {len(timers)} {plural} running:\n{_format_bullet_list([_label(t) for t in timers])}",
         emotion=Emotion.CURIOUS,
         animation=CharacterState.THINKING,
+        conversation_state=convo.remember_candidates(
+            "timer", [(t.id, t.label) for t in timers]
+        ),
     )
 
 
@@ -200,7 +229,7 @@ _ENTITY_LABEL_ATTR = {"tasks": "title", "reminders": "title", "timers": "label"}
 _ENTITY_NOUN = {"tasks": "task", "reminders": "reminder", "timers": "timer"}
 
 
-def _query_done_reaction(tool_args: dict) -> "ChatReaction":
+def _query_done_reaction(tool_args: dict, _state: Optional[dict] = None) -> "ChatReaction":
     text = tool_args.get("query", "")
     task_manager.ensure_ready()
     reminder_manager.ensure_ready()
@@ -300,7 +329,7 @@ def _fuzzy_find(query: str, items: list, title_attr: str = "title"):
     return top[0]
 
 
-def _complete_task_reaction(tool_args: dict) -> "ChatReaction":
+def _complete_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     task_manager.ensure_ready()
     open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
     if not open_tasks:
@@ -318,6 +347,12 @@ def _complete_task_reaction(tool_args: dict) -> "ChatReaction":
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+    # No title-word overlap at all (e.g. "mark it as done") - try
+    # resolving "it"/"that"/"the second one" against what was last
+    # created/listed/discussed before falling back to the single-open-item
+    # heuristic below (security review I1/I3).
+    if match is None:
+        match = convo.resolve(query, state, open_tasks)
     if match is None and not query and len(open_tasks) == 1:
         match = open_tasks[0]
     if match is None:
@@ -333,10 +368,11 @@ def _complete_task_reaction(tool_args: dict) -> "ChatReaction":
         emotion=Emotion.HAPPY,
         animation=CharacterState.HAPPY,
         sound="chirp",
+        conversation_state=convo.remember_entity("task", match.id, match.title),
     )
 
 
-def _cancel_task_reaction(tool_args: dict) -> "ChatReaction":
+def _cancel_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     task_manager.ensure_ready()
     open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
     if not open_tasks:
@@ -354,6 +390,8 @@ def _cancel_task_reaction(tool_args: dict) -> "ChatReaction":
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+    if match is None:
+        match = convo.resolve(query, state, open_tasks)
     if match is None and not query and len(open_tasks) == 1:
         match = open_tasks[0]
     if match is None:
@@ -368,10 +406,11 @@ def _cancel_task_reaction(tool_args: dict) -> "ChatReaction":
         text=f'Okay, cancelled "{match.title}".',
         emotion=Emotion.NEUTRAL,
         animation=CharacterState.IDLE,
+        conversation_state=convo.remember_entity("task", match.id, match.title),
     )
 
 
-def _complete_reminder_reaction(tool_args: dict) -> "ChatReaction":
+def _complete_reminder_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     reminder_manager.ensure_ready()
     pending = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
     if not pending:
@@ -389,6 +428,8 @@ def _complete_reminder_reaction(tool_args: dict) -> "ChatReaction":
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+    if match is None:
+        match = convo.resolve(query, state, pending)
     if match is None and not query and len(pending) == 1:
         match = pending[0]
     if match is None:
@@ -404,10 +445,11 @@ def _complete_reminder_reaction(tool_args: dict) -> "ChatReaction":
         emotion=Emotion.HAPPY,
         animation=CharacterState.HAPPY,
         sound="chirp",
+        conversation_state=convo.remember_entity("reminder", match.id, match.title),
     )
 
 
-def _cancel_reminder_reaction(tool_args: dict) -> "ChatReaction":
+def _cancel_reminder_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     reminder_manager.ensure_ready()
     pending = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
     if not pending:
@@ -425,6 +467,8 @@ def _cancel_reminder_reaction(tool_args: dict) -> "ChatReaction":
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+    if match is None:
+        match = convo.resolve(query, state, pending)
     if match is None and not query and len(pending) == 1:
         match = pending[0]
     if match is None:
@@ -439,10 +483,11 @@ def _cancel_reminder_reaction(tool_args: dict) -> "ChatReaction":
         text=f'Okay, cancelled "{match.title}".',
         emotion=Emotion.NEUTRAL,
         animation=CharacterState.IDLE,
+        conversation_state=convo.remember_entity("reminder", match.id, match.title),
     )
 
 
-def _cancel_timer_reaction(tool_args: dict) -> "ChatReaction":
+def _cancel_timer_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     timer_manager.ensure_ready()
     active = timer_manager.list_active_timers()
     if not active:
@@ -460,6 +505,8 @@ def _cancel_timer_reaction(tool_args: dict) -> "ChatReaction":
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+    if match is None:
+        match = convo.resolve(query, state, active)
     if match is None and not query and len(active) == 1:
         match = active[0]
     if match is None:
@@ -474,6 +521,7 @@ def _cancel_timer_reaction(tool_args: dict) -> "ChatReaction":
         text=f'Okay, stopped "{match.label}".',
         emotion=Emotion.NEUTRAL,
         animation=CharacterState.IDLE,
+        conversation_state=convo.remember_entity("timer", match.id, match.label),
     )
 
 
@@ -677,7 +725,7 @@ def _calendar_delete_proposal(tool_args: dict) -> "ChatReaction":
 # *propose* a write instead of reading data - each of these returns a
 # ChatReaction carrying a fresh `pending_action` for the confirmation
 # flow above, rather than executing anything immediately.
-def _check_on_reaction(tool_args: dict) -> "ChatReaction":
+def _check_on_reaction(tool_args: dict, _state: Optional[dict] = None) -> "ChatReaction":
     """Handles "check on X" / "did you remind me about X" / "status of X" -
     bug report: this phrasing fell through to the open-ended LLM, which has
     no actual access to the task/reminder database and would just
@@ -755,6 +803,7 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
             text=f'Yep - "{reminder_match.title}" is set for {reminder_match.due_at:%I:%M %p}.',
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
+            conversation_state=convo.remember_entity("reminder", reminder_match.id, reminder_match.title),
         )
     if task_match is not None:
         due_note = (
@@ -764,6 +813,7 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
             text=f'Yep - "{task_match.title}" is still open on your task list{due_note}.',
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
+            conversation_state=convo.remember_entity("task", task_match.id, task_match.title),
         )
     return ChatReaction(
         text=f"I don't have anything like \"{query}\" saved as a task or reminder.",
@@ -772,7 +822,7 @@ def _check_on_reaction(tool_args: dict) -> "ChatReaction":
     )
 
 
-def _complete_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
+def _complete_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     """Handles "mark it as done" / "that's done" / "I finished it" - i.e.
     the same completion request as complete_task/complete_reminder, but
     phrased without the literal word "task"/"reminder" so TASK_DONE_TRIGGER/
@@ -780,7 +830,9 @@ def _complete_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
     the open-ended LLM, which would say something like "Okay, I'll take
     care of it" without actually marking anything done anywhere - another
     hallucination). Resolves "it" against whatever's actually open across
-    both stores; only auto-completes when that's unambiguous."""
+    both stores; only auto-completes when that's unambiguous OR when
+    `state` (app/ai/conversation_state.py) points at one specific item
+    that's still genuinely open (security review I1/I3)."""
     task_manager.ensure_ready()
     reminder_manager.ensure_ready()
     open_tasks = task_manager.list_tasks(status=task_manager.TaskStatus.OPEN)
@@ -796,14 +848,18 @@ def _complete_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
             animation=CharacterState.CONFUSED,
         )
     if len(combined) > 1:
-        shown = "; ".join(f"{kind}: {item.title}" for kind, item in combined[:5])
-        return ChatReaction(
-            text=f"Which one do you mean? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+        resolved = convo.resolve_typed(tool_args.get("query", "it"), state, combined)
+        if resolved is None:
+            shown = "; ".join(f"{kind}: {item.title}" for kind, item in combined[:5])
+            return ChatReaction(
+                text=f"Which one do you mean? {shown}.",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        kind, item = resolved
+    else:
+        kind, item = combined[0]
 
-    kind, item = combined[0]
     if kind == "task":
         task_manager.complete_task(item.id)
     else:
@@ -813,17 +869,19 @@ def _complete_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
         emotion=Emotion.HAPPY,
         animation=CharacterState.HAPPY,
         sound="chirp",
+        conversation_state=convo.remember_entity(kind, item.id, item.title),
     )
 
 
-def _cancel_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
+def _cancel_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
     """Handles "cancel it" / "delete it" / "scratch that" - the
     cancellation counterpart to _complete_ambiguous_reaction above (see
     AMBIGUOUS_CANCEL_TRIGGER in app/ai/intent.py for the full bug report).
     Resolves "it" against whatever's actually open/pending/running across
     all three stores (tasks, reminders, AND running timers - unlike
     completion, an active timer is a perfectly normal thing to want to
-    cancel); only auto-cancels when that's unambiguous, and never
+    cancel); only auto-cancels when that's unambiguous OR when `state`
+    points at one specific item that's still actually there, and never
     silently claims success without a real write."""
     task_manager.ensure_ready()
     reminder_manager.ensure_ready()
@@ -845,19 +903,24 @@ def _cancel_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+
+    def _label(kind: str, item) -> str:
+        title = item.label if kind == "timer" else item.title
+        return f"{kind}: {title}"
+
     if len(combined) > 1:
-        def _label(kind: str, item) -> str:
-            title = item.label if kind == "timer" else item.title
-            return f"{kind}: {title}"
+        resolved = convo.resolve_typed(tool_args.get("query", "it"), state, combined)
+        if resolved is None:
+            shown = "; ".join(_label(kind, item) for kind, item in combined[:5])
+            return ChatReaction(
+                text=f"Which one do you mean? {shown}.",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        kind, item = resolved
+    else:
+        kind, item = combined[0]
 
-        shown = "; ".join(_label(kind, item) for kind, item in combined[:5])
-        return ChatReaction(
-            text=f"Which one do you mean? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
-
-    kind, item = combined[0]
     if kind == "task":
         task_manager.cancel_task(item.id)
         label = item.title
@@ -871,6 +934,72 @@ def _cancel_ambiguous_reaction(_tool_args: dict) -> "ChatReaction":
         text=f'Okay, cancelled "{label}".',
         emotion=Emotion.NEUTRAL,
         animation=CharacterState.IDLE,
+        conversation_state=convo.remember_entity(kind, item.id, label),
+    )
+
+
+def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
+    """Handles "make it 8" / "change it to 8:30pm" - the review's
+    canonical conversational-reference example ("remind me to call mom
+    at 7" -> "make it 8"). "it"/"that" here is resolved deterministically
+    against `state` (app/ai/conversation_state.py's remembered last
+    entity), the same as the ambiguous complete/cancel handlers above -
+    never guessed at, and never applied to a reminder/task that's since
+    been completed/cancelled through some other path."""
+    due_iso = tool_args.get("due_iso")
+    try:
+        due = datetime.fromisoformat(due_iso) if due_iso else None
+    except ValueError:
+        due = None
+    if due is None:
+        return ChatReaction(
+            text='Change it to when? Try a time like "8pm".',
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    entity_type = state.get("entity_type") if state else None
+    entity_id = state.get("entity_id") if state else None
+    if entity_type not in ("reminder", "task") or entity_id is None:
+        return ChatReaction(
+            text="Change what, exactly? I don't have a specific reminder or task in mind right now.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    if entity_type == "reminder":
+        reminder_manager.ensure_ready()
+        reminder = reminder_manager.get_reminder(entity_id)
+        if reminder is None:
+            return ChatReaction(
+                text="That reminder isn't around anymore - I can't reschedule it.",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        reminder_manager.update_reminder(entity_id, due_at=due)
+        return ChatReaction(
+            text=f'Got it - "{reminder.title}" is now set for {due:%I:%M %p}.',
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+            conversation_state=convo.remember_entity("reminder", entity_id, reminder.title),
+        )
+
+    task_manager.ensure_ready()
+    task = task_manager.get_task(entity_id)
+    if task is None:
+        return ChatReaction(
+            text="That task isn't around anymore - I can't reschedule it.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    task_manager.set_due_date(entity_id, due)
+    return ChatReaction(
+        text=f'Got it - "{task.title}" is now due {due:%m-%d %I:%M %p}.',
+        emotion=Emotion.HAPPY,
+        animation=CharacterState.HAPPY,
+        sound="chirp",
+        conversation_state=convo.remember_entity("task", entity_id, task.title),
     )
 
 
@@ -968,6 +1097,7 @@ _ACTION_HANDLERS = {
     "complete_ambiguous": _complete_ambiguous_reaction,
     "cancel_ambiguous": _cancel_ambiguous_reaction,
     "query_done": _query_done_reaction,
+    "reschedule_reference": _reschedule_reference_reaction,
 }
 
 
@@ -1007,6 +1137,7 @@ def handle_message(
     text: str,
     history: Optional[list[tuple[str, str]]] = None,
     pending_action: Optional[dict] = None,
+    conversation_state: Optional[dict] = None,
 ) -> ChatReaction:
     """Process one chat message end-to-end and return how Mochi should react.
 
@@ -1027,6 +1158,17 @@ def handle_message(
     it immediately (see the block below) rather than carrying it forward,
     so a stale proposal can never be confirmed by an unrelated later
     "yes".
+
+    `conversation_state` (security review I1/I3, app/ai/conversation_state.py)
+    is Mochi's deterministic memory of the single most recent task/
+    reminder/timer that was created, resolved, or listed - what "it"/
+    "that"/"the second one" should resolve to on THIS call. Same
+    ownership convention as `pending_action`: the caller reads back
+    whatever the previous ChatReaction.conversation_state was and passes
+    it straight in. Unlike `pending_action`, this is harmless to carry
+    forward across unrelated turns (it's just a hint for reference
+    resolution, never itself a write) - it's only ever replaced when a
+    handler below has something fresher to remember.
     """
     if pending_action is not None:
         confirmation = _classify_confirmation(text)
@@ -1142,11 +1284,18 @@ def handle_message(
         # this message was a literal yes/no, which already returned) -
         # nothing further to carry forward or log.
         reaction.pending_action = None
+        # Carry the old conversation_state forward only if this handler
+        # didn't set a fresher one itself (list handlers always do, on
+        # success - see _list_tasks_reaction etc.); a non-fatal DB-read
+        # failure above falls back to the caller's existing memory rather
+        # than wiping it.
+        if reaction.conversation_state is None:
+            reaction.conversation_state = conversation_state
         return reaction
 
     if intent.name in _ACTION_HANDLERS:
         try:
-            reaction = _ACTION_HANDLERS[intent.name](intent.tool_args)
+            reaction = _ACTION_HANDLERS[intent.name](intent.tool_args, conversation_state)
         except MochiError as exc:
             logger.info("Action '%s' rejected: %s", intent.name, exc)
             reaction = ChatReaction(
@@ -1165,6 +1314,8 @@ def handle_message(
         # above the docstring's `pending_action` paragraph and the
         # expiration block near the top of this function.
         reaction.pending_action = None
+        if reaction.conversation_state is None:
+            reaction.conversation_state = conversation_state
         return reaction
 
     if intent.name in _PROPOSAL_HANDLERS:
@@ -1173,7 +1324,13 @@ def handle_message(
             # on the returned reaction - this deliberately replaces
             # whatever was passed in, since starting a new write request
             # supersedes an old unconfirmed one rather than stacking them.
-            return _PROPOSAL_HANDLERS[intent.name](intent.tool_args)
+            # A calendar proposal doesn't touch tasks/reminders/timers, so
+            # the old conversation_state (if any) is simply carried
+            # forward unchanged.
+            reaction = _PROPOSAL_HANDLERS[intent.name](intent.tool_args)
+            if reaction.conversation_state is None:
+                reaction.conversation_state = conversation_state
+            return reaction
         except Exception:  # noqa: BLE001 - never let a bad proposal crash chat
             logger.exception("Failed to build proposal for intent '%s'", intent.name)
             return ChatReaction(
@@ -1185,6 +1342,7 @@ def handle_message(
                 # explicit rather than omitted so this doesn't look like
                 # an oversight to a future reader.
                 pending_action=pending_action,
+                conversation_state=conversation_state,
             )
 
     try:
@@ -1254,7 +1412,10 @@ def handle_message(
                 if ensure_ready is not None:
                     ensure_ready()
                 result = tool_fn(**intent.tool_args)
-                logger.info("Tool '%s' succeeded: %s", intent.tool, result)
+                # Log success/failure only, not the result dict - it can
+                # contain a private task/reminder/appointment title
+                # (security review S1's same reasoning applied here too).
+                logger.info("Tool '%s' succeeded", intent.tool)
             except MochiError as exc:
                 logger.info("Tool '%s' rejected: %s", intent.tool, exc)
                 return ChatReaction(
@@ -1262,6 +1423,7 @@ def handle_message(
                     emotion=Emotion.CONFUSED,
                     animation=CharacterState.CONFUSED,
                     pending_action=pending_action,
+                    conversation_state=conversation_state,
                 )
             except Exception:  # noqa: BLE001 - never let a bad tool crash chat
                 logger.exception("Unexpected error running tool '%s'", intent.tool)
@@ -1270,7 +1432,15 @@ def handle_message(
                     emotion=Emotion.CONFUSED,
                     animation=CharacterState.CONFUSED,
                     pending_action=pending_action,
+                    conversation_state=conversation_state,
                 )
+            # Remember what was just created, so an immediate follow-up
+            # ("actually delete it" / "make it 8") can resolve "it"
+            # without repeating the title (security review I1/I3).
+            new_entity_kind = _CREATE_TOOL_ENTITY_KINDS.get(intent.tool)
+            if new_entity_kind is not None and isinstance(result, dict) and "id" in result:
+                title = result.get("title") or result.get("label") or ""
+                conversation_state = convo.remember_entity(new_entity_kind, result["id"], title)
 
     return ChatReaction(
         text=response,
@@ -1278,4 +1448,5 @@ def handle_message(
         animation=animation,
         sound=sound,
         pending_action=pending_action,
+        conversation_state=conversation_state,
     )

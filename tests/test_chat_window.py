@@ -29,7 +29,7 @@ def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
             text=f"echo: {text}", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY
         ),
     )
@@ -48,7 +48,7 @@ def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
 def test_chat_worker_falls_back_gracefully_on_exception(qapp, monkeypatch):
     from app.ui.chat_window import ChatWorker
 
-    def _boom(_text, history=None, pending_action=None):
+    def _boom(_text, history=None, pending_action=None, conversation_state=None):
         raise RuntimeError("simulated failure")
 
     monkeypatch.setattr("app.ui.chat_window.handle_message", _boom)
@@ -67,7 +67,7 @@ def test_chat_worker_falls_back_gracefully_on_exception(qapp, monkeypatch):
 def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text, history=None, pending_action=None):
+    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None):
         time.sleep(0.3)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -108,7 +108,7 @@ def test_window_is_reshown_if_hidden_while_reply_pending(qapp, monkeypatch):
     no-ops on an already-hidden window)."""
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text, history=None, pending_action=None):
+    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None):
         time.sleep(0.2)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -139,7 +139,7 @@ def test_typing_indicator_shows_while_waiting_and_clears_on_reply(qapp, monkeypa
     silently frozen or closed."""
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text, history=None, pending_action=None):
+    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None):
         time.sleep(0.3)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -203,7 +203,7 @@ def test_session_history_accumulates_and_is_passed_to_handle_message(qapp, monke
 
     seen_histories = []
 
-    def _capture(text, history=None, pending_action=None):
+    def _capture(text, history=None, pending_action=None, conversation_state=None):
         seen_histories.append(list(history or []))
         return ChatReaction(text=f"reply to {text}", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -236,7 +236,7 @@ def test_session_history_is_cleared_on_close(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
             text="ok", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY
         ),
     )
@@ -263,7 +263,7 @@ def test_pending_action_is_carried_across_messages_and_passed_through(qapp, monk
 
     seen_pending_actions = []
 
-    def _propose_then_track(text, history=None, pending_action=None):
+    def _propose_then_track(text, history=None, pending_action=None, conversation_state=None):
         seen_pending_actions.append(pending_action)
         if pending_action is None:
             return ChatReaction(
@@ -299,7 +299,7 @@ def test_pending_action_is_cleared_on_close(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
             text="confirm?",
             emotion=Emotion.CURIOUS,
             animation=CharacterState.THINKING,
@@ -318,3 +318,75 @@ def test_pending_action_is_cleared_on_close(qapp, monkeypatch):
 
     window.close()
     assert window._pending_action is None
+
+
+def test_conversation_state_is_carried_across_messages_and_passed_through(qapp, monkeypatch):
+    """Security review I1/I3 - app/ai/conversation_state.py's memory must
+    survive to the *next* handle_message() call so "actually delete it"
+    can resolve against what was just created - the window is
+    responsible for round-tripping ChatReaction.conversation_state back
+    in as handle_message's kwarg, same as it already does for
+    pending_action."""
+    from app.ui.chat_window import ChatWindow
+
+    seen_states = []
+
+    def _create_then_reference(text, history=None, pending_action=None, conversation_state=None):
+        seen_states.append(conversation_state)
+        if conversation_state is None:
+            return ChatReaction(
+                text="added!",
+                emotion=Emotion.HAPPY,
+                animation=CharacterState.HAPPY,
+                conversation_state={"entity_type": "task", "entity_id": 1, "entity_title": "Buy milk", "candidates": None},
+            )
+        return ChatReaction(text="deleted!", emotion=Emotion.NEUTRAL, animation=CharacterState.IDLE)
+
+    monkeypatch.setattr("app.ui.chat_window.handle_message", _create_then_reference)
+
+    def _send(window, text):
+        window.input_field.setText(text)
+        window._on_send_clicked()
+        deadline = time.time() + 5
+        while window._worker is not None and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+
+    window = ChatWindow()
+    _send(window, "add task buy milk")
+    assert seen_states[-1] is None
+    assert window._conversation_state == {
+        "entity_type": "task", "entity_id": 1, "entity_title": "Buy milk", "candidates": None,
+    }
+
+    _send(window, "actually delete it")
+    assert seen_states[-1] == {
+        "entity_type": "task", "entity_id": 1, "entity_title": "Buy milk", "candidates": None,
+    }
+    window.close()
+
+
+def test_conversation_state_is_cleared_on_close(qapp, monkeypatch):
+    from app.ui.chat_window import ChatWindow
+
+    monkeypatch.setattr(
+        "app.ui.chat_window.handle_message",
+        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
+            text="added!",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            conversation_state={"entity_type": "task", "entity_id": 1, "entity_title": "Buy milk", "candidates": None},
+        ),
+    )
+
+    window = ChatWindow()
+    window.input_field.setText("add task buy milk")
+    window._on_send_clicked()
+    deadline = time.time() + 5
+    while window._worker is not None and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert window._conversation_state is not None
+
+    window.close()
+    assert window._conversation_state is None
