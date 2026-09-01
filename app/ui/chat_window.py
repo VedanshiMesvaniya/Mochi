@@ -29,6 +29,12 @@ Also owns `_pending_action` (spec section 23, V4): a Google Calendar
 write chat_engine proposed but that's still awaiting a yes/no reply,
 carried across messages within this session the same way `_history` is -
 both reset to nothing when the window closes.
+
+And `_conversation_state` (security review I1/I3, app/ai/conversation_state.py):
+Mochi's deterministic memory of the single most recent task/reminder/
+timer created, resolved, or listed this session - what "it"/"that"/"the
+second one" should resolve to on the next message. Same lifetime/reset
+convention as `_pending_action` above.
 """
 
 from __future__ import annotations
@@ -167,17 +173,22 @@ class ChatWorker(QThread):
         text: str,
         history: Optional[list[tuple[str, str]]] = None,
         pending_action: Optional[dict] = None,
+        conversation_state: Optional[dict] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._text = text
         self._history = history
         self._pending_action = pending_action
+        self._conversation_state = conversation_state
 
     def run(self) -> None:  # noqa: D102 - QThread override
         try:
             reaction = handle_message(
-                self._text, history=self._history, pending_action=self._pending_action
+                self._text,
+                history=self._history,
+                pending_action=self._pending_action,
+                conversation_state=self._conversation_state,
             )
         except Exception:  # noqa: BLE001 - chat must never crash the app
             logger.exception("Chat engine failed on message: %s", self._text)
@@ -219,6 +230,12 @@ class ChatWindow(TranslucentDialog):
         # close so a stale unconfirmed proposal never lingers into a
         # future chat session.
         self._pending_action: Optional[dict] = None
+
+        # Conversational reference memory (security review I1/I3, see
+        # app/ai/conversation_state.py) - what "it"/"that"/"the second
+        # one" in the next message should resolve to. Same lifetime as
+        # _pending_action above.
+        self._conversation_state: Optional[dict] = None
 
         # Typing indicator (spec: "chat looks closed/frozen while waiting").
         # The pet's face already changes state while a reply is pending,
@@ -287,6 +304,7 @@ class ChatWindow(TranslucentDialog):
             self._worker.wait(200)
         self._history = []  # session memory ends when the window does
         self._pending_action = None  # ...and so does any unconfirmed calendar action
+        self._conversation_state = None  # ...and so does "it"/"that" reference memory
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -360,6 +378,7 @@ class ChatWindow(TranslucentDialog):
             text,
             history=list(self._history[:-1]),
             pending_action=self._pending_action,
+            conversation_state=self._conversation_state,
             parent=self,
         )
         self._worker.finished_reaction.connect(self._on_reaction_ready)
@@ -370,6 +389,7 @@ class ChatWindow(TranslucentDialog):
         self._append("Mochi", reaction.text)
         self._history.append(("mochi", reaction.text))
         self._pending_action = reaction.pending_action
+        self._conversation_state = reaction.conversation_state
         if self._on_reaction is not None:
             self._on_reaction(reaction)
 

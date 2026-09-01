@@ -46,6 +46,23 @@ def test_match_status_does_not_treat_bare_did_as_done():
     assert db_glossary.match_status("have i done my tasks") == "done"
 
 
+def test_match_entity_does_not_false_match_substrings():
+    """Regression test for the security review's I6 finding: glossary
+    matching used to check plain substring containment, so short entries
+    like "ping" (-> reminders) could false-match inside an unrelated word
+    ("shopping") that has nothing to do with reminders at all."""
+    assert db_glossary.match_entity("i'm going shopping for gifts") is None
+    assert db_glossary.match_entity("what's for lunch") is None  # no "task"/etc word
+
+
+def test_match_status_does_not_false_match_substrings():
+    """Same as above but for STATUS_SYNONYMS - "all" (-> all-statuses)
+    and "left" (-> active) are short enough to hide inside unrelated
+    words like "call"/"leftover"."""
+    assert db_glossary.match_status("did you call mom") == "active"  # default, no "left" match
+    assert db_glossary.match_status("i have leftover pizza") == "active"  # not "left"
+
+
 def test_match_status_recognizes_cancelled_synonyms():
     assert db_glossary.match_status("what got cancelled") == "cancelled"
 

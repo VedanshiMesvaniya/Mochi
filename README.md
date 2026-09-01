@@ -197,6 +197,18 @@ Also handled deterministically, no AI required: ask Mochi to
 excitement, capped at 30 numbers so a typo can't turn it into a wall of
 text.
 
+**Follow-up references ("it", "that", "the second one").** You don't have
+to repeat a title every time — right after creating (or listing) a
+reminder/task/timer, you can say "actually delete it", "mark that done",
+or "the second one" and Mochi resolves it to the actual thing you were
+just talking about, even when other tasks/reminders/timers exist too.
+You can also reschedule the same way: "remind me to call mom at 7" →
+"make it 8" adjusts the reminder you just created without retyping it.
+This is fully deterministic (a small remembered pointer to a real
+database row, not a guess) — if the thing you're referring to has since
+been completed or deleted some other way, Mochi asks instead of silently
+acting on something else. See `PROJECT_ARCHITECTURE.md` section 5c.
+
 ---
 
 ## Reminders, tasks & timers

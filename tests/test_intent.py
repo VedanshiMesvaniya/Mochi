@@ -562,3 +562,31 @@ def test_reminder_still_wins_when_it_is_said_first():
     reminder' change, just earliest-mention-wins."""
     result = detect_intent("remind me to start a timer for the oven", now=NOW)
     assert result.name == "create_reminder_needs_time"
+
+
+def test_reschedule_reference_with_bare_time():
+    """"make it 7" - the review's canonical conversational-reference
+    example ("remind me at 7" -> "make it 8"). No "at" needed, and the
+    same before-8-means-PM heuristic _parse_absolute_time already uses
+    applies here too."""
+    result = detect_intent("make it 7", now=NOW)  # NOW = 2026-08-14 15:00
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-14T19:00:00"
+
+
+def test_reschedule_reference_with_explicit_am_pm():
+    result = detect_intent("change it to 9am", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-15T09:00:00"  # 9am already passed today
+
+
+def test_reschedule_reference_with_relative_minutes():
+    result = detect_intent("move that in 20 minutes", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-14T15:20:00"
+
+
+def test_reschedule_reference_without_a_time_asks_for_one():
+    result = detect_intent("make it better", now=NOW)
+    assert result.name == "reschedule_reference_needs_time"
+    assert result.response

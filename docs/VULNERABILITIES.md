@@ -121,3 +121,170 @@ falls back to the documented default (`google_credentials.json` /
   keep following spec section 27/15 (only listen when explicitly
   triggered, discard raw audio after transcription) — worth a follow-up
   pass at that point rather than assuming this document's scope covers it.
+
+---
+
+## Follow-up review — chat/AI intelligence & privacy (`app/ai/`)
+
+A second, separate review covered `app/ai/chat_engine.py` and
+`app/ai/intent.py` specifically — correctness bugs and privacy leaks in
+the deterministic chat/tool layer, rather than the storage/credential
+findings above. Same permanent-record policy applies.
+
+## Finding 4 — Wrong item silently acted on when two titles tie
+
+**File:** `app/ai/chat_engine.py`, `_fuzzy_find()`
+
+**Issue:** When two open tasks/reminders/timers scored equally against a
+query (e.g. "Call Mom" and "Call Dad" both matching "call" in "mark my
+task call as done"), the matcher silently kept whichever was encountered
+first, rather than recognizing the tie at all.
+
+**Fix:** `_fuzzy_find()` now returns an `Ambiguous` sentinel on a tie;
+every call site (complete/cancel task, complete/cancel reminder, cancel
+timer, plus the combined task/reminder lookup) asks the user which one
+instead of guessing.
+
+**Status:** Fixed. See `tests/test_chat_engine.py`'s
+`test_mark_task_done_with_tied_match_asks_instead_of_picking_first` and
+`test_cancel_task_with_tied_match_asks_instead_of_picking_first`.
+
+---
+
+## Finding 5 — "Tomorrow at X" landed on the wrong day
+
+**File:** `app/ai/intent.py`, `_parse_absolute_time()`
+
+**Issue:** The date was rolled forward once whenever the clock time had
+already passed today, and separately rolled forward again whenever the
+text contained "tomorrow" — so "tomorrow at 5pm" typed after 5pm today
+landed two days out instead of one.
+
+**Fix:** The target *date* is resolved first (today, or the next
+calendar day if "tomorrow" is explicit), then the clock time is applied
+to it; the "already passed" rollover only happens when no explicit date
+word was given.
+
+**Status:** Fixed. See `tests/test_intent.py`'s
+`test_reminder_tomorrow_at_time_already_passed_today_lands_on_tomorrow`.
+
+---
+
+## Finding 6 — Stale calendar confirmation could survive unrelated turns
+
+**File:** `app/ai/chat_engine.py`, `handle_message()`
+
+**Issue:** A pending "add to calendar?" proposal used to be carried
+forward through any message that wasn't a literal yes/no — including
+small talk and clarification-shaped replies — so a much later, unrelated
+bare "yes" could still confirm a proposal the user had long since moved
+on from.
+
+**Fix:** The proposal now expires the moment a non-yes/no message is
+seen, in a single place right after the confirmation check, so every
+downstream code path is correct by construction rather than needing to
+remember to expire it individually (an earlier, narrower fix that only
+expired it in some branches regressed for exactly this reason — see
+Finding 7).
+
+**Status:** Fixed. See `tests/test_chat_engine.py`'s
+`test_small_talk_reply_expires_pending_action` and
+`test_semantic_clarify_reply_expires_pending_action`.
+
+---
+
+## Finding 7 — Private event title logged in plaintext
+
+**File:** `app/ai/chat_engine.py`
+
+**Issue:** Several `logger.info(...)` calls interpolated the raw chat
+message, the full tool-args dict, or the full `pending_action` dict
+(`%r`) directly into the log file — all of which can contain a private
+reminder/task/appointment title. `app/core/logger.py`'s own stated policy
+is that user content shouldn't be logged.
+
+**Fix:** Every log call in the chat/intent path now logs only the intent
+name, tool name, or entity *kind* — never the message text, tool args, or
+full entity dict.
+
+**Status:** Fixed. See `tests/test_chat_engine.py`'s
+`test_expiring_pending_action_never_logs_the_private_title`.
+
+---
+
+## Finding 8 — `data/` directory not permission-hardened like `config/`
+
+**File:** `app/core/config.py`, `Settings.ensure_directories()`
+
+**Issue:** `config/` (Google OAuth secrets) was restricted to the current
+user (see Finding 2), but `data/` — which holds `mochi.db` and
+`data/logs/mochi.log`, both containing personal task/reminder/appointment
+content — was not given the same treatment.
+
+**Fix:** Added a reusable `harden_directory()` helper, now applied to
+both `data_dir` and `config_dir` (and the log directory specifically, in
+`app/core/logger.py`).
+
+**Status:** Fixed. See `tests/test_config.py`.
+
+---
+
+## Finding 9 — "did" treated as a bare synonym for "done"
+
+**File:** `app/ai/db_glossary.py`, `STATUS_SYNONYMS`
+
+**Issue:** A plain grammatical "did" (as in "what did I have for tasks?")
+was mapped straight to the "done" status bucket, so an ordinary open-task
+question was misread as a finished-tasks query.
+
+**Fix:** Removed the bare `"did"` entry; the more specific phrase-level
+entries ("have i done", "have i completed", ...) still work correctly.
+
+**Status:** Fixed. See `tests/test_db_glossary.py`'s
+`test_match_status_does_not_treat_bare_did_as_done`.
+
+---
+
+## Finding 10 — Glossary matching used substring containment, not word boundaries
+
+**File:** `app/ai/db_glossary.py`, `match_entity()` / `match_status()`
+
+**Issue:** Both functions checked `key in lowered_text` — plain substring
+containment — so a short glossary entry could false-match inside an
+unrelated word entirely: `"ping"` (→ reminders) inside `"shopping"`,
+`"left"` (→ active) inside `"leftover"`, `"all"` (→ all-statuses) inside
+`"call"`.
+
+**Fix:** Both functions now match against precompiled `\b`-word-boundary
+regexes instead of plain substring checks.
+
+**Status:** Fixed. See `tests/test_db_glossary.py`'s
+`test_match_entity_does_not_false_match_substrings` and
+`test_match_status_does_not_false_match_substrings`.
+
+---
+
+## Finding 11 — No conversational memory: "it"/"that" couldn't be resolved
+
+**File:** `app/ai/chat_engine.py` (new: `app/ai/conversation_state.py`)
+
+**Issue:** Referring back to something just created or discussed ("add
+task buy milk" → "actually delete it") only worked when there was
+exactly one open item in the entire app — with two or more open
+tasks/reminders/timers, Mochi always asked "which one?", even
+immediately after creating the specific thing being referred to.
+
+**Fix:** New `app/ai/conversation_state.py` module — a small, plain dict
+threaded between `handle_message()` calls (same ownership convention as
+`pending_action`) remembering the single most recent entity
+created/resolved/listed. Complete/cancel/check-on handlers resolve bare
+pronoun ("it"/"that") and ordinal ("the second one") references against
+it *after* the normal fuzzy title search finds nothing, and only ever act
+when the referenced entity is still real; a stale reference fails closed
+and asks, exactly as if this feature didn't exist. Also added a new
+"reschedule by reference" capability ("make it 8" / "change it to 9am").
+See `PROJECT_ARCHITECTURE.md` section 5c for the full design.
+
+**Status:** Fixed. See `tests/test_conversation_state.py` and
+`tests/test_conversation_state_integration.py`.
+
