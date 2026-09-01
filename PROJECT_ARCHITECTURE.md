@@ -573,7 +573,105 @@ and the raw extracted `content` is still stored either way.
 
 ---
 
-## 6. Reminders, tasks & timers
+## 5c. Conversational reference resolution (`app/ai/conversation_state.py`)
+
+Problem this fixes (security review "I1/I3" - the biggest remaining
+intelligence gap at the time): Mochi had no memory of "the thing we were
+just talking about". Creating a task and then saying "actually delete it"
+fell back to the same fuzzy title search a completely fresh command uses,
+which only resolves cleanly when there's exactly one open item in the
+whole app - with two or more open tasks/reminders/timers around, Mochi
+always asked "which one?", even immediately after creating the very thing
+being referred to.
+
+```text
+handle_message(text, conversation_state=...)
+        │
+        ▼
+complete/cancel/reschedule handler runs its normal fuzzy title search first
+        │
+        ├─ real title match (or a tie) ──► same as before this feature existed
+        │
+        └─ no title match at all ──► conversation_state.resolve(query, state, candidates)
+                                            │
+                                path 1: query is a bare reference
+                                ("it"/"that"/"this one"/...) ──► look up
+                                state's remembered entity_id among the
+                                REAL, currently-valid candidates
+                                            │
+                                path 2: query is an ordinal ("the second
+                                one") ──► look up state's remembered
+                                candidate list (from the most recent
+                                list_* query) at that index, then confirm
+                                that id is still among the real candidates
+                                            │
+                                            ▼
+                                found in both the remembered state AND the
+                                real candidate list ──► act on it
+                                            │
+                                not found (stale - already completed/
+                                deleted through some other path since it
+                                was remembered) ──► fall through to "which
+                                one?" exactly as if conversation_state
+                                didn't exist - NEVER silently act on some
+                                other item instead
+```
+
+Deliberately **not** the model doing entity resolution - `conversation_state`
+is a small, plain dict (`{"entity_type", "entity_id", "entity_title",
+"candidates"}`) threaded between `handle_message()` calls by the caller,
+the exact same ownership convention `pending_action` already uses (see
+section 5's `app/ui/chat_window.py` - `_conversation_state` lives and
+resets alongside `_pending_action`). The model is still only ever asked
+*which intent* a message maps to; this module is what lets the
+deterministic layer know *which entity*, without the model ever touching
+a real database id.
+
+**Where it's written (remembered):**
+- Every successful `create_reminder` / `create_task` / `start_timer` call.
+- Every unambiguous complete/cancel/check_on resolution (including one
+  resolved via this same module - so completing something by reference,
+  then referring to it again, keeps working).
+- Every `list_tasks` / `list_reminders` / `list_timers` query, as an
+  ordered candidate list (`remember_candidates`) - this is what "the
+  second one" resolves against, in the exact order actually shown.
+
+**Where it's read:** `_complete_task_reaction`, `_cancel_task_reaction`,
+`_complete_reminder_reaction`, `_cancel_reminder_reaction`,
+`_cancel_timer_reaction`, `_complete_ambiguous_reaction`,
+`_cancel_ambiguous_reaction`, and the new `_reschedule_reference_reaction`
+(below) - always as a fallback *after* the normal fuzzy title search
+finds nothing, never overriding a real title match.
+
+**Rescheduling by reference** ("make it 8" / "change it to 9am" / "move
+that in 20 minutes") is a new capability this made possible - previously
+there was no way to adjust a reminder/task's time without repeating its
+title verbatim in a brand-new `remind me...` command. `RESCHEDULE_TRIGGER`
+in `app/ai/intent.py` recognizes the phrasing and reuses the exact same
+`_parse_absolute_time` / `_parse_bare_time` / `_parse_relative_minutes`
+deterministic time parsing the creation triggers already use;
+`_reschedule_reference_reaction` in `chat_engine.py` resolves "it"/"that"
+against `conversation_state` and calls `update_reminder`/`set_due_date` -
+never guesses at a target, and refuses (asking instead) if
+`conversation_state` has nothing to point at, or if the referenced entity
+is no longer real.
+
+**Why this is safe to carry forward across unrelated turns, unlike
+`pending_action`:** `conversation_state` is purely referential memory - it
+never itself performs a write. The actual mutation always goes through
+the same deterministic, schema-validated manager functions every other
+action does, and only ever succeeds when the remembered id still points
+at something real *right now*. So unlike a stale calendar confirmation
+(which is itself an unconfirmed write waiting to fire), an unrelated
+message in between doesn't need to expire this - at worst a stale
+reference just fails closed and asks, exactly like it always did before.
+
+See `tests/test_conversation_state.py` (the resolution module in
+isolation) and `tests/test_conversation_state_integration.py`
+(end-to-end: create → reference by pronoun/ordinal → correct item
+acted on, plus the stale-reference-fails-closed case).
+
+
 
 All three follow the same shape: a `manager.py` doing CRUD against
 SQLite, an optional `scheduler.py` (reminders/timers only — tasks have no

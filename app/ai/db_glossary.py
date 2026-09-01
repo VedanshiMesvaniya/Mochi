@@ -30,6 +30,7 @@ to touch the database directly.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Optional
@@ -83,8 +84,21 @@ STATUS_SYNONYMS: dict[str, str] = {
 # shorter "have" would ever get a chance to (it doesn't appear alone, but
 # this ordering rule is what keeps multi-word entries reliable in
 # general - see match_status()/match_entity() below).
-_ENTITY_KEYS = sorted(ENTITY_SYNONYMS, key=len, reverse=True)
-_STATUS_KEYS = sorted(STATUS_SYNONYMS, key=len, reverse=True)
+#
+# Matched with \b word-boundary regexes rather than plain substring
+# containment (security review I6): "ping" -> reminders would otherwise
+# false-match inside "shopping", "all" -> all-statuses inside "call" or
+# "wall", "left" -> active inside "leftover", etc. - any glossary entry
+# could silently misfire as a substring of a completely unrelated word.
+# Compiled once at import time since these run on every chat message.
+_ENTITY_PATTERNS = [
+    (re.compile(r"\b" + re.escape(key) + r"\b"), ENTITY_SYNONYMS[key])
+    for key in sorted(ENTITY_SYNONYMS, key=len, reverse=True)
+]
+_STATUS_PATTERNS = [
+    (re.compile(r"\b" + re.escape(key) + r"\b"), STATUS_SYNONYMS[key])
+    for key in sorted(STATUS_SYNONYMS, key=len, reverse=True)
+]
 
 # Tables this module is willing to describe/query - kept in one place so
 # a future table doesn't silently become queryable without a deliberate
@@ -100,20 +114,21 @@ class QueryPlan:
 
 def match_entity(lowered_text: str) -> Optional[str]:
     """First entity (tasks/reminders/timers) whose synonym appears in the
-    text, or None if none of the glossary's words are present."""
-    for key in _ENTITY_KEYS:
-        if key in lowered_text:
-            return ENTITY_SYNONYMS[key]
+    text as a whole word/phrase, or None if none of the glossary's words
+    are present."""
+    for pattern, value in _ENTITY_PATTERNS:
+        if pattern.search(lowered_text):
+            return value
     return None
 
 
 def match_status(lowered_text: str) -> str:
-    """First status bucket whose synonym appears in the text. Defaults to
-    "active" (the most common thing "what's my ___" implicitly means) if
-    nothing in the glossary matches."""
-    for key in _STATUS_KEYS:
-        if key in lowered_text:
-            return STATUS_SYNONYMS[key]
+    """First status bucket whose synonym appears in the text as a whole
+    word/phrase. Defaults to "active" (the most common thing "what's my
+    ___" implicitly means) if nothing in the glossary matches."""
+    for pattern, value in _STATUS_PATTERNS:
+        if pattern.search(lowered_text):
+            return value
     return "active"
 
 
