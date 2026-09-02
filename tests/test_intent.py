@@ -114,6 +114,36 @@ def test_timer_with_duration():
     assert result.tool_args["duration_seconds"] == 600
 
 
+def test_timer_preserves_stated_purpose():
+    """Conversational-issues report P0 ("Preserve Timer Purpose/Label
+    Information"): the duration used to be parsed correctly but any
+    purpose named alongside it was silently discarded, always landing on
+    the generic "Timer" label."""
+    result = detect_intent(
+        "can you set 10 second timer to remind me to pick my columns", now=NOW
+    )
+    assert result.tool == "start_timer"
+    assert result.tool_args["duration_seconds"] == 10
+    assert result.tool_args["label"] == "Pick my columns"
+
+
+def test_timer_without_stated_purpose_keeps_generic_label():
+    """No invented purpose is added when none was provided - must still
+    fall back to the plain "Timer" label, not e.g. a stray leftover word
+    from the duration phrase."""
+    result = detect_intent("set a timer for 10 minutes", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["label"] == "Timer"
+
+
+def test_timer_purpose_survives_plural_duration_unit():
+    """Regression guard: stripping "10 minutes" out of the sentence to
+    isolate the purpose must not leave a stray "s" behind."""
+    result = detect_intent("set a timer for 10 minutes to check the oven", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["label"] == "Check the oven"
+
+
 def test_task_creation():
     result = detect_intent("remember that i need to buy milk", now=NOW)
     assert result.tool == "create_task"

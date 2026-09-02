@@ -671,6 +671,91 @@ isolation) and `tests/test_conversation_state_integration.py`
 (end-to-end: create → reference by pronoun/ordinal → correct item
 acted on, plus the stale-reference-fails-closed case).
 
+## 5d. Multi-target conversational selection
+
+Problem this fixes (conversational-issues report P0 - "Add Multi-Target
+Conversational Entity Resolution"): section 5c above only ever resolved a
+reference to ONE entity. A real request like "three of them check as
+done" or "mark all of them as done" after a `list_tasks` query had no
+path to act on more than one item at once.
+
+`conversation_state.py` gains `parse_selection()`, `resolve_selection()`,
+and `resolve_selection_typed()`, sitting alongside `resolve()`/
+`resolve_typed()` from 5c:
+
+```text
+"three of them" / "all of them" / "both" / "the first three" /
+"the last two"
+        │
+        ▼
+parse_selection(query) - which shape is this?
+        │
+        ├─ not a multi-target reference at all ──► None (falls through
+        │  to the existing singular resolve()/resolve_typed() path,
+        │  completely unaffected - "the first one" still resolves to
+        │  exactly one entity, never a one-item selection)
+        │
+        └─ recognized shape ──► resolve_selection()/resolve_selection_typed()
+              applies it against state's remembered candidate list
+              (from the most recent list_* query), restricted to
+              candidates that are STILL real right now
+                    │
+                    ├─ quantity/range fits the remembered list AND at
+                    │  least one remembered candidate is still real
+                    │  ──► the matched real entities, in remembered order
+                    │
+                    └─ doesn't fit (asked for more than were ever shown,
+                       or "both" against anything other than exactly two
+                       remembered candidates) ──► None, never clamped or
+                       guessed - falls through to "which one?" the same
+                       way an unresolvable singular reference does
+```
+
+`MULTI_REFERENCE_SRC` (a regex *source string*, not compiled) is defined
+once in `conversation_state.py` and imported by `app/ai/intent.py` to
+extend `AMBIGUOUS_DONE_TRIGGER`/`AMBIGUOUS_CANCEL_TRIGGER` - one
+definition shared by the trigger (does this message even mention a
+multi-target reference?) and the resolver (what does that reference
+actually pick out?), so they can never recognize different phrasing.
+
+Execution goes through a new `_multi_action_reaction()` in
+`chat_engine.py`, wired into all 5 single-type reaction handlers plus
+both ambiguous handlers, always checked *before* the existing fuzzy
+title search and singular resolution (so it never intercepts a real
+title match or a singular "it"/"that"/ordinal reference). It runs the
+real complete/cancel manager call against every resolved entity
+individually and reports exactly how many actually succeeded - if one
+item in the middle of a batch fails, the response says so rather than
+claiming the whole batch went through.
+
+See `tests/test_multi_target_selection.py` for the end-to-end cases
+(all/both/first-N/last-N/N-of-them, out-of-range quantities refusing to
+guess, and a stale candidate being skipped rather than reprocessed).
+
+## 5e. Timer purpose preservation
+
+Problem this fixes (conversational-issues report P0 - "Preserve Timer
+Purpose/Label Information"): `start_timer` requests like "set 10 second
+timer to remind me to pick my columns" always parsed the duration
+correctly but discarded everything else, landing on the generic "Timer"
+label regardless of what the person actually said the timer was for.
+
+`_timer_label_from()` in `app/ai/intent.py` strips the duration phrase
+(via a boundary-safe `_DURATION_STRIP`, kept separate from the existing
+`DURATION_ONLY` used for actual duration parsing - `DURATION_ONLY`'s
+alternation order can leave a stray trailing "s" behind, harmless for
+extracting the number but not for extracting a label) and a small set of
+filler words ("can you", "please", "set", "a", "for", "remind me to",
+...), then capitalizes whatever's left. If nothing's left - e.g. "timer
+for 10 minutes" - it returns `None` and the caller falls back to the
+existing generic "Timer" label, so no purpose is ever invented. Wired
+into both the rule-based (`detect_intent`) and semantic
+(`build_semantic_intent`) timer-creation paths.
+
+See `tests/test_intent.py`'s `test_timer_preserves_stated_purpose` /
+`test_timer_without_stated_purpose_keeps_generic_label` /
+`test_timer_purpose_survives_plural_duration_unit`.
+
 
 
 All three follow the same shape: a `manager.py` doing CRUD against

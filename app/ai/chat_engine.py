@@ -168,6 +168,66 @@ def _list_reminders_reaction() -> "ChatReaction":
     )
 
 
+_COMPLETE_FNS = {
+    "task": task_manager.complete_task,
+    "reminder": reminder_manager.complete_reminder,
+}
+_CANCEL_FNS = {
+    "task": task_manager.cancel_task,
+    "reminder": reminder_manager.cancel_reminder,
+    "timer": timer_manager.cancel_timer,
+}
+_LABEL_ATTR = {"task": "title", "reminder": "title", "timer": "label"}
+
+
+def _multi_action_reaction(items: list, entity_kind: str, verb: str) -> "ChatReaction":
+    """Executes a complete/cancel action against several already-resolved,
+    real, currently-valid entities (conversational-issues report P0:
+    "three of them check as done") and reports exactly what happened
+    rather than assuming every operation succeeded (report P2: "No
+    LLM-generated text can override actual tool execution state"). `verb`
+    is "complete" or "cancel"; `entity_kind` is "task"/"reminder"/"timer"
+    - resolve_selection()/resolve_selection_typed() in
+    app/ai/conversation_state.py both guarantee every item in `items` is
+    the same kind, so a single action function applies to all of them."""
+    action_fn = (_COMPLETE_FNS if verb == "complete" else _CANCEL_FNS)[entity_kind]
+    label_attr = _LABEL_ATTR[entity_kind]
+    succeeded, failed = [], []
+    for item in items:
+        try:
+            action_fn(item.id)
+            succeeded.append(item)
+        except MochiError:
+            failed.append(item)
+
+    if not succeeded:
+        return ChatReaction(
+            text="Something went wrong - I couldn't update any of those.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    past = "Completed" if verb == "complete" else "Cancelled"
+    lines = _format_bullet_list([getattr(i, label_attr) for i in succeeded])
+    if failed:
+        text = (
+            f"{past} {len(succeeded)} of {len(items)}:\n{lines}\n"
+            "Couldn't update the rest - you may want to try those again."
+        )
+    else:
+        noun = "item" if len(succeeded) == 1 else "items"
+        text = f"Done! {past} {len(succeeded)} {noun}:\n{lines}"
+
+    last = succeeded[-1]
+    return ChatReaction(
+        text=text,
+        emotion=Emotion.HAPPY if verb == "complete" and not failed else Emotion.NEUTRAL,
+        animation=CharacterState.HAPPY if verb == "complete" and not failed else CharacterState.IDLE,
+        sound="chirp" if verb == "complete" and not failed else None,
+        conversation_state=convo.remember_entity(entity_kind, last.id, getattr(last, label_attr)),
+    )
+
+
 def _format_bullet_list(labels: list[str], max_shown: int = 6) -> str:
     """Render a handful of items as a short, line-broken bullet list
     instead of one long "; "-joined sentence (spec follow-up: "give
@@ -339,6 +399,12 @@ def _complete_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "C
             animation=CharacterState.CONFUSED,
         )
     query = tool_args.get("query", "")
+    # Multi-target reference ("three of them", "all of them", "the first
+    # three") checked before fuzzy title matching - conversational-issues
+    # report P0 (see app/ai/conversation_state.py's resolve_selection()).
+    selection = convo.resolve_selection(query, state, open_tasks)
+    if selection is not None:
+        return _multi_action_reaction(selection, "task", "complete")
     match = _fuzzy_find(query, open_tasks)
     if isinstance(match, Ambiguous):
         shown = "; ".join(t.title for t in match.candidates[:5])
@@ -382,6 +448,9 @@ def _cancel_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "Cha
             animation=CharacterState.CONFUSED,
         )
     query = tool_args.get("query", "")
+    selection = convo.resolve_selection(query, state, open_tasks)
+    if selection is not None:
+        return _multi_action_reaction(selection, "task", "cancel")
     match = _fuzzy_find(query, open_tasks)
     if isinstance(match, Ambiguous):
         shown = "; ".join(t.title for t in match.candidates[:5])
@@ -420,6 +489,9 @@ def _complete_reminder_reaction(tool_args: dict, state: Optional[dict] = None) -
             animation=CharacterState.CONFUSED,
         )
     query = tool_args.get("query", "")
+    selection = convo.resolve_selection(query, state, pending)
+    if selection is not None:
+        return _multi_action_reaction(selection, "reminder", "complete")
     match = _fuzzy_find(query, pending)
     if isinstance(match, Ambiguous):
         shown = "; ".join(r.title for r in match.candidates[:5])
@@ -459,6 +531,9 @@ def _cancel_reminder_reaction(tool_args: dict, state: Optional[dict] = None) -> 
             animation=CharacterState.CONFUSED,
         )
     query = tool_args.get("query", "")
+    selection = convo.resolve_selection(query, state, pending)
+    if selection is not None:
+        return _multi_action_reaction(selection, "reminder", "cancel")
     match = _fuzzy_find(query, pending)
     if isinstance(match, Ambiguous):
         shown = "; ".join(r.title for r in match.candidates[:5])
@@ -497,6 +572,9 @@ def _cancel_timer_reaction(tool_args: dict, state: Optional[dict] = None) -> "Ch
             animation=CharacterState.CONFUSED,
         )
     query = tool_args.get("query", "")
+    selection = convo.resolve_selection(query, state, active)
+    if selection is not None:
+        return _multi_action_reaction(selection, "timer", "cancel")
     match = _fuzzy_find(query, active, title_attr="label")
     if isinstance(match, Ambiguous):
         shown = "; ".join(t.label for t in match.candidates[:5])
@@ -847,8 +925,16 @@ def _complete_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) 
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
+    query = tool_args.get("query", "it")
     if len(combined) > 1:
-        resolved = convo.resolve_typed(tool_args.get("query", "it"), state, combined)
+        # Multi-target reference ("three of them", "all of them") checked
+        # first - conversational-issues report P0 (see app/ai/
+        # conversation_state.py's resolve_selection_typed()).
+        multi = convo.resolve_selection_typed(query, state, combined)
+        if multi is not None:
+            entity_kind = multi[0][0]
+            return _multi_action_reaction([item for _, item in multi], entity_kind, "complete")
+        resolved = convo.resolve_typed(query, state, combined)
         if resolved is None:
             shown = "; ".join(f"{kind}: {item.title}" for kind, item in combined[:5])
             return ChatReaction(
@@ -908,8 +994,13 @@ def _cancel_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) ->
         title = item.label if kind == "timer" else item.title
         return f"{kind}: {title}"
 
+    query = tool_args.get("query", "it")
     if len(combined) > 1:
-        resolved = convo.resolve_typed(tool_args.get("query", "it"), state, combined)
+        multi = convo.resolve_selection_typed(query, state, combined)
+        if multi is not None:
+            entity_kind = multi[0][0]
+            return _multi_action_reaction([item for _, item in multi], entity_kind, "cancel")
+        resolved = convo.resolve_typed(query, state, combined)
         if resolved is None:
             shown = "; ".join(_label(kind, item) for kind, item in combined[:5])
             return ChatReaction(
