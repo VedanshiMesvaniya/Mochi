@@ -17,6 +17,41 @@ def test_farewell():
     assert result.name == "farewell"
 
 
+def test_relational_did_you_miss_me():
+    """Conversational-issues report P1 ("Improve Relational/Emotional
+    Conversation Understanding") - "did you miss me" and similar phrases
+    about the relationship/absence itself must be classified as their own
+    "relational" category, not generic small talk, and never trigger a
+    tool call."""
+    result = detect_intent("did you miss me", now=NOW)
+    assert result.name == "relational"
+    assert result.tool is None
+
+
+def test_relational_im_back():
+    result = detect_intent("I'm back", now=NOW)
+    assert result.name == "relational"
+    assert result.tool is None
+
+
+def test_relational_variants_all_classified():
+    for phrase in (
+        "were you waiting for me",
+        "i was gone for a while",
+        "you missed me huh",
+        "did you notice i was gone",
+    ):
+        result = detect_intent(phrase, now=NOW)
+        assert result.name == "relational", phrase
+
+
+def test_relational_does_not_hijack_unrelated_messages():
+    """Regression guard: substrings like "back" inside an unrelated
+    sentence must not misfire the relational category."""
+    result = detect_intent("add task go back to the store", now=NOW)
+    assert result.name != "relational"
+
+
 def test_reminder_with_absolute_time():
     result = detect_intent("remind me to call mom at 7pm", now=NOW)
     assert result.name == "create_reminder"

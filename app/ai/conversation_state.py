@@ -212,13 +212,56 @@ def resolve_selection_typed(query: str, state: Optional[dict], combined: list[tu
     if chosen is None:
         return None
     target_type = state.get("entity_type")
-    by_id = {
-        getattr(item, id_attr): (kind, item)
-        for kind, item in combined
-        if kind == target_type
-    }
-    resolved = [by_id[c["id"]] for c in chosen if c["id"] in by_id]
+    by_kind_id = {(kind, getattr(item, id_attr)): (kind, item) for kind, item in combined}
+    resolved = []
+    for c in chosen:
+        expected_kind = c.get("kind", target_type)
+        entry = by_kind_id.get((expected_kind, c["id"]))
+        if entry is not None:
+            resolved.append(entry)
     return resolved or None
+
+
+# "that timer"/"that reminder"/"that task", or "the task/reminder/timer I
+# just made/added/created/set/started" - kind-qualified contextual
+# references (conversational-issues report P1: "Expand Conversational
+# Reference Model", "contextual references" category). A *source string*
+# like MULTI_REFERENCE_SRC below, for the same reason: app/ai/intent.py's
+# AMBIGUOUS_DONE_TRIGGER/AMBIGUOUS_CANCEL_TRIGGER need to recognise this
+# exact phrasing to route the message here at all.
+_KIND_WORD = r"(?:task|reminder|timer)"
+CONTEXTUAL_REFERENCE_SRC = (
+    rf"\b(?:that|this|the)\s+({_KIND_WORD})"
+    rf"(?:\s+i\s+just\s+(?:made|added|created|set|started))?\b"
+)
+_CONTEXTUAL_REFERENCE_PATTERN = re.compile(CONTEXTUAL_REFERENCE_SRC, re.IGNORECASE)
+
+
+def resolve_contextual_kind(
+    query: str, state: Optional[dict], combined: list[tuple[str, object]], id_attr: str = "id"
+):
+    """Resolves a kind-qualified contextual reference ("that timer", "the
+    task I just added") against `state`'s single remembered entity (see
+    remember_entity()), restricted to `combined` - real, currently-valid
+    (kind, item) pairs. Only ever resolves when the named kind actually
+    matches what's remembered - "that timer" when the last thing
+    remembered was a task returns None (the caller falls back to asking)
+    rather than guessing a timer instead just because one happens to
+    exist."""
+    if not state or not combined:
+        return None
+    match = _CONTEXTUAL_REFERENCE_PATTERN.search(query.strip().lower())
+    if not match:
+        return None
+    kind = match.group(1)
+    target_type = state.get("entity_type")
+    target_id = state.get("entity_id")
+    if target_type != kind or target_id is None:
+        return None
+    for item_kind, item in combined:
+        if item_kind == kind and getattr(item, id_attr) == target_id:
+            return item_kind, item
+    return None
 
 
 def is_bare_reference(query: str) -> bool:
@@ -269,6 +312,28 @@ def remember_candidates(entity_type: str, items: list[tuple[int, str]]) -> dict:
     }
 
 
+def remember_mixed_candidates(items: list[tuple[str, int, str]]) -> dict:
+    """Cross-type counterpart to remember_candidates() above
+    (conversational-issues report P1: "Improve Ambiguous Action
+    Responses") - for a "which one?" clarification that spans more than
+    one entity type at once (e.g. one open task and one pending reminder
+    both matched a fuzzy title search), so a follow-up "the second one"
+    or "both" can still resolve against exactly what was numbered and
+    shown, the same guarantee single-type candidate lists already have.
+    `items` are (kind, id, title) triples in the exact order shown.
+    `entity_type` is left None - resolve_typed()/resolve_selection_typed()
+    below fall back to each candidate's own remembered "kind" whenever
+    entity_type isn't set, rather than requiring one uniform type."""
+    return {
+        "entity_type": None,
+        "entity_id": None,
+        "entity_title": None,
+        "candidates": [
+            {"id": item_id, "title": title, "kind": kind} for kind, item_id, title in items
+        ],
+    }
+
+
 def resolve(query: str, state: Optional[dict], candidates: list, id_attr: str = "id"):
     """Resolve a bare/ordinal reference in `query` against `state`
     (this module's own dict shape) restricted to `candidates` - real,
@@ -308,10 +373,11 @@ def resolve_typed(query: str, state: Optional[dict], combined: list[tuple[str, o
     timers together as (kind, item) pairs) - the referenced entity must
     match both the remembered type AND id, not just the id, since a task
     and a reminder could coincidentally share a database id. Ordinal
-    references ("the second one") only resolve when `state` came from a
-    single-type list (list_tasks/list_reminders/list_timers all remember
-    candidates of one type) - a mixed "which one?" prompt from this
-    module's own caller doesn't produce a candidate list to begin with."""
+    references ("the second one") resolve against a single-type list
+    (list_tasks/list_reminders/list_timers, via remember_candidates())
+    using the one remembered `entity_type`, or against a cross-type
+    clarification list (via remember_mixed_candidates()) using each
+    candidate's own remembered `kind`."""
     if not state or not combined:
         return None
     target_type = state.get("entity_type")
@@ -327,8 +393,15 @@ def resolve_typed(query: str, state: Optional[dict], combined: list[tuple[str, o
     if ordinal_candidates:
         index = ordinal_index(query, len(ordinal_candidates))
         if index is not None:
-            target_id = ordinal_candidates[index]["id"]
+            target = ordinal_candidates[index]
+            target_id = target["id"]
+            # Per-candidate "kind" (see remember_mixed_candidates() above)
+            # takes priority over the single remembered entity_type, so
+            # ordinal references against a cross-type clarification list
+            # resolve against the right type per position, not whatever
+            # type happened to be remembered from some earlier turn.
+            expected_kind = target.get("kind", target_type)
             for kind, item in combined:
-                if kind == target_type and getattr(item, id_attr) == target_id:
+                if kind == expected_kind and getattr(item, id_attr) == target_id:
                     return kind, item
     return None

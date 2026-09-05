@@ -47,6 +47,20 @@ _LIGHT_BUTTON_HOVER = "rgba(255, 255, 255, 190)"
 _LIGHT_BUTTON_PRESSED = "rgba(255, 255, 255, 100)"
 _LIGHT_BUTTON_DISABLED_TEXT = "rgba(58, 51, 80, 110)"
 
+# Chat-specific: message log background (conversational-issues report P1,
+# "Make Chat Panel Visually Isolated From Desktop Background") - the log
+# is what's actually behind every chat bubble, and it used to share the
+# same ~51%-opaque `input_bg` every QLineEdit/QListWidget across the app
+# uses. That's fine for a single-line search box, but for a full message
+# log it let terminal/debug windows behind Mochi show through clearly
+# enough to look like part of the UI. Deliberately its own, much more
+# opaque, constant rather than raising `input_bg` itself, so every other
+# popup's lighter glass look (reminders, tasks, settings, ...) is
+# untouched - see ChatWindow._build_ui() in chat_window.py, the only
+# place this is used.
+_LIGHT_LOG_BG = "rgba(255, 255, 255, 235)"
+_DARK_LOG_BG = "rgba(24, 22, 36, 235)"
+
 # Dark counterpart (spec: "now you made font dark what if it's in dark
 # background it should be adaptive") - a light-on-dark version of the same
 # frosted-glass look, not a plain flat panel, so popups still read as
@@ -113,6 +127,7 @@ def _current_palette() -> dict:
             "button_hover": _DARK_BUTTON_HOVER,
             "button_pressed": _DARK_BUTTON_PRESSED,
             "button_disabled_text": _DARK_BUTTON_DISABLED_TEXT,
+            "log_bg": _DARK_LOG_BG,
         }
     return {
         "panel_gradient": _LIGHT_PANEL_GRADIENT,
@@ -125,7 +140,15 @@ def _current_palette() -> dict:
         "button_hover": _LIGHT_BUTTON_HOVER,
         "button_pressed": _LIGHT_BUTTON_PRESSED,
         "button_disabled_text": _LIGHT_BUTTON_DISABLED_TEXT,
+        "log_bg": _LIGHT_LOG_BG,
     }
+
+
+# Public alias - chat_window.py needs the same light/dark palette
+# TranslucentDialog itself uses (specifically the new "log_bg" entry
+# above), and importing a leading-underscore name across modules is
+# avoidable with one line here.
+current_palette = _current_palette
 
 
 class _DotButton(QPushButton):

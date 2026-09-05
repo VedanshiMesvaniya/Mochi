@@ -756,10 +756,83 @@ See `tests/test_intent.py`'s `test_timer_preserves_stated_purpose` /
 `test_timer_without_stated_purpose_keeps_generic_label` /
 `test_timer_purpose_survives_plural_duration_unit`.
 
+## 5f. Numbered ambiguous-match clarifications and structured execution results
+
+Problem this fixes (conversational-issues report P1 - "Improve Ambiguous
+Action Responses" - and P2 - "Add Structured Action Execution Results"):
+a "which one do you mean?" clarification used to be a raw "; "-joined
+sentence with no way to reference it afterward, and multi-item actions
+generated their response text without a single, explicit record of what
+actually succeeded/failed.
+
+`_clarify_reaction()`/`_clarify_typed_reaction()` in `chat_engine.py`
+present candidates as a numbered list and remember them via
+`conversation_state.py`'s `remember_candidates()`/
+`remember_mixed_candidates()`, so a follow-up like "cancel the second
+one" or "cancel both" resolves against exactly what was numbered -
+including across a cross-type clarification (one task, one reminder),
+which `resolve_typed()`/`resolve_selection_typed()` now support via a
+per-candidate `"kind"` field (previously only a single-type candidate
+list could be remembered at all).
+
+Every complete/cancel action - single or multi - now goes through
+`_run_multi_action()`, which returns a new `ActionResult` dataclass
+(`requested`/`completed`/`failed`/`verb`/`success`) rather than response
+text ever being free to assume every requested operation succeeded.
+`_multi_action_reaction()` builds its ChatReaction text FROM that result,
+so a partial failure is reported as a partial failure. `_multi_action_reaction()`
+also now takes `(kind, item)` pairs directly instead of a single uniform
+`entity_kind`, so a batch resolved from a cross-type clarification list
+(e.g. completing one task and one reminder chosen together via "both")
+dispatches each item to its own manager function correctly.
+
+## 5g. Contextual kind-qualified references
+
+Problem this fixes (conversational-issues report P1 - "Expand
+Conversational Reference Model"): only bare pronouns/ordinals ("it",
+"that", "the second one") resolved to the last remembered entity - a
+more specific phrase naming the *kind* directly ("that timer", "the task
+I just added") had no path to resolve at all when other entity types
+also existed.
+
+`conversation_state.py`'s `resolve_contextual_kind()` extracts the named
+kind from phrases matching `CONTEXTUAL_REFERENCE_SRC` (shared with
+`app/ai/intent.py`'s trigger patterns, same one-source-of-truth pattern
+as `MULTI_REFERENCE_SRC`) and only resolves when that kind actually
+matches what's remembered (`state["entity_type"]`) - "that reminder" when
+the last remembered thing was a timer returns `None` (asks) rather than
+guessing. Checked before the generic `resolve_typed()` in both ambiguous
+handlers, since a named kind is a stronger signal than a bare pronoun.
+
+See `tests/test_multi_target_selection.py` for the cross-type
+clarification/follow-up and contextual-kind-reference test cases.
+
+## 5h. Relational/social conversation
+
+Problem this fixes (conversational-issues report P1 - "Improve
+Relational/Emotional Conversation Understanding"): messages about the
+relationship/absence itself ("did you miss me", "I'm back", "were you
+waiting for me") fell through to generic small talk or the open-ended
+LLM fallback instead of being recognized as their own conversational
+category.
+
+`app/ai/intent.py` gains a `RELATIONAL_PHRASES` tuple and a `"relational"`
+intent, checked right before `GREETINGS` (a relational phrase would also
+read as a kind of greeting, but deserves more than a plain "hi").
+`chat_engine.py`'s `_FAMILIAR_RELATIONAL_RESPONSES` flavors the response
+by the same coarse interaction-count tier `_FAMILIAR_GREETINGS` already
+uses - deliberately staying general ("glad to have you back") rather
+than claiming any specific remembered event or absence duration, since
+Mochi's only real signal here is the interaction-count tier, not an
+actual memory of the absence (acceptance criterion: "Mochi does not
+claim memories/events that do not exist"). No tool is ever attached to
+this intent, so it can never trigger a database action - see
+`tests/test_chat_engine.py`'s `test_relational_message_triggers_no_database_action`.
+
 
 
 All three follow the same shape: a `manager.py` doing CRUD against
-SQLite, an optional `scheduler.py` (reminders/timers only — tasks have no
+SQLite, an optional `scheduler.py` (reminders/timers only - tasks have no
 due date, so nothing to poll for) checking for due items on a `QTimer`,
 and a `notifications.py` that turns "this became due" into a character
 reaction + sound + speech bubble + OS notification.
@@ -779,12 +852,12 @@ data/mochi.db
   repeat rules, and catch up on anything missed while the app was closed.
   If a reminder is still `pending` several minutes after being surfaced,
   the notifier checks back once and reacts annoyed (`CharacterState.ANGRY`).
-- **Tasks** have no scheduler — they're a plain open/done checklist,
+- **Tasks** have no scheduler - they're a plain open/done checklist,
   created and toggled through chat ("remember that I need to...", "add
   task buy milk", "mark my task to call aunt as done"). `due_at`
   is optional and purely informational: it changes `list_tasks()`
   ordering (dated tasks sort first, soonest due first, ahead of undated
-  ones) but never triggers a notification the way a reminder does — if
+  ones) but never triggers a notification the way a reminder does - if
   you want an actual alert, that's what reminders are for. `due_at` was
   added after the `tasks` table already shipped, so `database.py` runs a
   small idempotent `ALTER TABLE ... ADD COLUMN` migration (guarded by a
@@ -806,14 +879,14 @@ data/mochi.db
 ### Active vs. archived: where finished items go
 
 Completing/cancelling a reminder or task, or a timer firing its due
-notification, doesn't just flip `status` in place — the row is moved
+notification, doesn't just flip `status` in place - the row is moved
 wholesale out of its active table into a parallel `_done` archive table
 (`app/memory/database.py`'s `archive_row()`), stamped with `archived_at`.
 `restore_row()` is the inverse, used by `reopen_task()`. This is a
 deliberate product rule, not an implementation detail: **the active
 tables only ever hold things still outstanding**, so any "what's
-remaining" read — `list_tasks()`, `list_reminders()`, `list_active_timers()`
-— never has to filter finished rows out by hand; it's just everything
+remaining" read - `list_tasks()`, `list_reminders()`, `list_active_timers()`
+- never has to filter finished rows out by hand; it's just everything
 still in the table. `get_task_any()` / `get_reminder_any()` (check active,
 then archive) exist for the few call sites that need to look up an item
 regardless of which side of that split it's currently on (e.g. the task
@@ -823,20 +896,20 @@ already-archived record for good).
 ### Asking about finished items: the synonym glossary
 
 `app/ai/db_glossary.py` is a small, deliberately "universal" synonym
-table mapping the words someone might actually use — "remaining" / "left"
+table mapping the words someone might actually use - "remaining" / "left"
 / "pending" / "open" all mean *active*; "done" / "completed" / "finished"
 / "history" / "archive" all mean the *archive*; "cancelled" / "canceled"
 / "called off"; "task" / "todo" / "chore" / "assignment" all mean the
-same table, and so on for reminders/timers — onto a plain
+same table, and so on for reminders/timers - onto a plain
 `QueryPlan(entity, status)`. `LIST_DONE_TRIGGER` in `intent.py` routes
 matching chat messages ("what tasks are done", "show completed
 reminders") to `_query_done_reaction()` in `chat_engine.py`, which:
 
 1. Resolves the message to a `QueryPlan` via the glossary.
 2. Reads the real archive (or active/all) table through the *same*
-   already-safe manager functions everything else uses —
+   already-safe manager functions everything else uses -
    `list_archived_tasks()`, `list_archived_reminders()`,
-   `list_archived_timers()` — never a hand-built SQL string.
+   `list_archived_timers()` - never a hand-built SQL string.
 3. Builds a short, deterministic plain-text summary of the real result
    ("facts").
 4. Passes those facts to `app/ai/llm.py`'s `phrase_data_answer()` so a
@@ -852,10 +925,10 @@ live SQL against someone's own database is exactly that kind of
 untrusted "LLM performs the action" step, with real injection/
 hallucination risk on top. The glossary keeps the actual query
 deterministic and safe while still answering natural-language questions
-about it — the LLM only ever touches the *wording* of an answer that's
+about it - the LLM only ever touches the *wording* of an answer that's
 already been computed correctly.
 
-All three stores are handled entirely through chat — there's deliberately no
+All three stores are handled entirely through chat - there's deliberately no
 right-click menu item for any of them (the underlying `app/ui/
 reminder_window.py` / `task_window.py` / `timer_window.py` classes still
 exist and are tested, just not wired into the UI, in case a future
@@ -865,7 +938,7 @@ supposed to just understand when asked, which defeats the point of
 Mochi. This means the regex triggers in `app/ai/intent.py`
 (`TASK_TRIGGER`/`REMINDER_TRIGGER`/`TIMER_TRIGGER`, etc.) are the whole
 interface and need to cover realistic everyday phrasing, not just one
-canonical form per action — and `chat_engine.py` logs every message's
+canonical form per action - and `chat_engine.py` logs every message's
 detected intent/tool/args plus each tool call's outcome, so a phrasing
 gap shows up in the log instead of silently doing nothing.
 
@@ -890,23 +963,23 @@ Callers degrade instead of crashing:
 `tests/` covers every subsystem below the UI layer without needing a
 running Qt app window or a live Ollama server:
 
-- `test_state_machine.py`, `test_pixel_face.py` — expression table
+- `test_state_machine.py`, `test_pixel_face.py` - expression table
   coverage (every state actually renders without crashing) and emotion→
   animation wiring
-- `test_behavior.py` — the inactivity-tiered autonomous behavior timing
-- `test_intent.py` — the rule-based chat matcher, including regression
+- `test_behavior.py` - the inactivity-tiered autonomous behavior timing
+- `test_intent.py` - the rule-based chat matcher, including regression
   tests for real bugs caught during manual QA (e.g. a keyword matching as
   a substring inside an unrelated word)
-- `test_llm.py` — the local-LLM backend against a fake local HTTP server,
+- `test_llm.py` - the local-LLM backend against a fake local HTTP server,
   including malformed/code-fence-wrapped output and the no-Ollama-running
   fallback path
-- `test_chat_engine.py`, `test_relationship.py` — end-to-end chat
+- `test_chat_engine.py`, `test_relationship.py` - end-to-end chat
   handling and familiarity progression
 - `test_reminder_manager.py` / `test_reminder_tools.py` /
   `test_reminder_notifications.py`, and the equivalent `test_task_*` /
-  `test_timer_*` files — CRUD, repeat rules, the JSON tool wrappers, and
+  `test_timer_*` files - CRUD, repeat rules, the JSON tool wrappers, and
   due/ignored-reminder reactions
-- `test_google_calendar.py` / `test_calendar_tools.py` — OAuth/token
+- `test_google_calendar.py` / `test_calendar_tools.py` - OAuth/token
   state handling and event listing/creation/deletion against a fake
   `googleapiclient` service object (no real Google API/network call is
   ever made in tests). These mock `google_calendar._import_google_libraries()`
@@ -914,7 +987,7 @@ running Qt app window or a live Ollama server:
   identically whether or not `requirements-calendar.txt` is installed -
   a contributor without those optional packages still gets full
   coverage locally.
-- `test_movement.py` — screen-bounds math used when dragging the window
+- `test_movement.py` - screen-bounds math used when dragging the window
 
 `pixel_face.py` and `chat_window.py` tests that need a real `QWidget` use
 a session-scoped `qapp` fixture (`tests/conftest.py`) running Qt in
@@ -1006,13 +1079,13 @@ throwaway checklist. Summary of what was fixed:
 "what's on my calendar today?"
       │
       ▼
-app/ai/intent.py — CALENDAR_TODAY_TRIGGER (deterministic, no LLM)
+app/ai/intent.py - CALENDAR_TODAY_TRIGGER (deterministic, no LLM)
       │
       ▼
-app/ai/chat_engine.py — _calendar_today_reaction()
+app/ai/chat_engine.py - _calendar_today_reaction()
       │
       ▼
-app/calendar/google_calendar.py — get_today_events()
+app/calendar/google_calendar.py - get_today_events()
       │
       ├─ not enabled/configured ──► GoogleCalendarNotConfigured
       ├─ not connected yet ───────► GoogleCalendarNotConnected
@@ -1025,7 +1098,7 @@ app/calendar/google_calendar.py — get_today_events()
 Same "deterministic first" principle as §5: every calendar query/action
 Mochi can perform (today/tomorrow/upcoming/search, connect, disconnect,
 create, cancel) is matched by a fixed regex in `app/ai/intent.py`, never
-inferred by the LLM — a hallucinated calendar answer is worse than a
+inferred by the LLM - a hallucinated calendar answer is worse than a
 hallucinated reminder, since it's about the user's real external
 commitments. The LLM chat path can talk *about* calendars in casual
 conversation, but it can never be the thing that actually reads or
@@ -1048,7 +1121,7 @@ Three things make read access (V3) safe to ship as its own smaller step:
 
 Connecting (`connect()`) blocks on a local OAuth callback server while
 the user completes Google's consent screen in their browser, bounded by
-a 5-minute timeout — safe to do off the UI thread because, per §5's
+a 5-minute timeout - safe to do off the UI thread because, per §5's
 chat_window.py note, every chat message (not just LLM-fallback ones)
 already runs on a background `ChatWorker` thread.
 
@@ -1056,30 +1129,30 @@ already runs on a background `ChatWorker` thread.
 
 `MOCHI_GOOGLE_CALENDAR_WRITE_ENABLED=true` widens the requested OAuth
 scope from `calendar.readonly` to `calendar.events` ("view and edit
-events on all your calendars" — deliberately narrower than the full
+events on all your calendars" - deliberately narrower than the full
 `calendar` scope, which also covers creating/deleting calendars
 themselves). `google_calendar.py` tracks two capability levels (0 = none,
 1 = read, 2 = read+write) and compares the *actually granted* scope on
 the saved token against what the current setting requires
-(`_capability_level`/`_required_level`) — so turning write access on
+(`_capability_level`/`_required_level`) - so turning write access on
 doesn't retroactively grant it to an already-connected read-only token;
 Google enforces the real grant regardless of `.env`, and this module
 mirrors that check locally so a stale-scope token fails fast with a
 "reconnect with edit access" message instead of a confusing live 403.
 
-Every write is proposed, then confirmed, then executed — never in one
+Every write is proposed, then confirmed, then executed - never in one
 step:
 
 ```text
 "schedule a meeting with Devika tomorrow at 5pm"
       │
       ▼
-app/ai/intent.py — CALENDAR_CREATE_TRIGGER extracts a title + time,
+app/ai/intent.py - CALENDAR_CREATE_TRIGGER extracts a title + time,
                     returns DetectedIntent("calendar_create_event",
-                    tool_args={title, start_iso}) — no write yet
+                    tool_args={title, start_iso}) - no write yet
       │
       ▼
-app/ai/chat_engine.py — _calendar_create_proposal() builds a
+app/ai/chat_engine.py - _calendar_create_proposal() builds a
                           human-readable summary and returns it as
                           ChatReaction.pending_action, e.g.
                           {"kind": "calendar_create", "title": ...,
@@ -1093,19 +1166,19 @@ app/ui/chat_window.py stores pending_action, passes it back into the
 User replies "yes"
       │
       ▼
-app/ai/chat_engine.py — _classify_confirmation() recognizes it,
+app/ai/chat_engine.py - _classify_confirmation() recognizes it,
                           _resolve_pending_action() calls
                           app/tools/calendar_tools.create_event(...,
-                          confirmed=True) — the ONLY call site in the
+                          confirmed=True) - the ONLY call site in the
                           app that ever passes confirmed=True
       │
       ▼
-app/calendar/google_calendar.py — create_event() actually calls
+app/calendar/google_calendar.py - create_event() actually calls
                                     Google's events().insert()
 ```
 
 `app/ai/chat_engine.ChatReaction.pending_action` is how this confirmation
-state survives across the two chat turns — `app/ui/chat_window.py` owns
+state survives across the two chat turns - `app/ui/chat_window.py` owns
 it exactly the same way it already owns `_history` (spec's "remember
 whole chat until closed"): read back into the next `handle_message()`
 call, reset to `None` on window close. A reply that isn't a clear
@@ -1125,7 +1198,7 @@ chat_engine's own calling convention:
 
 - `app/tools/calendar_tools.py`'s `create_event`/`update_event`/
   `delete_event` all require `confirmed=True` and raise
-  `ConfirmationRequiredError` (see app/core/exceptions.py) otherwise —
+  `ConfirmationRequiredError` (see app/core/exceptions.py) otherwise -
   this holds regardless of what calls into that module, not only the
   chat flow above.
 - `google_calendar.py`'s capability check (above) independently blocks
@@ -1135,6 +1208,6 @@ chat_engine's own calling convention:
 `update_event` (rescheduling/retitling an existing event) exists at the
 `google_calendar`/`calendar_tools` layer with the same confirmation
 requirement, but isn't yet wired to a chat trigger in `app/ai/intent.py`
-— only create and cancel are reachable from chat today, matching the two
+- only create and cancel are reachable from chat today, matching the two
 literal examples in the spec ("Mochi, add a meeting..." / "Cancel my 5
 PM meeting").

@@ -83,6 +83,21 @@ _FAMILIAR_GREETINGS = {
     relationship.FAMILIAR: "You're back! I missed you~",
 }
 
+# Same idea, for relational/social messages ("did you miss me", "I'm
+# back") - conversational-issues report P1 ("Improve Relational/
+# Emotional Conversation Understanding"). Deliberately stays general
+# ("glad you're back"/"missed having you around") rather than claiming
+# any specific remembered event or duration - Mochi's only actual signal
+# here is the coarse interaction-count tier, not a real memory of the
+# absence itself (acceptance criterion: "Mochi does not claim memories/
+# events that do not exist"). NEW isn't listed here for the same reason
+# as _FAMILIAR_GREETINGS above - intent.py's own default response
+# already reads right for someone Mochi barely knows yet.
+_FAMILIAR_RELATIONAL_RESPONSES = {
+    relationship.GETTING_TO_KNOW: "Of course! Glad to have you back.",
+    relationship.FAMILIAR: "Always~ it's just not the same around here without you!",
+}
+
 
 @dataclass
 class ChatReaction:
@@ -180,51 +195,88 @@ _CANCEL_FNS = {
 _LABEL_ATTR = {"task": "title", "reminder": "title", "timer": "label"}
 
 
-def _multi_action_reaction(items: list, entity_kind: str, verb: str) -> "ChatReaction":
-    """Executes a complete/cancel action against several already-resolved,
-    real, currently-valid entities (conversational-issues report P0:
-    "three of them check as done") and reports exactly what happened
-    rather than assuming every operation succeeded (report P2: "No
-    LLM-generated text can override actual tool execution state"). `verb`
-    is "complete" or "cancel"; `entity_kind` is "task"/"reminder"/"timer"
-    - resolve_selection()/resolve_selection_typed() in
-    app/ai/conversation_state.py both guarantee every item in `items` is
-    the same kind, so a single action function applies to all of them."""
-    action_fn = (_COMPLETE_FNS if verb == "complete" else _CANCEL_FNS)[entity_kind]
-    label_attr = _LABEL_ATTR[entity_kind]
-    succeeded, failed = [], []
-    for item in items:
-        try:
-            action_fn(item.id)
-            succeeded.append(item)
-        except MochiError:
-            failed.append(item)
+@dataclass
+class ActionResult:
+    """Structured record of what an action against one or more entities
+    actually did (conversational-issues report P2: "Add Structured
+    Action Execution Results") - `_multi_action_reaction()` below builds
+    one of these and generates its response text FROM it, rather than
+    text generation ever being free to assume every requested operation
+    succeeded. `requested` is how many entities were targeted;
+    `completed`/`failed` are the (kind, entity) pairs that actually
+    succeeded/raised - always `completed + failed == requested` in
+    count, and `success` is only ever True when nothing failed."""
 
-    if not succeeded:
+    requested: int
+    completed: list[tuple[str, object]]
+    failed: list[tuple[str, object]]
+    verb: str  # "complete" or "cancel"
+
+    @property
+    def success(self) -> bool:
+        return not self.failed and bool(self.completed)
+
+
+def _run_multi_action(items: list[tuple[str, object]], verb: str) -> ActionResult:
+    """Executes `verb` ("complete"/"cancel") against every (kind, item)
+    pair in `items` - already-resolved, real, currently-valid entities
+    (see app/ai/conversation_state.py's resolve_selection()/
+    resolve_selection_typed()) - and returns exactly what happened as an
+    ActionResult, never assuming success. Each item's own `kind` picks
+    the right manager function, so a single call can span mixed types
+    (e.g. completing a task and a reminder chosen from the same
+    cross-type "which one?" list)."""
+    action_fns = _COMPLETE_FNS if verb == "complete" else _CANCEL_FNS
+    completed: list[tuple[str, object]] = []
+    failed: list[tuple[str, object]] = []
+    for kind, item in items:
+        try:
+            action_fns[kind](item.id)
+            completed.append((kind, item))
+        except MochiError:
+            failed.append((kind, item))
+    return ActionResult(requested=len(items), completed=completed, failed=failed, verb=verb)
+
+
+def _multi_action_reaction(items: list[tuple[str, object]], verb: str) -> "ChatReaction":
+    """Runs `_run_multi_action()` and turns the resulting ActionResult
+    into a ChatReaction - the response text is always generated from
+    that result, so a partial failure is reported as a partial failure,
+    never claimed as a full success (report P0/P2)."""
+    result = _run_multi_action(items, verb)
+
+    def _label(kind: str, item) -> str:
+        title = getattr(item, _LABEL_ATTR[kind])
+        return f"{kind}: {title}" if mixed else title
+
+    if not result.completed:
         return ChatReaction(
             text="Something went wrong - I couldn't update any of those.",
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
 
+    mixed = len({kind for kind, _ in items}) > 1
     past = "Completed" if verb == "complete" else "Cancelled"
-    lines = _format_bullet_list([getattr(i, label_attr) for i in succeeded])
-    if failed:
+    lines = _format_bullet_list([_label(kind, item) for kind, item in result.completed])
+    if result.failed:
         text = (
-            f"{past} {len(succeeded)} of {len(items)}:\n{lines}\n"
+            f"{past} {len(result.completed)} of {result.requested}:\n{lines}\n"
             "Couldn't update the rest - you may want to try those again."
         )
     else:
-        noun = "item" if len(succeeded) == 1 else "items"
-        text = f"Done! {past} {len(succeeded)} {noun}:\n{lines}"
+        noun = "item" if len(result.completed) == 1 else "items"
+        text = f"Done! {past} {len(result.completed)} {noun}:\n{lines}"
 
-    last = succeeded[-1]
+    last_kind, last_item = result.completed[-1]
     return ChatReaction(
         text=text,
-        emotion=Emotion.HAPPY if verb == "complete" and not failed else Emotion.NEUTRAL,
-        animation=CharacterState.HAPPY if verb == "complete" and not failed else CharacterState.IDLE,
-        sound="chirp" if verb == "complete" and not failed else None,
-        conversation_state=convo.remember_entity(entity_kind, last.id, getattr(last, label_attr)),
+        emotion=Emotion.HAPPY if result.success and verb == "complete" else Emotion.NEUTRAL,
+        animation=CharacterState.HAPPY if result.success and verb == "complete" else CharacterState.IDLE,
+        sound="chirp" if result.success and verb == "complete" else None,
+        conversation_state=convo.remember_entity(
+            last_kind, last_item.id, getattr(last_item, _LABEL_ATTR[last_kind])
+        ),
     )
 
 
@@ -241,6 +293,61 @@ def _format_bullet_list(labels: list[str], max_shown: int = 6) -> str:
     if len(labels) > max_shown:
         lines += f"\n… +{len(labels) - max_shown} more"
     return lines
+
+
+def _numbered_list(labels: list[str], max_shown: int = 6) -> str:
+    """Same idea as _format_bullet_list() above, but numbered - used for
+    ambiguous-match clarifications (conversational-issues report P1:
+    "Improve Ambiguous Action Responses") so a follow-up message can
+    reference "the second one" naturally, matching the number actually
+    shown."""
+    shown = labels[:max_shown]
+    lines = "\n".join(f"{i}. {label}" for i, label in enumerate(shown, start=1))
+    if len(labels) > max_shown:
+        lines += f"\n… +{len(labels) - max_shown} more"
+    return lines
+
+
+def _clarify_reaction(intro: str, entity_kind: str, items: list, label_attr: str, id_attr: str = "id") -> "ChatReaction":
+    """Builds a "which one do you mean?" clarification as a numbered
+    list rather than a raw "; "-joined dump, and remembers `items` as
+    ordered candidates (see app/ai/conversation_state.py's
+    remember_candidates()) so a follow-up "the second one" - or "all of
+    them"/"the first two", via resolve_selection() - resolves against
+    exactly this list. Never a guess: the caller only reaches this
+    function when it genuinely can't tell which one entity was meant."""
+    labels = [getattr(i, label_attr) for i in items]
+    text = f"{intro}\n{_numbered_list(labels)}\n\nWhich one should I use?"
+    return ChatReaction(
+        text=text,
+        emotion=Emotion.CONFUSED,
+        animation=CharacterState.CONFUSED,
+        conversation_state=convo.remember_candidates(
+            entity_kind, [(getattr(i, id_attr), getattr(i, label_attr)) for i in items]
+        ),
+    )
+
+
+def _clarify_typed_reaction(intro: str, combined: list[tuple[str, object]]) -> "ChatReaction":
+    """Cross-type counterpart to _clarify_reaction() above, for
+    _complete_ambiguous_reaction/_cancel_ambiguous_reaction where
+    candidates span more than one entity type at once - see
+    app/ai/conversation_state.py's remember_mixed_candidates()."""
+
+    def _label(kind: str, item) -> str:
+        title = item.label if kind == "timer" else item.title
+        return f"{kind}: {title}"
+
+    labels = [_label(kind, item) for kind, item in combined]
+    text = f"{intro}\n{_numbered_list(labels)}\n\nWhich one should I use?"
+    return ChatReaction(
+        text=text,
+        emotion=Emotion.CONFUSED,
+        animation=CharacterState.CONFUSED,
+        conversation_state=convo.remember_mixed_candidates(
+            [(kind, item.id, _label(kind, item)) for kind, item in combined]
+        ),
+    )
 
 
 def _list_timers_reaction() -> "ChatReaction":
@@ -404,14 +511,11 @@ def _complete_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "C
     # report P0 (see app/ai/conversation_state.py's resolve_selection()).
     selection = convo.resolve_selection(query, state, open_tasks)
     if selection is not None:
-        return _multi_action_reaction(selection, "task", "complete")
+        return _multi_action_reaction([("task", i) for i in selection], "complete")
     match = _fuzzy_find(query, open_tasks)
     if isinstance(match, Ambiguous):
-        shown = "; ".join(t.title for t in match.candidates[:5])
-        return ChatReaction(
-            text=f"I've got a few tasks that could match - which one? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
+        return _clarify_reaction(
+            "I've got a few tasks that could match:", "task", match.candidates, "title"
         )
     # No title-word overlap at all (e.g. "mark it as done") - try
     # resolving "it"/"that"/"the second one" against what was last
@@ -422,12 +526,7 @@ def _complete_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "C
     if match is None and not query and len(open_tasks) == 1:
         match = open_tasks[0]
     if match is None:
-        shown = "; ".join(t.title for t in open_tasks[:5])
-        return ChatReaction(
-            text=f"Not sure which task you mean - your open ones: {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+        return _clarify_reaction("Not sure which task you mean:", "task", open_tasks, "title")
     task_manager.complete_task(match.id)
     return ChatReaction(
         text=f'Done! Marked "{match.title}" as complete.',
@@ -450,26 +549,18 @@ def _cancel_task_reaction(tool_args: dict, state: Optional[dict] = None) -> "Cha
     query = tool_args.get("query", "")
     selection = convo.resolve_selection(query, state, open_tasks)
     if selection is not None:
-        return _multi_action_reaction(selection, "task", "cancel")
+        return _multi_action_reaction([("task", i) for i in selection], "cancel")
     match = _fuzzy_find(query, open_tasks)
     if isinstance(match, Ambiguous):
-        shown = "; ".join(t.title for t in match.candidates[:5])
-        return ChatReaction(
-            text=f"I've got a few tasks that could match - which one? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
+        return _clarify_reaction(
+            "I've got a few tasks that could match:", "task", match.candidates, "title"
         )
     if match is None:
         match = convo.resolve(query, state, open_tasks)
     if match is None and not query and len(open_tasks) == 1:
         match = open_tasks[0]
     if match is None:
-        shown = "; ".join(t.title for t in open_tasks[:5])
-        return ChatReaction(
-            text=f"Not sure which task you mean - your open ones: {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+        return _clarify_reaction("Not sure which task you mean:", "task", open_tasks, "title")
     task_manager.cancel_task(match.id)
     return ChatReaction(
         text=f'Okay, cancelled "{match.title}".',
@@ -491,26 +582,18 @@ def _complete_reminder_reaction(tool_args: dict, state: Optional[dict] = None) -
     query = tool_args.get("query", "")
     selection = convo.resolve_selection(query, state, pending)
     if selection is not None:
-        return _multi_action_reaction(selection, "reminder", "complete")
+        return _multi_action_reaction([("reminder", i) for i in selection], "complete")
     match = _fuzzy_find(query, pending)
     if isinstance(match, Ambiguous):
-        shown = "; ".join(r.title for r in match.candidates[:5])
-        return ChatReaction(
-            text=f"I've got a few reminders that could match - which one? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
+        return _clarify_reaction(
+            "I've got a few reminders that could match:", "reminder", match.candidates, "title"
         )
     if match is None:
         match = convo.resolve(query, state, pending)
     if match is None and not query and len(pending) == 1:
         match = pending[0]
     if match is None:
-        shown = "; ".join(r.title for r in pending[:5])
-        return ChatReaction(
-            text=f"Not sure which reminder you mean - your pending ones: {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+        return _clarify_reaction("Not sure which reminder you mean:", "reminder", pending, "title")
     reminder_manager.complete_reminder(match.id)
     return ChatReaction(
         text=f'Done! Marked "{match.title}" as complete.',
@@ -533,26 +616,18 @@ def _cancel_reminder_reaction(tool_args: dict, state: Optional[dict] = None) -> 
     query = tool_args.get("query", "")
     selection = convo.resolve_selection(query, state, pending)
     if selection is not None:
-        return _multi_action_reaction(selection, "reminder", "cancel")
+        return _multi_action_reaction([("reminder", i) for i in selection], "cancel")
     match = _fuzzy_find(query, pending)
     if isinstance(match, Ambiguous):
-        shown = "; ".join(r.title for r in match.candidates[:5])
-        return ChatReaction(
-            text=f"I've got a few reminders that could match - which one? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
+        return _clarify_reaction(
+            "I've got a few reminders that could match:", "reminder", match.candidates, "title"
         )
     if match is None:
         match = convo.resolve(query, state, pending)
     if match is None and not query and len(pending) == 1:
         match = pending[0]
     if match is None:
-        shown = "; ".join(r.title for r in pending[:5])
-        return ChatReaction(
-            text=f"Not sure which reminder you mean - your pending ones: {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+        return _clarify_reaction("Not sure which reminder you mean:", "reminder", pending, "title")
     reminder_manager.cancel_reminder(match.id)
     return ChatReaction(
         text=f'Okay, cancelled "{match.title}".',
@@ -574,26 +649,18 @@ def _cancel_timer_reaction(tool_args: dict, state: Optional[dict] = None) -> "Ch
     query = tool_args.get("query", "")
     selection = convo.resolve_selection(query, state, active)
     if selection is not None:
-        return _multi_action_reaction(selection, "timer", "cancel")
+        return _multi_action_reaction([("timer", i) for i in selection], "cancel")
     match = _fuzzy_find(query, active, title_attr="label")
     if isinstance(match, Ambiguous):
-        shown = "; ".join(t.label for t in match.candidates[:5])
-        return ChatReaction(
-            text=f"I've got a few timers that could match - which one? {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
+        return _clarify_reaction(
+            "I've got a few timers that could match:", "timer", match.candidates, "label"
         )
     if match is None:
         match = convo.resolve(query, state, active)
     if match is None and not query and len(active) == 1:
         match = active[0]
     if match is None:
-        shown = "; ".join(t.label for t in active[:5])
-        return ChatReaction(
-            text=f"Not sure which timer you mean - running ones: {shown}.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+        return _clarify_reaction("Not sure which timer you mean:", "timer", active, "label")
     timer_manager.cancel_timer(match.id)
     return ChatReaction(
         text=f'Okay, stopped "{match.label}".',
@@ -859,9 +926,8 @@ def _check_on_reaction(tool_args: dict, _state: Optional[dict] = None) -> "ChatR
             candidates += [t.title for t in task_match.candidates]
         elif task_match is not None:
             candidates.append(task_match.title)
-        shown = "; ".join(candidates[:5])
         return ChatReaction(
-            text=f"I've got a few things that could match - which one? {shown}.",
+            text=f"I've got a few things that could match:\n{_numbered_list(candidates)}",
             emotion=Emotion.CURIOUS,
             animation=CharacterState.THINKING,
         )
@@ -932,16 +998,17 @@ def _complete_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) 
         # conversation_state.py's resolve_selection_typed()).
         multi = convo.resolve_selection_typed(query, state, combined)
         if multi is not None:
-            entity_kind = multi[0][0]
-            return _multi_action_reaction([item for _, item in multi], entity_kind, "complete")
-        resolved = convo.resolve_typed(query, state, combined)
+            return _multi_action_reaction(multi, "complete")
+        # Kind-qualified contextual reference ("that timer", "the task I
+        # just added") - conversational-issues report P1 ("Expand
+        # Conversational Reference Model") - checked before the generic
+        # resolve_typed() below, since a named kind is a stronger signal
+        # than a bare pronoun/ordinal.
+        resolved = convo.resolve_contextual_kind(query, state, combined)
         if resolved is None:
-            shown = "; ".join(f"{kind}: {item.title}" for kind, item in combined[:5])
-            return ChatReaction(
-                text=f"Which one do you mean? {shown}.",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            resolved = convo.resolve_typed(query, state, combined)
+        if resolved is None:
+            return _clarify_typed_reaction("Which one do you mean?", combined)
         kind, item = resolved
     else:
         kind, item = combined[0]
@@ -990,24 +1057,16 @@ def _cancel_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) ->
             animation=CharacterState.CONFUSED,
         )
 
-    def _label(kind: str, item) -> str:
-        title = item.label if kind == "timer" else item.title
-        return f"{kind}: {title}"
-
     query = tool_args.get("query", "it")
     if len(combined) > 1:
         multi = convo.resolve_selection_typed(query, state, combined)
         if multi is not None:
-            entity_kind = multi[0][0]
-            return _multi_action_reaction([item for _, item in multi], entity_kind, "cancel")
-        resolved = convo.resolve_typed(query, state, combined)
+            return _multi_action_reaction(multi, "cancel")
+        resolved = convo.resolve_contextual_kind(query, state, combined)
         if resolved is None:
-            shown = "; ".join(_label(kind, item) for kind, item in combined[:5])
-            return ChatReaction(
-                text=f"Which one do you mean? {shown}.",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            resolved = convo.resolve_typed(query, state, combined)
+        if resolved is None:
+            return _clarify_typed_reaction("Which one do you mean?", combined)
         kind, item = resolved
     else:
         kind, item = combined[0]
@@ -1450,6 +1509,9 @@ def handle_message(
 
     if intent.name == "greeting" and familiarity in _FAMILIAR_GREETINGS:
         response = _FAMILIAR_GREETINGS[familiarity]
+
+    if intent.name == "relational" and familiarity in _FAMILIAR_RELATIONAL_RESPONSES:
+        response = _FAMILIAR_RELATIONAL_RESPONSES[familiarity]
 
     # The rule-based detector above is intentionally deterministic for
     # actionable things (reminders/timers/tasks - spec section 41, these

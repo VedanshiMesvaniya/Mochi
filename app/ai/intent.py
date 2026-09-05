@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as time_of_day, timedelta
 from typing import Optional
 
-from app.ai.conversation_state import MULTI_REFERENCE_SRC
+from app.ai.conversation_state import CONTEXTUAL_REFERENCE_SRC, MULTI_REFERENCE_SRC
 from app.character.state_machine import CharacterState, Emotion
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,20 @@ class DetectedIntent:
 GREETINGS = ("hi", "hello", "hey", "yo", "good morning", "good evening", "morning")
 FAREWELLS = ("bye", "goodbye", "see you", "gtg", "good night", "night")
 THANKS = ("thanks", "thank you", "ty", "thx")
+# Relational/social conversation (conversational-issues report P1,
+# "Improve Relational/Emotional Conversation Understanding") - phrases
+# about the relationship/absence itself ("did you miss me", "I'm back"),
+# as opposed to a plain greeting/farewell. Deliberately its own category
+# rather than folded into GREETINGS: a greeting just needs acknowledging,
+# but these are actually asking something about how Mochi feels about the
+# person being away, and deserve a response that engages with that rather
+# than a generic "hi".
+RELATIONAL_PHRASES = (
+    "did you miss me", "were you waiting for me", "i'm back", "im back",
+    "i am back", "i was gone for a while", "i've been gone", "ive been gone",
+    "you missed me", "did you notice i was gone", "did you notice i left",
+    "did you notice i was away",
+)
 # Compliments are split by intensity so the reaction actually varies (spec:
 # "give all pending expressions" - BLUSH and HEART were previously
 # unreachable from chat): a mild "cute"/"good cat" gets a shy BLUSH, while
@@ -325,6 +339,13 @@ _REFERENCE_TARGET = r"(?:it|that|this|the (?:first|second|third|fourth|fifth|las
 # the trigger and the resolver can never recognise different phrasing.
 _MULTI_REFERENCE_TARGET = rf"(?:{MULTI_REFERENCE_SRC})"
 
+# Kind-qualified contextual reference ("that timer", "the task I just
+# added") - conversational-issues report P1: "Expand Conversational
+# Reference Model". Sourced from conversation_state.CONTEXTUAL_REFERENCE_SRC
+# for the same one-definition-shared-by-trigger-and-resolver reason as
+# _MULTI_REFERENCE_TARGET above.
+_CONTEXTUAL_REFERENCE_TARGET = rf"(?:{CONTEXTUAL_REFERENCE_SRC})"
+
 AMBIGUOUS_DONE_TRIGGER = re.compile(
     r"\b(mark " + _REFERENCE_TARGET + r" (?:as )?done|"
     + _REFERENCE_TARGET + r"(?:'s| is) done|"
@@ -334,7 +355,9 @@ AMBIGUOUS_DONE_TRIGGER = re.compile(
     r"mark " + _MULTI_REFERENCE_TARGET + r" (?:as )?done|"
     + _MULTI_REFERENCE_TARGET + r" (?:check(?:ed)? (?:as )?done|check(?:ed)? off|"
     r"(?:'s| is| are) (?:done|finished))|"
-    r"complete " + _MULTI_REFERENCE_TARGET + r"|finish " + _MULTI_REFERENCE_TARGET
+    r"complete " + _MULTI_REFERENCE_TARGET + r"|finish " + _MULTI_REFERENCE_TARGET + r"|"
+    r"mark " + _CONTEXTUAL_REFERENCE_TARGET + r" (?:as )?done|"
+    r"complete " + _CONTEXTUAL_REFERENCE_TARGET + r"|finish " + _CONTEXTUAL_REFERENCE_TARGET
     + r")\b",
     re.IGNORECASE,
 )
@@ -363,17 +386,22 @@ AMBIGUOUS_CANCEL_TRIGGER = re.compile(
     r"\b(cancel " + _REFERENCE_TARGET + r"|delete " + _REFERENCE_TARGET + r"|"
     r"remove " + _REFERENCE_TARGET + r"|scratch that|undo that|nix it|"
     r"cancel " + _MULTI_REFERENCE_TARGET + r"|delete " + _MULTI_REFERENCE_TARGET
-    + r"|remove " + _MULTI_REFERENCE_TARGET + r")\b",
+    + r"|remove " + _MULTI_REFERENCE_TARGET + r"|"
+    r"cancel " + _CONTEXTUAL_REFERENCE_TARGET + r"|delete " + _CONTEXTUAL_REFERENCE_TARGET
+    + r"|remove " + _CONTEXTUAL_REFERENCE_TARGET + r")\b",
     re.IGNORECASE,
 )
 
-# Tried in this order (multi-target first) so a phrase that could
-# technically satisfy both - there isn't one today, since "one" is
-# deliberately excluded from MULTI_REFERENCE_SRC, but keeping the more
-# specific/quantified pattern first is the safer default - always prefers
-# the multi-target reading over the singular one.
+# Tried in this order (contextual, then multi-target, then singular) so a
+# phrase that could technically satisfy more than one - "that timer"
+# contains "that", which also matches the plain singular pattern - always
+# prefers the most specific reading. Python's alternation tries each
+# branch in order and takes the first that matches starting at the same
+# position, so listing the more specific pattern first is what makes
+# that preference actually take effect.
 _ANY_REFERENCE_PATTERN = re.compile(
-    _MULTI_REFERENCE_TARGET + "|" + _REFERENCE_TARGET, re.IGNORECASE
+    _CONTEXTUAL_REFERENCE_TARGET + "|" + _MULTI_REFERENCE_TARGET + "|" + _REFERENCE_TARGET,
+    re.IGNORECASE,
 )
 
 
@@ -1198,6 +1226,21 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.SAD,
             animation=CharacterState.SAD,
             response="Aww, okay... come back soon!",
+        )
+    # Checked before GREETINGS - "I'm back" would also read as a kind of
+    # greeting, but it's specifically about the person's absence, which
+    # deserves a warmer, relationship-aware response rather than a plain
+    # "hi" (report acceptance criterion: "Mochi does not claim memories/
+    # events that do not exist" - the default response below stays
+    # general rather than inventing a specific remembered absence; see
+    # chat_engine.py for how familiarity flavors this further, same
+    # pattern as GREETINGS below).
+    if _matches_any(lowered, RELATIONAL_PHRASES):
+        return DetectedIntent(
+            name="relational",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="Aww, I'm still getting to know you, but I'm glad you're here!",
         )
     if _matches_any(lowered, GREETINGS):
         return DetectedIntent(

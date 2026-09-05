@@ -153,3 +153,87 @@ def test_all_of_them_works_across_reminders_too(temp_db):
     assert reminder_manager.list_reminders(
         status=reminder_manager.ReminderStatus.PENDING
     ) == []
+
+
+def test_ambiguous_clarification_is_numbered(temp_db):
+    """Conversational-issues report P1 ("Improve Ambiguous Action
+    Responses"): a raw "; "-joined dump of candidates is replaced with a
+    numbered list, so a follow-up can reference "the second one"."""
+    handle_message("remind me to call mom at 7pm")
+    handle_message("add task call mom now")
+
+    reaction = handle_message("cancel it")
+
+    assert "1." in reaction.text
+    assert "2." in reaction.text
+
+
+def test_ambiguous_clarification_follow_up_ordinal_resolves_across_types(temp_db):
+    """"the second one" after a cross-type clarification (task + reminder
+    both matched) must resolve to whichever of the two was actually
+    listed second, not silently default to one type."""
+    handle_message("remind me to call mom at 7pm")
+    handle_message("add task call mom now")
+    clarify = handle_message("cancel it")
+
+    follow_up = handle_message(
+        "cancel the second one", conversation_state=clarify.conversation_state
+    )
+
+    assert "call mom" in follow_up.text.lower()
+    assert task_manager.list_tasks() != []  # the task survives
+    assert (
+        reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+        == []
+    )  # the reminder (2nd listed) was the one cancelled
+
+
+def test_ambiguous_clarification_follow_up_multi_select_resolves_across_types(temp_db):
+    """"both" after a cross-type clarification must be able to act on one
+    of each type in a single follow-up."""
+    handle_message("remind me to call mom at 7pm")
+    handle_message("add task call mom now")
+    clarify = handle_message("cancel it")
+
+    follow_up = handle_message("cancel both", conversation_state=clarify.conversation_state)
+
+    assert "2" in follow_up.text
+    assert task_manager.list_tasks() == []
+    assert (
+        reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+        == []
+    )
+
+
+def test_contextual_kind_reference_resolves_to_matching_type_only(temp_db):
+    """Conversational-issues report P1 ("Expand Conversational Reference
+    Model"): "that timer" must resolve to the timer just created even
+    when an open task exists too, and must never guess a different type
+    - see test_contextual_kind_reference_refuses_wrong_kind below."""
+    handle_message("add task call mom now")
+    created = handle_message("set a timer for 10 minutes")
+
+    reaction = handle_message(
+        "cancel that timer", conversation_state=created.conversation_state
+    )
+
+    assert "timer" in reaction.text.lower()
+    assert task_manager.list_tasks() != []
+
+
+def test_contextual_kind_reference_refuses_wrong_kind(temp_db):
+    """"that reminder" when the last remembered thing was a timer must
+    not resolve to the timer just because it's the only thing remembered
+    - it should behave as if no reminder was referenced at all."""
+    handle_message("add task call mom now")
+    created = handle_message("set a timer for 10 minutes")
+
+    from app.ai import conversation_state as convo
+    from app.timers import manager as timer_manager
+
+    combined = [("timer", t) for t in timer_manager.list_active_timers()]
+    resolved = convo.resolve_contextual_kind(
+        "cancel that reminder", created.conversation_state, combined
+    )
+
+    assert resolved is None
