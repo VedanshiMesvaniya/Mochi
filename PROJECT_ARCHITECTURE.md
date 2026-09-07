@@ -1073,6 +1073,53 @@ throwaway checklist. Summary of what was fixed:
 
 ---
 
+## 8b. Sleep/wake reliability and chat bubble sizing
+
+Two recurring-bug reports turned out to share the same root cause:
+**something set UI state directly, bypassing the component that owns
+it, so the very next tick recomputed things from scratch and quietly
+undid the change.**
+
+**Sleep.** `app/character/pet.py`'s right-click "Sleep" menu action used
+to call `state_machine.set_state(CharacterState.SLEEP)` directly.
+`app/character/behavior.py`'s `BehaviorEngine` had no idea anything had
+changed, so its own idle clock (still short of the boredom/sleep
+thresholds) meant the very next autonomous tick recomputed IDLE/HAPPY
+like normal and silently woke Mochi back up within a couple of seconds.
+`app/reminders/notifications.py`'s `ReminderNotifier` had the identical
+bug for `ALERT`/`ANGRY`. The fix is a `manual_sleep` flag plus
+`BehaviorEngine.force_sleep()`: once set, `_choose_state()` reports
+`CharacterState.SLEEP` on every tick regardless of the idle clock, and
+only `mark_interacted()` (a real wake-up - opening chat, clicking/
+dragging, a reminder firing) clears it. The menu action now toggles
+between "Sleep" and "Wake up" through the engine instead of touching
+`state_machine` directly, `ReminderNotifier` now calls
+`mark_interacted()` before waking Mochi so the wake actually sticks, and
+`PetWindow._enter_sleep_state()` shows a one-time speech bubble
+("Zzz... I'm going to sleep now. Wake me up if you need me!") on the
+actual transition into sleep, whether that transition was autonomous
+(boredom) or manual.
+
+**Chat bubble sizing.** `app/ui/chat_window.py`'s `ChatBubble` computes
+its wrap width up front via `QFontMetrics`, since `QListWidgetItem`
+doesn't support `heightForWidth` and its `sizeHint()` is only ever read
+once. Every previous fix to this (padding math, DPI, clipping) patched a
+symptom of the same gap: the width was always measured against one
+hardcoded constant (`_BUBBLE_MAX_WIDTH`), correct only for whatever
+window size that constant happened to be tuned against, and never
+re-measured on resize. `ChatLogWidget` (a thin `QListWidget` subclass)
+fixes the actual gap: it derives each bubble's max width from its own
+real viewport width (`_max_bubble_width()`, a percentage of the log's
+current width clamped between `_BUBBLE_MIN_WIDTH` and
+`_BUBBLE_MAX_WIDTH`), and its `resizeEvent()` sweeps every existing row
+and refreshes it whenever that width actually changes - so correct
+wrapping holds at any window size or DPI scale, not just the one size it
+happened to be tested at. `_BUBBLE_MAX_WIDTH` remains as a fallback for
+bubbles constructed standalone (outside a sized `ChatLogWidget`, e.g. in
+tests).
+
+---
+
 ## 9. Calendar: Google Calendar (V3 read + V4 confirmed writes)
 
 ```text

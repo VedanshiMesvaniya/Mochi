@@ -55,6 +55,49 @@ def test_bubble_label_width_still_caps_at_max_width(qapp):
     assert width == _BUBBLE_MAX_WIDTH
 
 
+def test_bubble_width_adapts_to_the_logs_actual_viewport_on_resize(qapp):
+    """Regression: bubble width used to be measured against one hardcoded
+    constant forever, so it was only ever correct at whatever window size
+    it happened to be tuned against - resizing the chat window (or a
+    different DPI/font scale) never re-measured anything. ChatLogWidget
+    must recompute every existing bubble's width when its own size
+    actually changes."""
+    from app.ui.chat_window import _BUBBLE_MAX_WIDTH, _BUBBLE_MIN_WIDTH, ChatWindow
+
+    window = ChatWindow()
+    window.show()
+    window.resize(700, 500)
+    qapp.processEvents()
+    window._append("Mochi", "a reasonably normal length reply here")
+
+    wide_width = window.message_log._max_bubble_width()
+    assert _BUBBLE_MIN_WIDTH <= wide_width <= _BUBBLE_MAX_WIDTH
+
+    # Shrink the window a lot - every bubble's max width should shrink
+    # along with it, not stay pinned to whatever it measured at first.
+    window.resize(window.minimumWidth(), window.minimumHeight())
+    qapp.processEvents()
+    narrow_width = window.message_log._max_bubble_width()
+    assert narrow_width < wide_width
+    assert narrow_width >= _BUBBLE_MIN_WIDTH
+
+    last_index = window.message_log.count() - 1
+    bubble = window.message_log.itemWidget(window.message_log.item(last_index))
+    assert bubble.label.maximumWidth() <= narrow_width
+    window.close()
+
+
+def test_bubble_width_never_shrinks_below_the_floor_in_a_tiny_window(qapp):
+    from app.ui.chat_window import _BUBBLE_MIN_WIDTH, ChatWindow
+
+    window = ChatWindow()
+    window.resize(window.minimumWidth(), window.minimumHeight())
+    qapp.processEvents()
+
+    assert window.message_log._max_bubble_width() >= _BUBBLE_MIN_WIDTH
+    window.close()
+
+
 def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
     from app.ui.chat_window import ChatWorker
 

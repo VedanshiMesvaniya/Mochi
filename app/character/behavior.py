@@ -76,6 +76,18 @@ class BehaviorEngine:
     _happy_pending: bool = field(default=False, init=False)
     _bored_ticks_remaining: int = field(default=0, init=False)
     _last_bored_state: Optional[CharacterState] = field(default=None, init=False)
+    # True from the moment something explicitly forces Mochi to sleep
+    # right now (see force_sleep() - the right-click "Sleep" menu action)
+    # until the next mark_interacted() call. Bug this fixes: the menu
+    # action used to set CharacterState.SLEEP directly on the state
+    # machine, completely bypassing this engine - so the engine's own
+    # idle clock hadn't necessarily crossed sleep_after_seconds yet, and
+    # the very next autonomous tick (every tick_interval_seconds) would
+    # recompute IDLE/HAPPY/bored like normal and silently undo the
+    # manual sleep within a couple of seconds. Checking this flag first
+    # in _choose_state() makes a manual sleep just as "sticky" as an
+    # autonomous one, and it can only be lifted by an actual interaction.
+    manual_sleep: bool = field(default=False, init=False)
     # True while something more important than idle autonomy owns the
     # face - specifically, chat awaiting a reply (see PetWindow's
     # _on_chat_thinking/_on_chat_reaction). Bug this fixes: mark_interacted()
@@ -98,6 +110,7 @@ class BehaviorEngine:
         self._happy_pending = True
         self._bored_ticks_remaining = 0
         self._last_bored_state = None
+        self.manual_sleep = False  # any real interaction always wakes Mochi up
 
     def enter_busy(self) -> None:
         """Suppress every tick-driven state change (see _choose_state)
@@ -116,13 +129,28 @@ class BehaviorEngine:
         self.busy = False
         self.mark_interacted()
 
+    def force_sleep(self) -> None:
+        """Explicitly put Mochi to sleep right now, regardless of how long
+        it's actually been idle - used by the right-click "Sleep" menu
+        action. See `manual_sleep`'s field comment above for the bug this
+        fixes: without this, a manually-forced sleep got quietly undone by
+        the very next tick. Only mark_interacted() (a real wake-up) clears
+        this again."""
+        self.manual_sleep = True
+        self._bored_ticks_remaining = 0
+        self._happy_pending = False
+
     def default_expression(self) -> CharacterState:
         """The face Mochi should rest on whenever nothing else is actively
         being shown (see PetWindow._on_expression_hold_expired, called once
         a reaction's hold timer expires) - HAPPY right after an
         interaction, settling to a calm IDLE once that brief window has
-        passed. Doesn't account for bored/sleepy/sleep - tick() sets those
-        directly, they're never left for a caller to fall back into."""
+        passed. Doesn't account for bored/sleepy - tick() sets those
+        directly, they're never left for a caller to fall back into. Does
+        account for manual_sleep, so a reaction hold expiring while
+        manually asleep settles back to SLEEP rather than popping to IDLE."""
+        if self.manual_sleep:
+            return CharacterState.SLEEP
         if self.has_interacted and self._idle_seconds < self.happy_hold_seconds:
             return CharacterState.HAPPY
         return CharacterState.IDLE
@@ -153,6 +181,9 @@ class BehaviorEngine:
         showing and shouldn't be interrupted by this engine)."""
         if self.busy:
             return None
+
+        if self.manual_sleep:
+            return CharacterState.SLEEP
 
         if not self.has_interacted:
             return CharacterState.IDLE

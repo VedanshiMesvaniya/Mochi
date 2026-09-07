@@ -43,7 +43,16 @@ class ReminderNotifier:
         reminder_id = payload.get("id")
         logger.info("Notifying user about due reminder: %s", title)
 
-        # 1: perk up
+        # 1: perk up. A due reminder is a legitimate reason to wake Mochi
+        # up (even from sleep) - mark_interacted() first so the wake
+        # actually sticks; without it, the very next autonomous behavior
+        # tick would recompute idle/bored/sleep state as if nothing had
+        # happened and silently stomp ALERT within a couple of seconds
+        # (same class of bug as the manual Sleep menu action - see
+        # BehaviorEngine.manual_sleep).
+        behavior_engine = getattr(self.pet_window, "behavior_engine", None)
+        if behavior_engine is not None:
+            behavior_engine.mark_interacted()
         self.pet_window.state_machine.set_state(CharacterState.ALERT)
 
         # 2: sound (via event bus - the (future) sound player subscribes to this)
@@ -85,6 +94,9 @@ class ReminderNotifier:
             return  # completed/snoozed/cancelled - nothing to be annoyed about
 
         logger.info("Reminder #%s ('%s') still ignored - reacting annoyed", reminder_id, title)
+        behavior_engine = getattr(self.pet_window, "behavior_engine", None)
+        if behavior_engine is not None:
+            behavior_engine.mark_interacted()
         self.pet_window.state_machine.set_state(CharacterState.ANGRY)
         event_bus.publish(Events.REMINDER_IGNORED, {"id": reminder_id, "title": title})
         if hasattr(self.pet_window, "show_speech_bubble"):

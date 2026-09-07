@@ -362,9 +362,7 @@ class PetWindow(QWidget):
         self.action_exit = QAction("Exit", self)
 
         self.action_exit.triggered.connect(QApplication.quit)
-        self.action_sleep.triggered.connect(
-            lambda: self.state_machine.set_state(CharacterState.SLEEP)
-        )
+        self.action_sleep.triggered.connect(self._on_sleep_menu_triggered)
         self.action_chat.triggered.connect(self.on_open_chat_requested)
         self.action_refresh_trends.triggered.connect(self._on_refresh_trends_requested)
 
@@ -377,6 +375,12 @@ class PetWindow(QWidget):
             self.action_exit,
         ):
             self.context_menu.addAction(action)
+
+        # Menu label needs to flip between "Sleep"/"Wake up" depending on
+        # whether Mochi is currently asleep - recomputed each time the menu
+        # is about to be shown rather than once at construction, since
+        # sleep can also be entered autonomously (boredom) between opens.
+        self.context_menu.aboutToShow.connect(self._update_sleep_action_label)
 
     def _setup_timers(self) -> None:
         # Face animation tick - blink/pulse/talk-frame advance + redraw.
@@ -517,9 +521,57 @@ class PetWindow(QWidget):
             self.behavior_engine.tick(self._apply_behavior_state)
 
     def _apply_behavior_state(self, state: CharacterState) -> None:
+        if state == CharacterState.SLEEP:
+            # Announce only on the actual transition into sleep, not on
+            # every subsequent tick that just reaffirms it (see
+            # BehaviorEngine._choose_state - SLEEP is returned every tick
+            # once reached, by design, so it can't silently bounce back
+            # to something else on its own).
+            self._enter_sleep_state(announce=self.state_machine.state != CharacterState.SLEEP)
+            return
         self.state_machine.set_state(state)
         if state in BORED_EXPRESSIONS:
             self._maybe_tell_joke()
+
+    # ------------------------------------------------------------------
+    # Sleep (spec: Mochi should actually stay asleep once it gets there,
+    # whether that's the user putting it to sleep or it dozing off from
+    # boredom - and it should say so rather than just quietly vanishing.
+    # See BehaviorEngine.manual_sleep/force_sleep for the underlying bug
+    # this fixes: a forced SLEEP that didn't sync with the engine used to
+    # get silently undone by the very next autonomous tick.)
+    # ------------------------------------------------------------------
+    def _enter_sleep_state(self, *, announce: bool) -> None:
+        self._expression_hold_timer.stop()
+        self._held_state = None
+        self.state_machine.set_state(CharacterState.SLEEP)
+        if announce:
+            self.show_speech_bubble(
+                "Zzz... I'm going to sleep now. Wake me up if you need me!",
+                duration_ms=5000,
+            )
+
+    def _wake_from_sleep(self) -> None:
+        self.behavior_engine.mark_interacted()  # also clears manual_sleep
+        self._expression_hold_timer.stop()
+        self._held_state = None
+        self._show_reaction(CharacterState.EXCITED, hold_ms=1200)
+
+    def _on_sleep_menu_triggered(self) -> None:
+        """Right-click 'Sleep'/'Wake up' toggle. Routes through the
+        behavior engine (force_sleep()/mark_interacted()) instead of
+        touching state_machine directly, so the choice actually sticks -
+        see BehaviorEngine.manual_sleep for why that matters."""
+        if self.state_machine.state == CharacterState.SLEEP:
+            self._wake_from_sleep()
+        else:
+            self.behavior_engine.force_sleep()
+            self._enter_sleep_state(announce=True)
+
+    def _update_sleep_action_label(self) -> None:
+        self.action_sleep.setText(
+            "Wake up" if self.state_machine.state == CharacterState.SLEEP else "Sleep"
+        )
 
     def _maybe_tell_joke(self) -> None:
         """Occasionally, while genuinely bored and self-entertaining

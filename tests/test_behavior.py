@@ -128,6 +128,47 @@ def test_bored_cycles_through_multiple_expressions_without_flickering_every_tick
     assert len(set(seen)) > 1  # actually varies, not stuck on one face
 
 
+def test_force_sleep_sticks_even_if_idle_clock_has_not_crossed_threshold():
+    """Regression: the right-click 'Sleep' menu action used to set
+    CharacterState.SLEEP directly on the state machine, bypassing this
+    engine entirely - so with the idle clock nowhere near
+    sleep_after_seconds, the very next tick recomputed IDLE/HAPPY like
+    normal and silently woke Mochi back up within a couple of seconds.
+    force_sleep() must make the tick machinery itself report SLEEP
+    regardless of idle_seconds."""
+    engine = BehaviorEngine(
+        enabled=True,
+        tick_interval_seconds=2,
+        happy_hold_seconds=15,
+        bored_after_seconds=300,
+        sleepy_after_seconds=480,
+        sleep_after_seconds=600,
+    )
+    engine.mark_interacted()  # idle_seconds is 0 - nowhere near any threshold
+    engine.force_sleep()
+
+    seen = []
+    for _ in range(5):  # 10s of ticks - far short of sleep_after_seconds
+        engine.tick(lambda s: seen.append(s))
+    assert seen and all(s == CharacterState.SLEEP for s in seen)
+    assert engine.default_expression() == CharacterState.SLEEP
+
+
+def test_force_sleep_only_lifted_by_a_real_interaction():
+    engine = BehaviorEngine(enabled=True, tick_interval_seconds=2)
+    engine.mark_interacted()
+    engine.force_sleep()
+
+    engine.tick(lambda s: None)
+    assert engine.manual_sleep is True
+
+    engine.mark_interacted()  # the only thing that should wake it back up
+    assert engine.manual_sleep is False
+    seen = []
+    engine.tick(lambda s: seen.append(s))
+    assert CharacterState.SLEEP not in seen
+
+
 def test_next_interval_returns_tick_interval():
     engine = BehaviorEngine(tick_interval_seconds=3.0)
     assert engine.next_interval() == 3.0
