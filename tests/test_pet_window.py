@@ -468,6 +468,107 @@ def test_speech_bubble_position_stays_within_screen_when_character_near_edge(qap
     window.close()
 
 
+def test_sleep_menu_action_sticks_and_does_not_wake_itself_up(qapp, temp_db):
+    """Regression: right-click Sleep used to set CharacterState.SLEEP
+    directly, bypassing the behavior engine - so the very next autonomous
+    tick recomputed idle/happy state as if nothing had happened and woke
+    Mochi back up within a couple of seconds. It must now stay asleep
+    across many ticks until something actually wakes it."""
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    window.behavior_engine.mark_interacted()  # idle_seconds is 0, nowhere near sleepy/sleep
+
+    window._on_sleep_menu_triggered()
+    assert window.state_machine.state == CharacterState.SLEEP
+
+    for _ in range(10):
+        window.behavior_engine.tick(window._apply_behavior_state)
+    assert window.state_machine.state == CharacterState.SLEEP
+    window.close()
+
+
+def test_sleep_menu_action_toggles_to_wake_when_already_asleep(qapp, temp_db):
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    window._on_sleep_menu_triggered()
+    assert window.state_machine.state == CharacterState.SLEEP
+
+    window._on_sleep_menu_triggered()
+    assert window.state_machine.state != CharacterState.SLEEP
+    assert window.behavior_engine.manual_sleep is False
+    window.close()
+
+
+def test_sleep_menu_label_reflects_current_state(qapp, temp_db):
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    window._update_sleep_action_label()
+    assert window.action_sleep.text() == "Sleep"
+
+    window._on_sleep_menu_triggered()
+    window._update_sleep_action_label()
+    assert window.action_sleep.text() == "Wake up"
+    window.close()
+
+
+def test_going_to_sleep_announces_with_a_speech_bubble(qapp, temp_db):
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    window._on_sleep_menu_triggered()
+
+    assert "sleep" in window.speech_bubble.text().lower()
+    assert window._speech_bubble_timer.isActive()
+    window.close()
+
+
+def test_autonomous_boredom_sleep_also_announces_once(qapp, temp_db):
+    """The MD explicitly asks for this: when Mochi falls asleep on its own
+    out of boredom, it should tell the user, not just silently vanish."""
+    from app.character.pet import PetWindow
+
+    window = PetWindow()
+    window.behavior_engine.mark_interacted()
+
+    window._apply_behavior_state(CharacterState.SLEEP)
+    assert window.state_machine.state == CharacterState.SLEEP
+    assert "wake me up" in window.speech_bubble.text().lower()
+
+    # A second consecutive SLEEP tick (as the engine keeps reaffirming it
+    # every tick once asleep - see BehaviorEngine._choose_state) must not
+    # spam another bubble - set a different text and confirm it's left
+    # alone rather than getting reset back to the sleep announcement.
+    window.speech_bubble.setText("untouched")
+    window._apply_behavior_state(CharacterState.SLEEP)
+    assert window.speech_bubble.text() == "untouched"
+    window.close()
+
+
+def test_reminder_due_wakes_mochi_up_and_it_sticks(qapp, temp_db):
+    """Regression: ReminderNotifier used to set CharacterState.ALERT
+    directly without telling the behavior engine, so a due reminder while
+    Mochi was asleep got stomped straight back to SLEEP within a couple
+    of seconds instead of actually staying awake to notify the user."""
+    from app.character.pet import PetWindow
+    from app.reminders.notifications import ReminderNotifier
+
+    window = PetWindow()
+    window._on_sleep_menu_triggered()
+    assert window.state_machine.state == CharacterState.SLEEP
+
+    notifier = ReminderNotifier(window)
+    notifier._on_reminder_due({"title": "Call Mom", "id": 1})
+    assert window.state_machine.state == CharacterState.ALERT
+
+    for _ in range(5):
+        window.behavior_engine.tick(window._apply_behavior_state)
+    assert window.state_machine.state != CharacterState.SLEEP
+    window.close()
+
+
 def test_clamp_helper_handles_widget_larger_than_screen():
     from app.character.pet import _clamp
 

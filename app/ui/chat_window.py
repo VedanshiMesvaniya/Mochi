@@ -71,7 +71,19 @@ ReactionCallback = Callable[[ChatReaction], None]
 # more awkwardly at the old 230px width once each item is on its own
 # line, and a touch more room plus a slightly larger font reads less
 # cramped without changing the window's overall compact footprint.
+#
+# This is now a FALLBACK ceiling only - used when a bubble isn't parented
+# inside a ChatLogWidget yet (e.g. constructed standalone in a test) and
+# has no real viewport width to measure against. Once inside the log,
+# ChatLogWidget recomputes each bubble's actual max width from its own
+# viewport (see _max_bubble_width()/resizeEvent() below), so the effective
+# cap now tracks the real window size instead of always being this one
+# hardcoded number - see ChatLogWidget's docstring for the bug this fixes
+# (resizing the window / running at a different DPI never used to
+# re-measure anything).
 _BUBBLE_MAX_WIDTH = 260
+_BUBBLE_MIN_WIDTH = 140  # never squeeze bubbles narrower than this, even in a tiny window
+_BUBBLE_WIDTH_RATIO = 0.78  # a bubble may use up to this fraction of the log's own width
 _BUBBLE_H_PADDING_LEFT = 13
 _BUBBLE_H_PADDING_RIGHT = 13
 _MOCHI_BUBBLE_STYLE = (
@@ -114,15 +126,16 @@ class ChatBubble(QWidget):
     row is ever wider than the log itself.
     """
 
-    def __init__(self, sender: str, text: str, parent=None) -> None:
+    def __init__(self, sender: str, text: str, parent=None, max_width: int = _BUBBLE_MAX_WIDTH) -> None:
         super().__init__(parent)
         self._is_user = sender == "You"
+        self._max_width = max_width
 
         label = QLabel(text)
         label.setWordWrap(True)
         label.setStyleSheet(_USER_BUBBLE_STYLE if self._is_user else _MOCHI_BUBBLE_STYLE)
         label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        label.setFixedWidth(_bubble_label_width(text, label))
+        label.setFixedWidth(_bubble_label_width(text, label, max_width))
         self.label = label  # kept accessible so the typing indicator can
         # update this bubble's text in place instead of adding/removing rows
 
@@ -141,10 +154,22 @@ class ChatBubble(QWidget):
         width too, so it doesn't stay clamped to whatever the very first
         ("thinking") text happened to need."""
         self.label.setText(text)
-        self.label.setFixedWidth(_bubble_label_width(text, self.label))
+        self.label.setFixedWidth(_bubble_label_width(text, self.label, self._max_width))
+
+    def update_max_width(self, max_width: int) -> None:
+        """Re-measure this bubble against a new max width - called by
+        ChatLogWidget.resizeEvent() so every existing bubble keeps hugging
+        its content correctly (or wraps correctly) no matter what size the
+        window ends up being resized to, rather than the max width being
+        a one-time guess baked in at construction time (see ChatLogWidget's
+        docstring for the bug report this fixes)."""
+        if max_width == self._max_width:
+            return
+        self._max_width = max_width
+        self.label.setFixedWidth(_bubble_label_width(self.label.text(), self.label, max_width))
 
 
-def _bubble_label_width(text: str, label: QLabel) -> int:
+def _bubble_label_width(text: str, label: QLabel, max_width: int = _BUBBLE_MAX_WIDTH) -> int:
     """The narrower of (a) how wide `text` would naturally be on one
     line, or (b) the bubble's max width - so a short reply hugs its own
     content instead of always stretching to the max. Multi-line text
@@ -168,7 +193,51 @@ def _bubble_label_width(text: str, label: QLabel) -> int:
     lines = text.splitlines() or [text]
     natural_width = max((metrics.horizontalAdvance(line) for line in lines), default=0)
     padding = _BUBBLE_H_PADDING_LEFT + _BUBBLE_H_PADDING_RIGHT
-    return max(min(natural_width + padding + 6, _BUBBLE_MAX_WIDTH), 24)
+    return max(min(natural_width + padding + 6, max_width), 24)
+
+
+class ChatLogWidget(QListWidget):
+    """The chat message log - a QListWidget of ChatBubble rows, but one
+    that keeps every bubble's wrap width in sync with its own actual
+    on-screen width.
+
+    Root cause of the recurring "bubble sizing" bug reports (padding
+    miscounted, text clipped/wrapped oddly, horizontal scrollbar
+    appearing): every previous fix measured bubbles against a single
+    hardcoded constant (_BUBBLE_MAX_WIDTH) that was only ever correct for
+    whatever one window size it happened to be tuned against. Resizing the
+    chat window, running at a different DPI/font scale, or the log simply
+    ending up narrower than that constant in some layout never
+    re-measured anything, because QListWidgetItem.sizeHint() is a
+    snapshot taken once and never revisited on its own - so each report
+    was really the same underlying gap resurfacing in a new shape.
+
+    This widget makes its own real viewport width the source of truth
+    instead: every bubble is (re)measured against a width actually
+    derived from the log's current size (see _max_bubble_width()), and
+    resizeEvent() sweeps every existing row and refreshes it whenever that
+    width changes - so the fix holds at any window size or DPI, not just
+    the one size it happened to be tested at.
+    """
+
+    def _max_bubble_width(self) -> int:
+        viewport_width = self.viewport().width()
+        if viewport_width <= 0:
+            return _BUBBLE_MAX_WIDTH  # not laid out yet - fall back to the tuned default
+        return max(
+            _BUBBLE_MIN_WIDTH,
+            min(int(viewport_width * _BUBBLE_WIDTH_RATIO), _BUBBLE_MAX_WIDTH),
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        new_max = self._max_bubble_width()
+        for i in range(self.count()):
+            item = self.item(i)
+            bubble = self.itemWidget(item)
+            if isinstance(bubble, ChatBubble):
+                bubble.update_max_width(new_max)
+                item.setSizeHint(bubble.sizeHint())
 
 
 class ChatWorker(QThread):
@@ -266,7 +335,7 @@ class ChatWindow(TranslucentDialog):
         self._history.append(("mochi", greeting))
 
     def _build_ui(self) -> None:
-        self.message_log = QListWidget()
+        self.message_log = ChatLogWidget()
         self.message_log.setWordWrap(True)
         self.message_log.setFocusPolicy(Qt.NoFocus)
         # A little breathing room between messages (previously bubbles
@@ -343,7 +412,7 @@ class ChatWindow(TranslucentDialog):
     # ------------------------------------------------------------------
     def _start_typing_indicator(self) -> None:
         self._typing_frame = 0
-        self._typing_bubble = ChatBubble("Mochi", "thinking")
+        self._typing_bubble = ChatBubble("Mochi", "thinking", max_width=self.message_log._max_bubble_width())
         item = QListWidgetItem()
         item.setFlags(Qt.NoItemFlags)
         item.setSizeHint(self._typing_bubble.sizeHint())
@@ -372,7 +441,7 @@ class ChatWindow(TranslucentDialog):
 
     # ------------------------------------------------------------------
     def _append(self, sender: str, text: str) -> None:
-        bubble = ChatBubble(sender, text)
+        bubble = ChatBubble(sender, text, max_width=self.message_log._max_bubble_width())
         item = QListWidgetItem()
         item.setFlags(Qt.NoItemFlags)  # display-only, not selectable/clickable
         item.setSizeHint(bubble.sizeHint())

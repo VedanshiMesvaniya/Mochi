@@ -89,16 +89,25 @@ near the ear, looping, always contained within the window's own bounds.
 
 **Personality:** a playful kitten that wants attention. Left alone, it
 doesn't sit static — it occasionally perks up (alert or wink), gets
-sleepy, and falls asleep; any interaction wakes it back up. It shows
-"thinking" the instant you send a chat message, gets happy when you
-complete a reminder or task, and gets annoyed if a reminder sits ignored
-for a while. It's meant to be an easygoing companion, not a moderator: the
-LLM system prompt (`app/ai/llm.py`) explicitly tells it to treat ordinary
-topics — relationships, fictional pairings, opinions, personal choices,
-and so on — as normal conversation rather than lecturing about
-"boundaries" or steering to "a different topic," since that read as
-preachy rather than caring. It still declines anything genuinely harmful,
-it just doesn't moralize about everyday, non-harmful things.
+sleepy, and falls asleep; any real interaction (opening chat, clicking/
+dragging it, a reminder firing) wakes it back up. You can also put it to
+sleep yourself from the right-click menu, which toggles to "Wake up"
+once it's asleep — sleep now sticks reliably whether it's triggered by
+boredom or by you, instead of getting silently undone by the very next
+autonomous tick (see `BehaviorEngine.manual_sleep` in
+`app/character/behavior.py`). Either way, Mochi says so with a speech
+bubble the moment it actually falls asleep ("Zzz... I'm going to sleep
+now. Wake me up if you need me!"), rather than just going quiet with no
+explanation. It shows "thinking" the instant you send a chat message,
+gets happy when you complete a reminder or task, and gets annoyed if a
+reminder sits ignored for a while. It's meant to be an easygoing
+companion, not a moderator: the LLM system prompt (`app/ai/llm.py`)
+explicitly tells it to treat ordinary topics — relationships, fictional
+pairings, opinions, personal choices, and so on — as normal conversation
+rather than lecturing about "boundaries" or steering to "a different
+topic," since that read as preachy rather than caring. It still declines
+anything genuinely harmful, it just doesn't moralize about everyday,
+non-harmful things.
 
 **Lock-screen easter egg (Windows only):** when you lock your PC, Mochi
 closes its eyes; every couple of seconds it playfully peeks one eye open,
@@ -127,13 +136,16 @@ expression are timed together so they appear and clear as one reaction.
 Double-click Mochi (or right-click → Chat) to open a small translucent
 chat popup — messages render as rounded speech bubbles (yours on the
 right, Mochi's on the left), like the floating bubble above the
-character itself. It opens anchored next to wherever the character
-currently is (and the character's own speech bubble does too), clamped
-so it always stays fully on-screen even when the character is docked
-right at a screen edge or corner. It stays pinned on top of other windows
-while open (toggle via the green dot) so it doesn't get buried
-mid-conversation, and only goes away when you actually close it. Messages
-are handled in three layers:
+character itself. Bubble width is measured against the chat log's own
+actual on-screen width (not a fixed guess), so wrapping stays correct no
+matter how the window is resized or what DPI/font scale it's running at
+— see `ChatLogWidget` in `app/ui/chat_window.py`. It opens anchored next
+to wherever the character currently is (and the character's own speech
+bubble does too), clamped so it always stays fully on-screen even when
+the character is docked right at a screen edge or corner. It stays
+pinned on top of other windows while open (toggle via the green dot) so
+it doesn't get buried mid-conversation, and only goes away when you
+actually close it. Messages are handled in three layers:
 
 1. **Deterministic, local, no AI required** — reminders, tasks, timers,
    greetings, common small talk, and `what time is it`/`what day is it`
