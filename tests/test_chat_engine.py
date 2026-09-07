@@ -761,3 +761,31 @@ def test_query_done_never_shows_still_open_items(temp_db):
     reaction = handle_message("which tasks are done")
     assert "call aunt" in reaction.text.lower()
     assert "buy milk" not in reaction.text.lower()
+
+
+def test_relational_message_triggers_no_database_action(temp_db):
+    """Conversational-issues report P1 ("Improve Relational/Emotional
+    Conversation Understanding") acceptance criterion: "No database
+    action is triggered by ordinary relational conversation.\""""
+    reaction = handle_message("did you miss me")
+
+    assert reaction.emotion == Emotion.HAPPY
+    assert task_manager.list_tasks() == []
+    assert (
+        reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+        == []
+    )
+    assert timer_manager.list_active_timers() == []
+
+
+def test_relational_message_flavored_by_familiarity(temp_db):
+    """A newcomer and a familiar user should not get the exact same
+    canned line - familiarity should be able to influence the response,
+    same as it already does for plain greetings."""
+    new_reaction = handle_message("I'm back")
+
+    for _ in range(30):
+        relationship.record_interaction()
+    familiar_reaction = handle_message("I'm back")
+
+    assert new_reaction.text != familiar_reaction.text

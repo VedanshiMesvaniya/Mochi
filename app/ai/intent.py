@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as time_of_day, timedelta
 from typing import Optional
 
+from app.ai.conversation_state import CONTEXTUAL_REFERENCE_SRC, MULTI_REFERENCE_SRC
 from app.character.state_machine import CharacterState, Emotion
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,20 @@ class DetectedIntent:
 GREETINGS = ("hi", "hello", "hey", "yo", "good morning", "good evening", "morning")
 FAREWELLS = ("bye", "goodbye", "see you", "gtg", "good night", "night")
 THANKS = ("thanks", "thank you", "ty", "thx")
+# Relational/social conversation (conversational-issues report P1,
+# "Improve Relational/Emotional Conversation Understanding") - phrases
+# about the relationship/absence itself ("did you miss me", "I'm back"),
+# as opposed to a plain greeting/farewell. Deliberately its own category
+# rather than folded into GREETINGS: a greeting just needs acknowledging,
+# but these are actually asking something about how Mochi feels about the
+# person being away, and deserve a response that engages with that rather
+# than a generic "hi".
+RELATIONAL_PHRASES = (
+    "did you miss me", "were you waiting for me", "i'm back", "im back",
+    "i am back", "i was gone for a while", "i've been gone", "ive been gone",
+    "you missed me", "did you notice i was gone", "did you notice i left",
+    "did you notice i was away",
+)
 # Compliments are split by intensity so the reaction actually varies (spec:
 # "give all pending expressions" - BLUSH and HEART were previously
 # unreachable from chat): a mild "cute"/"good cat" gets a shy BLUSH, while
@@ -314,12 +329,36 @@ REMINDER_ACCUSATION_TRIGGER = re.compile(
 # "cancel the second one" the same way they already support "cancel it".
 _REFERENCE_TARGET = r"(?:it|that|this|the (?:first|second|third|fourth|fifth|last) one)"
 
+# Multi-target counterpart to _REFERENCE_TARGET above (conversational-
+# issues report P0: "three of them check as done" needs to reach the same
+# ambiguous handlers as "mark it as done", just resolving to several
+# entities instead of one - see app/ai/conversation_state.py's
+# resolve_selection()/resolve_selection_typed(), which is what actually
+# turns this phrase into real database rows). Sourced from
+# conversation_state.MULTI_REFERENCE_SRC rather than duplicated here, so
+# the trigger and the resolver can never recognise different phrasing.
+_MULTI_REFERENCE_TARGET = rf"(?:{MULTI_REFERENCE_SRC})"
+
+# Kind-qualified contextual reference ("that timer", "the task I just
+# added") - conversational-issues report P1: "Expand Conversational
+# Reference Model". Sourced from conversation_state.CONTEXTUAL_REFERENCE_SRC
+# for the same one-definition-shared-by-trigger-and-resolver reason as
+# _MULTI_REFERENCE_TARGET above.
+_CONTEXTUAL_REFERENCE_TARGET = rf"(?:{CONTEXTUAL_REFERENCE_SRC})"
+
 AMBIGUOUS_DONE_TRIGGER = re.compile(
     r"\b(mark " + _REFERENCE_TARGET + r" (?:as )?done|"
     + _REFERENCE_TARGET + r"(?:'s| is) done|"
     + _REFERENCE_TARGET + r"(?:'s| is) finished|"
     r"complete " + _REFERENCE_TARGET + r"|finish " + _REFERENCE_TARGET + r"|"
-    r"i (?:did|finished) it)\b",
+    r"i (?:did|finished) it|"
+    r"mark " + _MULTI_REFERENCE_TARGET + r" (?:as )?done|"
+    + _MULTI_REFERENCE_TARGET + r" (?:check(?:ed)? (?:as )?done|check(?:ed)? off|"
+    r"(?:'s| is| are) (?:done|finished))|"
+    r"complete " + _MULTI_REFERENCE_TARGET + r"|finish " + _MULTI_REFERENCE_TARGET + r"|"
+    r"mark " + _CONTEXTUAL_REFERENCE_TARGET + r" (?:as )?done|"
+    r"complete " + _CONTEXTUAL_REFERENCE_TARGET + r"|finish " + _CONTEXTUAL_REFERENCE_TARGET
+    + r")\b",
     re.IGNORECASE,
 )
 # Same reasoning as AMBIGUOUS_DONE_TRIGGER, but for cancelling rather than
@@ -345,18 +384,35 @@ AMBIGUOUS_DONE_TRIGGER = re.compile(
 # names a specific, unambiguous cancel action is matched here.
 AMBIGUOUS_CANCEL_TRIGGER = re.compile(
     r"\b(cancel " + _REFERENCE_TARGET + r"|delete " + _REFERENCE_TARGET + r"|"
-    r"remove " + _REFERENCE_TARGET + r"|scratch that|undo that|nix it)\b",
+    r"remove " + _REFERENCE_TARGET + r"|scratch that|undo that|nix it|"
+    r"cancel " + _MULTI_REFERENCE_TARGET + r"|delete " + _MULTI_REFERENCE_TARGET
+    + r"|remove " + _MULTI_REFERENCE_TARGET + r"|"
+    r"cancel " + _CONTEXTUAL_REFERENCE_TARGET + r"|delete " + _CONTEXTUAL_REFERENCE_TARGET
+    + r"|remove " + _CONTEXTUAL_REFERENCE_TARGET + r")\b",
+    re.IGNORECASE,
+)
+
+# Tried in this order (contextual, then multi-target, then singular) so a
+# phrase that could technically satisfy more than one - "that timer"
+# contains "that", which also matches the plain singular pattern - always
+# prefers the most specific reading. Python's alternation tries each
+# branch in order and takes the first that matches starting at the same
+# position, so listing the more specific pattern first is what makes
+# that preference actually take effect.
+_ANY_REFERENCE_PATTERN = re.compile(
+    _CONTEXTUAL_REFERENCE_TARGET + "|" + _MULTI_REFERENCE_TARGET + "|" + _REFERENCE_TARGET,
     re.IGNORECASE,
 )
 
 
 def _extract_reference_target(text: str) -> str:
-    """Pulls out just the "it"/"that"/"the second one" part of an
-    AMBIGUOUS_DONE_TRIGGER/AMBIGUOUS_CANCEL_TRIGGER match, so
-    chat_engine.py's resolve_typed() gets the actual phrase the user
-    said instead of a hardcoded "it" - needed for ordinal references
-    ("the second one") to work through this path at all."""
-    match = re.search(_REFERENCE_TARGET, text, re.IGNORECASE)
+    """Pulls out just the "it"/"that"/"the second one"/"three of them"
+    part of an AMBIGUOUS_DONE_TRIGGER/AMBIGUOUS_CANCEL_TRIGGER match, so
+    chat_engine.py's resolve_typed()/resolve_selection_typed() gets the
+    actual phrase the user said instead of a hardcoded "it" - needed for
+    ordinal references ("the second one") and multi-target references
+    ("three of them", "all of them") to work through this path at all."""
+    match = re.search(_ANY_REFERENCE_PATTERN, text)
     return match.group(0).lower() if match else "it"
 # "make it 8" / "change it to 8:30pm" / "move that to tomorrow at 9" -
 # reschedule counterpart to AMBIGUOUS_DONE_TRIGGER/AMBIGUOUS_CANCEL_TRIGGER
@@ -608,6 +664,53 @@ def _parse_duration_seconds(text: str) -> Optional[int]:
     if unit.startswith(("min",)):
         return amount * 60
     return amount
+
+
+# Filler words stripped when pulling a timer's purpose out of the rest of
+# the sentence (conversational-issues report P0: "Preserve Timer
+# Purpose/Label Information" - "set 10 second timer to remind me to pick
+# my columns" used to keep the duration but silently discard "pick my
+# columns"). Deliberately excludes "the" - unlike "a"/"for" (which are
+# needed so a purpose-less "timer for 10 minutes" correctly reduces to
+# nothing, see _timer_label_from() below), "the" is common inside a real
+# purpose ("water the plants") and stripping it would mangle it.
+_TIMER_FILLER = re.compile(
+    r"\b(can you|could you|would you|please|set(?:\s+up)?|start|a|"
+    r"countdown|for|to remind me(?:\s+to)?|remind me(?:\s+to)?)\b",
+    re.IGNORECASE,
+)
+
+
+# Duration-phrase stripper for _timer_label_from() below. Deliberately a
+# separate pattern from DURATION_ONLY (used for the actual duration
+# parsing) rather than reusing it directly: DURATION_ONLY's alternation
+# lists "minute" before "minutes", and without a trailing \b the engine
+# accepts the "minute" prefix match against "minutes" and stops there,
+# leaving a stray "s" behind - harmless for parsing the number itself,
+# but that stray "s" would otherwise survive into the extracted label.
+_DURATION_STRIP = re.compile(
+    r"\d+\s*(?:minutes|minute|mins|min|hours|hour|hrs|hr|seconds|second|secs|sec)\b",
+    re.IGNORECASE,
+)
+
+
+def _timer_label_from(text: str) -> Optional[str]:
+    """Pulls the purpose out of a timer request, e.g. "set 10 second
+    timer to remind me to pick my columns" -> "Pick my columns". Returns
+    None when the request names no purpose beyond the duration/trigger
+    words themselves (e.g. "timer for 10 minutes"), so the caller can
+    fall back to the existing generic "Timer" label instead of inventing
+    one - required acceptance criterion: "No invented purpose is added
+    when none was provided."."""
+    cleaned = _normalize_word_numbers(text)
+    cleaned = _DURATION_STRIP.sub("", cleaned)
+    cleaned = re.sub(rf"\b{_TIMER_WORD}\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = _TIMER_FILLER.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.!?")
+    cleaned = re.sub(r"^to\s+", "", cleaned, flags=re.IGNORECASE)
+    if not cleaned:
+        return None
+    return cleaned[:1].upper() + cleaned[1:]
 
 
 def _title_from(text: str, fallback: str = "Reminder") -> str:
@@ -979,15 +1082,17 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
                 animation=CharacterState.CONFUSED,
                 response="How long should the timer be? e.g. \"timer for 10 minutes\".",
             )
+        label = _timer_label_from(text) or "Timer"
+        purpose_note = f" - I'll remind you to {label.lower()}" if label != "Timer" else ""
         return DetectedIntent(
             name="start_timer",
             emotion=Emotion.EXCITED,
             animation=CharacterState.EXCITED,
             sound="chirp",
             response=f"Timer started for {seconds // 60 or seconds}"
-            f"{' min' if seconds >= 60 else ' sec'}! I'll let you know.",
+            f"{' min' if seconds >= 60 else ' sec'}!{purpose_note}",
             tool="start_timer",
-            tool_args={"duration_seconds": seconds, "label": "Timer"},
+            tool_args={"duration_seconds": seconds, "label": label},
         )
 
     if task_match is not None and task_match.start() == winner:
@@ -1121,6 +1226,21 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.SAD,
             animation=CharacterState.SAD,
             response="Aww, okay... come back soon!",
+        )
+    # Checked before GREETINGS - "I'm back" would also read as a kind of
+    # greeting, but it's specifically about the person's absence, which
+    # deserves a warmer, relationship-aware response rather than a plain
+    # "hi" (report acceptance criterion: "Mochi does not claim memories/
+    # events that do not exist" - the default response below stays
+    # general rather than inventing a specific remembered absence; see
+    # chat_engine.py for how familiarity flavors this further, same
+    # pattern as GREETINGS below).
+    if _matches_any(lowered, RELATIONAL_PHRASES):
+        return DetectedIntent(
+            name="relational",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="Aww, I'm still getting to know you, but I'm glad you're here!",
         )
     if _matches_any(lowered, GREETINGS):
         return DetectedIntent(

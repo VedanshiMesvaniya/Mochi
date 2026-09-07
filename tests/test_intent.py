@@ -17,6 +17,41 @@ def test_farewell():
     assert result.name == "farewell"
 
 
+def test_relational_did_you_miss_me():
+    """Conversational-issues report P1 ("Improve Relational/Emotional
+    Conversation Understanding") - "did you miss me" and similar phrases
+    about the relationship/absence itself must be classified as their own
+    "relational" category, not generic small talk, and never trigger a
+    tool call."""
+    result = detect_intent("did you miss me", now=NOW)
+    assert result.name == "relational"
+    assert result.tool is None
+
+
+def test_relational_im_back():
+    result = detect_intent("I'm back", now=NOW)
+    assert result.name == "relational"
+    assert result.tool is None
+
+
+def test_relational_variants_all_classified():
+    for phrase in (
+        "were you waiting for me",
+        "i was gone for a while",
+        "you missed me huh",
+        "did you notice i was gone",
+    ):
+        result = detect_intent(phrase, now=NOW)
+        assert result.name == "relational", phrase
+
+
+def test_relational_does_not_hijack_unrelated_messages():
+    """Regression guard: substrings like "back" inside an unrelated
+    sentence must not misfire the relational category."""
+    result = detect_intent("add task go back to the store", now=NOW)
+    assert result.name != "relational"
+
+
 def test_reminder_with_absolute_time():
     result = detect_intent("remind me to call mom at 7pm", now=NOW)
     assert result.name == "create_reminder"
@@ -112,6 +147,36 @@ def test_timer_with_duration():
     result = detect_intent("set a timer for 10 minutes", now=NOW)
     assert result.tool == "start_timer"
     assert result.tool_args["duration_seconds"] == 600
+
+
+def test_timer_preserves_stated_purpose():
+    """Conversational-issues report P0 ("Preserve Timer Purpose/Label
+    Information"): the duration used to be parsed correctly but any
+    purpose named alongside it was silently discarded, always landing on
+    the generic "Timer" label."""
+    result = detect_intent(
+        "can you set 10 second timer to remind me to pick my columns", now=NOW
+    )
+    assert result.tool == "start_timer"
+    assert result.tool_args["duration_seconds"] == 10
+    assert result.tool_args["label"] == "Pick my columns"
+
+
+def test_timer_without_stated_purpose_keeps_generic_label():
+    """No invented purpose is added when none was provided - must still
+    fall back to the plain "Timer" label, not e.g. a stray leftover word
+    from the duration phrase."""
+    result = detect_intent("set a timer for 10 minutes", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["label"] == "Timer"
+
+
+def test_timer_purpose_survives_plural_duration_unit():
+    """Regression guard: stripping "10 minutes" out of the sentence to
+    isolate the purpose must not leave a stray "s" behind."""
+    result = detect_intent("set a timer for 10 minutes to check the oven", now=NOW)
+    assert result.tool == "start_timer"
+    assert result.tool_args["label"] == "Check the oven"
 
 
 def test_task_creation():

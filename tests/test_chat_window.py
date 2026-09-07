@@ -24,6 +24,37 @@ def _bubble_text(message_log, index: int) -> str:
     return label.text()
 
 
+def test_bubble_label_width_reserves_room_for_full_css_padding(qapp):
+    """Regression guard (conversational-issues report P1, "Fix Chat
+    Bubble Width / Text Clipping"): the fixed width handed to
+    setFixedWidth() must budget the label's *real* horizontal CSS
+    padding (13px left + 13px right - see _MOCHI_BUBBLE_STYLE), not less,
+    or the content area left for text ends up narrower than the text's
+    own natural width and a single-line reply wraps/clips right at the
+    edge."""
+    from PySide6.QtGui import QFontMetrics
+    from PySide6.QtWidgets import QLabel
+
+    from app.ui.chat_window import _bubble_label_width
+
+    label = QLabel("A reasonably short reply")
+    width = _bubble_label_width("A reasonably short reply", label)
+    natural = QFontMetrics(label.font()).horizontalAdvance("A reasonably short reply")
+
+    assert width >= natural + 26  # 13px left + 13px right, at minimum
+
+
+def test_bubble_label_width_still_caps_at_max_width(qapp):
+    from PySide6.QtWidgets import QLabel
+
+    from app.ui.chat_window import _BUBBLE_MAX_WIDTH, _bubble_label_width
+
+    label = QLabel()
+    width = _bubble_label_width("x" * 500, label)
+
+    assert width == _BUBBLE_MAX_WIDTH
+
+
 def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
     from app.ui.chat_window import ChatWorker
 

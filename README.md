@@ -209,6 +209,38 @@ database row, not a guess) — if the thing you're referring to has since
 been completed or deleted some other way, Mochi asks instead of silently
 acting on something else. See `PROJECT_ARCHITECTURE.md` section 5c.
 
+**Multiple at once ("all of them", "the first two", "three of them").**
+After listing tasks/reminders, you can act on more than one at a time:
+"mark all of them as done", "cancel the first two", "three of them check
+as done". Same deterministic guarantee as single references above - if
+the quantity doesn't match what was actually shown (e.g. asking for the
+first five when only three were listed), Mochi asks rather than guessing
+which subset you meant. See `PROJECT_ARCHITECTURE.md` section 5d.
+
+Timer requests also keep whatever purpose you state alongside the
+duration - "set 10 second timer to remind me to pick my columns" starts
+a 10-second timer labeled "Pick my columns" instead of a generic
+"Timer". See `PROJECT_ARCHITECTURE.md` section 5e.
+
+**Clearer clarifications.** When Mochi genuinely can't tell which item
+you mean, it now shows a numbered list instead of a run-on sentence, and
+remembers it - so you can just reply "the second one" or "both" to
+finish the thought, even when the candidates span different types (a
+task and a reminder that both matched). See `PROJECT_ARCHITECTURE.md`
+section 5f.
+
+**Naming the type directly ("that timer", "the task I just added").**
+You can also refer to something by kind instead of a bare pronoun, and
+Mochi only resolves it when that kind is actually what's remembered -
+"that reminder" right after creating a timer gets asked about instead of
+guessed. See `PROJECT_ARCHITECTURE.md` section 5g.
+
+**Social conversation ("did you miss me", "I'm back").** These get a
+warm, personality-appropriate reply flavored by how well Mochi "knows"
+you (same familiarity tiers as greetings), never a database action, and
+never a claim to remember something specific that didn't happen. See
+`PROJECT_ARCHITECTURE.md` section 5h.
+
 ---
 
 ## Reminders, tasks & timers

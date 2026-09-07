@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 from app.ai.chat_engine import ChatReaction, handle_message
 from app.character.state_machine import CharacterState, Emotion
 from app.core.logger import get_logger
-from app.ui.base_window import TranslucentDialog
+from app.ui.base_window import TranslucentDialog, current_palette
 
 logger = get_logger("mochi.ui.chat")
 
@@ -72,18 +72,20 @@ ReactionCallback = Callable[[ChatReaction], None]
 # line, and a touch more room plus a slightly larger font reads less
 # cramped without changing the window's overall compact footprint.
 _BUBBLE_MAX_WIDTH = 260
+_BUBBLE_H_PADDING_LEFT = 13
+_BUBBLE_H_PADDING_RIGHT = 13
 _MOCHI_BUBBLE_STYLE = (
     "background-color: rgba(255, 255, 255, 225);"
     "color: #3a3350;"
     "border-radius: 14px;"
-    "padding: 8px 13px;"
+    f"padding: 8px {_BUBBLE_H_PADDING_RIGHT}px;"
     "font-size: 13px;"
 )
 _USER_BUBBLE_STYLE = (
     "background-color: rgba(150, 120, 220, 210);"
     "color: #ffffff;"
     "border-radius: 14px;"
-    "padding: 8px 13px;"
+    f"padding: 8px {_BUBBLE_H_PADDING_RIGHT}px;"
     "font-size: 13px;"
 )
 
@@ -148,16 +150,25 @@ def _bubble_label_width(text: str, label: QLabel) -> int:
     content instead of always stretching to the max. Multi-line text
     (chat_engine's bullet-list replies, or any embedded "\\n") measures
     its single widest line instead of the whole string, since
-    QFontMetrics.horizontalAdvance() has no concept of line breaks."""
+    QFontMetrics.horizontalAdvance() has no concept of line breaks.
+
+    Bug fix (conversational-issues report P1, "Fix Chat Bubble Width /
+    Text Clipping"): this used to add a flat `+ 12` regardless of the
+    label's actual CSS padding (13px left + 13px right = 26px total, see
+    _MOCHI_BUBBLE_STYLE/_USER_BUBBLE_STYLE above) - `setFixedWidth()`
+    sets the *whole* box including that padding, so a width that only
+    budgeted 12px for 26px of real padding left less room for text than
+    the label needed, forcing single-line replies to wrap or clip a
+    couple of characters right at the edge. Budgeting the label's real
+    padding (plus a few px of slack for sub-pixel/antialiasing rounding)
+    means the reserved width always matches what the stylesheet actually
+    renders.
+    """
     metrics = QFontMetrics(label.font())
     lines = text.splitlines() or [text]
     natural_width = max((metrics.horizontalAdvance(line) for line in lines), default=0)
-    # + padding/margin so the fixed width doesn't clip glyphs right at
-    # the edge (label.setStyleSheet above already applies real CSS
-    # padding, but that padding is layout-time, not counted by
-    # horizontalAdvance) and never let a bubble shrink to zero for an
-    # empty/whitespace message.
-    return max(min(natural_width + 12, _BUBBLE_MAX_WIDTH), 24)
+    padding = _BUBBLE_H_PADDING_LEFT + _BUBBLE_H_PADDING_RIGHT
+    return max(min(natural_width + padding + 6, _BUBBLE_MAX_WIDTH), 24)
 
 
 class ChatWorker(QThread):
@@ -263,7 +274,27 @@ class ChatWindow(TranslucentDialog):
         # look) - matches the 2px margin ChatBubble already gives itself
         # on each side, just adding real gap between rows too.
         self.message_log.setSpacing(3)
-        self.message_log.setStyleSheet("QListWidget { border: none; background: transparent; }")
+        # Conversational-issues report P1 ("Make Chat Panel Visually
+        # Isolated From Desktop Background"): this used to be a flatly
+        # `transparent` background, leaving only the panel's own
+        # gradient (itself already partly see-through, by design, for
+        # the frosted-glass look) between the message text and whatever
+        # desktop window happens to be behind Mochi - a terminal full of
+        # text back there could visually blend into the chat log. Giving
+        # the log its own near-opaque surface (see base_window.py's
+        # "log_bg" palette entry) makes it read clearly as "Mochi's
+        # chat", with the panel's translucency now only visible as a
+        # thin frosted border around it, rather than changing every
+        # popup's shared glass look.
+        self.message_log.setStyleSheet(
+            f"""
+            QListWidget {{
+                border: none;
+                background-color: {current_palette()['log_bg']};
+                border-radius: 10px;
+            }}
+            """
+        )
         # Safety net on top of ChatBubble's fixed-width fix above: no row
         # should ever need a horizontal scrollbar in a single-column chat
         # log, so force it off outright rather than leaving it to
