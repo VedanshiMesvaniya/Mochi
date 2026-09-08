@@ -306,6 +306,30 @@ def test_refresh_trends_action_noops_when_disabled(qapp, monkeypatch):
     window.close()
 
 
+def test_refresh_trends_action_noops_only_when_both_features_disabled(qapp, monkeypatch):
+    """trend_awareness_enabled and web_knowledge_enabled are independent
+    opt-in settings (see app/core/config.py) - either one alone must be
+    enough to let a manual refresh proceed. Previously the whole action
+    was gated on trend_awareness_enabled alone, so
+    web_knowledge_enabled=True + trend_awareness_enabled=False could
+    never refresh."""
+    from app.character.pet import PetWindow
+    from app.core.config import settings
+
+    window = PetWindow()
+    monkeypatch.setattr(settings, "trend_awareness_enabled", False)
+    monkeypatch.setattr(settings, "web_knowledge_enabled", True)
+    monkeypatch.setattr("app.humor.trend_fetcher.fetch_trends", lambda: 0)
+    monkeypatch.setattr("app.humor.meme_fetcher.fetch_memes", lambda: 0)
+    monkeypatch.setattr("app.knowledge.scheduler.run_ingestion_cycle", lambda: 0)
+
+    window._on_refresh_trends_requested()
+
+    assert window._refresh_trends_worker is not None
+    assert "off right now" not in window.speech_bubble.text()
+    window.close()
+
+
 def test_refresh_trends_action_runs_and_reports_counts(qapp, monkeypatch):
     from app.character.pet import PetWindow
     from app.core.config import settings

@@ -23,6 +23,34 @@ def test_classify_query_defaults_to_stable():
     assert context_engine.classify_query("remind me to call mom") == "stable"
 
 
+def test_classify_query_detects_broadened_temporal_signals():
+    assert context_engine.classify_query("who won yesterday's match") == "current"
+    assert context_engine.classify_query("what changed in Python 3.15") == "current"
+    assert context_engine.classify_query("is version 3.14 released") == "current"
+    assert context_engine.classify_query("what happened with OpenAI this week") == "current"
+    assert context_engine.classify_query("what's new in 2026") == "current"
+
+
+def test_format_evidence_includes_provenance(monkeypatch, temp_db):
+    monkeypatch.setattr(settings, "web_knowledge_enabled", True)
+    doc = Document(
+        source_key=_SOURCE.key,
+        url="https://example.com/latest-python",
+        title="Latest Python release announced",
+        content="Latest Python release announced with new features and details",
+        published_at="2026-09-01T00:00:00+00:00",
+        retrieved_at="2026-09-08T00:00:00+00:00",
+    )
+    knowledge_store.save_document(doc, _SOURCE)
+
+    context = context_engine.get_web_context("what's the latest python release")
+    assert context is not None
+    assert "https://example.com/latest-python" in context
+    assert "Published: 2026-09-01T00:00:00+00:00" in context
+    assert "Retrieved: 2026-09-08T00:00:00+00:00" in context
+    assert "Excerpt:" in context
+
+
 def test_get_web_context_returns_none_when_disabled(monkeypatch, temp_db):
     monkeypatch.setattr(settings, "web_knowledge_enabled", False)
     assert context_engine.get_web_context("what's trending today") is None

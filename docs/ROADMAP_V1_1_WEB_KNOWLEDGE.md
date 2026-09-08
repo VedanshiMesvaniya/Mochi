@@ -1,7 +1,10 @@
 # Mochi v1.1 - Web Knowledge & Context Engine
 
 Version: 1.1
-Status: Partially implemented (opt-in, off by default) - see "Implementation status" below
+Status: Partially implemented (opt-in, off by default) - core pipeline,
+automatic + manual ingestion, update-in-place revisions, and
+provenance-carrying evidence retrieval all work; semantic retrieval and
+claim verification are still deferred - see "Implementation status" below
 Project: Mochi
 Purpose: Fresh, context-aware, evidence-backed knowledge acquisition
 
@@ -21,27 +24,37 @@ pipeline diagram and code pointers (`app/knowledge/`).
 
 - Source Manager (section 5/6) - a small fixed registry, currently one
   RSS feed and one subreddit (`app/knowledge/source_manager.py`)
-- Scheduler (section 8) - per-source frequency policy
+- Scheduler (section 8) - per-source frequency policy, run both
+  automatically (`KnowledgeScheduler`, wired into `app/main.py`, polling
+  every `MOCHI_WEB_KNOWLEDGE_FETCH_INTERVAL_HOURS`) and on manual refresh
   (`app/knowledge/scheduler.py`)
 - Incremental Fetching (section 9) - ETag/Last-Modified for RSS,
   content-hash for Reddit (`app/knowledge/fetcher.py`)
 - Fetcher / Parser / Normalization (sections 10-12)
   (`app/knowledge/fetcher.py`, `app/knowledge/parser.py`)
-- Deduplication (section 13) - exact URL and same-source content-hash
-  matching (`app/knowledge/dedup.py`)
+- Deduplication and revision detection (section 13) - exact URL match
+  with same-content re-verification, changed-content update-in-place
+  (with a `revision` counter), and same-source content-hash matching
+  across different URLs (`app/knowledge/dedup.py`)
 - Classification into Temporal Feed vs Persistent Knowledge (sections
   15-17) - source-level, with TTL assignment (`app/knowledge/classifier.py`)
 - Reddit as a temporal source (section 18)
-- Knowledge Store, Layer A only - raw documents with full provenance
-  (section 19) (`app/knowledge/knowledge_store.py`)
-- Freshness Engine and Freshness Categories (sections 21-22)
+- Knowledge Store, Layer A only - raw documents with full provenance,
+  including `published_at`/`retrieved_at`/`last_verified_at` (section 19)
+  (`app/knowledge/knowledge_store.py`)
+- Freshness Engine and Freshness Categories (sections 21-22), aging
+  content off `published_at` when known rather than only retrieval time
   (`app/knowledge/freshness.py`)
 - Freshness Router (section 23), narrowed to a "does this look current"
-  check rather than the full four-way query split (`app/knowledge/context_engine.py`)
+  check rather than the full four-way query split, using a broadened
+  keyword/phrase/date/version detector (`app/knowledge/context_engine.py`)
 - Answer Generation via a compact evidence package (section 30), passed
-  into `app/ai/llm.ask`'s `web_context` parameter
-- Provenance (section 31) - every stored document keeps its source key
-  and URL
+  into `app/ai/llm.ask`'s `web_context` parameter, carrying a real
+  content excerpt (not just a title) plus full provenance
+- Provenance (section 31) - every stored document keeps its source key,
+  URL, publish/retrieval/verification timestamps, and authority, and
+  that provenance now survives all the way to the evidence handed to the
+  LLM rather than being dropped at the retrieval step
 
 **Deferred** (not yet built - noted here so it isn't rediscovered as a
 gap by accident):

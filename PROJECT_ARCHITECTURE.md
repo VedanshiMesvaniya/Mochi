@@ -1,9 +1,11 @@
-# Mochi — Project Architecture
+# Mochi - Project Architecture
 
-**Current status: V1.0 — Correct Assistant.** See
+**Current status: V1.0 (Correct Assistant) is complete, plus a first
+opt-in slice of V1.1 (Web Knowledge & Context Engine).** See
 [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full versioned roadmap and
-what changes at each later version. Everything in this document describes
-the codebase as it exists in V1.0.
+what changes at each later version. Most of this document describes the
+codebase as it exists in V1.0; section 5i covers the V1.1 Web Knowledge
+Engine specifically, including what's implemented versus still deferred.
 
 How Mochi is structured internally: module layout, data flow, and the
 design principles that constrain new changes. Read this before adding a
@@ -994,47 +996,79 @@ fetcher.fetch_source()
       │  incremental: ETag/Last-Modified (rss) or content-hash (reddit) -
       │  "not_modified" skips everything below without being a failure
       ▼
-parser.parse_fetch()          - raw payload → normalized Document(s),
+parser.parse_fetch()          - raw payload -> normalized Document(s),
       │                          provenance (source/url/published_at) kept
       ▼
-dedup.is_duplicate()          - exact URL or same-source content-hash match
-      │                          skipped before it ever reaches storage
+dedup.find_by_url() / is_content_duplicate()
+      │  same URL + same hash -> unchanged, just re-verified
+      │  same URL + different hash -> update in place, revision + 1
+      │  different URL + same hash (same source) -> duplicate, skipped
       ▼
 classifier.classify()         - "temporal" (short TTL, e.g. current Reddit
       │                          discussion) vs "knowledge" (no hard TTL)
       ▼
-knowledge_store.save_document() → knowledge_documents (SQLite)
+knowledge_store.save_document() -> knowledge_documents (SQLite)
 ```
+
+`save_document()` is an upsert, not a plain insert-or-skip: a document
+already stored at a given URL that comes back unchanged just gets its
+`last_verified_at` bumped (still current as of now, no new row); one that
+comes back with different content is updated in place and its `revision`
+counter increments. This matters for living pages (documentation, a news
+article, a release page) - without it, the first version ever fetched at
+a URL would be stuck in the cache forever even after the real page moved
+on. `retrieved_at` stays the timestamp of the current content's fetch;
+`last_verified_at` separately tracks "when Mochi last confirmed this URL
+still holds", so a caller can tell "recently re-checked, unchanged" apart
+from "recently updated" apart from "not checked in a while".
 
 At chat time, `context_engine.get_web_context(text)` is the only function
 `app/ai/chat_engine.py` calls directly - a cheap local SQLite read, never
 a live fetch mid-chat (same "never fetch synchronously inside a chat
 reply" rule `trend_fetcher.pick_one_trend()` already follows). It:
 
-1. Routes the question with `classify_query()` - a small, high-precision
-   keyword check ("latest", "trending", "today", "right now", ...) for
-   whether this looks like it needs *current* information at all.
-   Anything else returns `None` immediately - the normal case, not an
-   error - and Mochi answers exactly as it would if this engine didn't
-   exist.
+1. Routes the question with `classify_query()` - keyword and phrase
+   matching ("latest", "trending", "today", "right now", relative dates
+   like "yesterday"/"this week", release/update language like "released"/
+   "what changed", and a bare year or dotted version number like "2026"
+   or "3.15") for whether this looks like it needs *current* information
+   at all. Anything else returns `None` immediately - the normal case,
+   not an error - and Mochi answers exactly as it would if this engine
+   didn't exist.
 2. If it does, `knowledge_store.query_relevant()` ranks cached evidence
    by a combined score (`app/knowledge/freshness.py`): keyword-overlap
-   relevance, a freshness label aged from `retrieved_at` (FRESH → RECENT
-   → AGING → STALE/EXPIRED, with temporal content aging out far faster
-   than persistent knowledge), source authority (Reddit is evidence of
-   discussion, never authoritative fact), and a fixed per-source-kind
-   confidence estimate.
+   relevance, a freshness label aged from `published_at` when known
+   (falling back to `retrieved_at` only if the source didn't supply a
+   publish date - see freshness.py's module docstring for why retrieval
+   time alone would understate a genuinely old but recently-fetched
+   page's age), source authority (Reddit is evidence of discussion,
+   never authoritative fact), and a fixed per-source-kind confidence
+   estimate.
 3. The top few results become a short, bounded evidence block appended
-   to the LLM prompt via `app/ai/llm.ask`'s `web_context` parameter -
-   told to ground the answer, never to be presented as more certain than
-   its own freshness label, and never a license to invent beyond it.
+   to the LLM prompt via `app/ai/llm.ask`'s `web_context` parameter. Each
+   item carries its source URL, published/retrieved timestamps, freshness
+   label, authority, and a real content excerpt (not just a title) - full
+   provenance survives all the way from storage to the prompt, told to
+   ground the answer, never to be presented as more certain than its own
+   freshness label, and never a license to invent beyond it.
 
-**Triggering ingestion.** Same dual path as the crawler in 5b:
-`python scripts/run_knowledge_ingestion.py`, or automatically alongside
-`_RefreshTrendsWorker`'s existing trend/meme/crawl refresh (its own
-`settings.web_knowledge_enabled` gate, isolated in its own try/except so
-a knowledge-engine hiccup can never suppress an otherwise-successful
-trend/meme refresh).
+**Triggering ingestion.** Two paths, both opt-in on
+`settings.web_knowledge_enabled`:
+- **Automatic:** `scheduler.KnowledgeScheduler`, wired into
+  `app/main.py` the same way `ReminderScheduler`/`TimerScheduler` are. A
+  `QTimer` wakes every `settings.web_knowledge_fetch_interval_hours`
+  and dispatches `run_ingestion_cycle()` onto a background `QThread`
+  (never inline on the GUI thread); a cycle already running when the
+  timer fires again is left alone rather than starting a second
+  overlapping one.
+- **Manual:** `python scripts/run_knowledge_ingestion.py`, or the
+  right-click "Refresh trends & memes" action via `_RefreshTrendsWorker`,
+  isolated in its own try/except so a knowledge-engine hiccup can never
+  suppress an otherwise-successful trend/meme refresh. That menu action
+  itself is gated on `trend_awareness_enabled OR web_knowledge_enabled`
+  (either opt-in feature is enough to make it do something) - each
+  subsystem inside the worker still independently checks its own
+  setting before doing any network work.
 
 **Deliberately deferred** (see `docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for
 the full spec this implements a first slice of): a real semantic/vector
@@ -1044,8 +1078,12 @@ relevance and a fixed per-source-kind confidence value instead, which
 needs no embeddings dependency and keeps this package stdlib-only, the
 same constraint the rest of `app/humor/`'s opt-in network features
 already follow. Near-duplicate similarity across different phrasings of
-the same story (beyond exact URL/content-hash matches) is likewise out
-of scope for the same reason.
+the same story (beyond exact URL/content-hash matches), a user-editable
+source registry, and non-RSS/non-Reddit acquisition (arbitrary HTML,
+sitemap, browser automation) are likewise out of scope for the same
+reason - the fixed two-source registry in `source_manager.py` and the
+rss/reddit-only `fetcher.py`/`parser.py` are the current ceiling, not an
+oversight.
 
 ---
 

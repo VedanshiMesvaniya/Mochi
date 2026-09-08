@@ -16,6 +16,7 @@ from app.character.pet import PetWindow
 from app.core.config import settings
 from app.core.events import Events, event_bus
 from app.core.logger import get_logger
+from app.knowledge.scheduler import KnowledgeScheduler
 from app.reminders.notifications import ReminderNotifier
 from app.reminders.scheduler import ReminderScheduler
 from app.timers.notifications import TimerNotifier
@@ -49,12 +50,24 @@ def main() -> int:
     timer_scheduler = TimerScheduler()
     timer_scheduler.start()
 
+    # Web Knowledge Engine (V1.1, opt-in): periodically triggers
+    # app/knowledge/scheduler.run_ingestion_cycle() on a background
+    # thread. Previously this only ever ran from the manual "Refresh
+    # trends & memes" menu action - nothing automatically kept the
+    # knowledge cache current. Safe to start unconditionally: it no-ops
+    # per-tick when settings.web_knowledge_enabled is False, same as the
+    # reminder/timer schedulers running regardless of whether there
+    # happen to be any reminders/timers yet.
+    knowledge_scheduler = KnowledgeScheduler()
+    knowledge_scheduler.start()
+
     event_bus.publish(Events.APP_STARTUP)
 
     exit_code = app.exec()
 
     reminder_scheduler.stop()
     timer_scheduler.stop()
+    knowledge_scheduler.stop()
     event_bus.publish(Events.APP_SHUTDOWN)
     logger.info("Mochi shut down (exit code %s)", exit_code)
     return exit_code

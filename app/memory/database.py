@@ -200,7 +200,9 @@ SCHEMA_STATEMENTS: list[str] = [
         confidence        REAL NOT NULL DEFAULT 0.6,
         published_at      TEXT,            -- ISO 8601, NULL if unknown
         retrieved_at      TEXT NOT NULL,
-        expires_at        TEXT             -- ISO 8601, NULL = no hard TTL
+        last_verified_at  TEXT,            -- ISO 8601, last time this URL was re-fetched and found still current (unchanged or updated)
+        expires_at        TEXT,            -- ISO 8601, NULL = no hard TTL
+        revision          INTEGER NOT NULL DEFAULT 1  -- bumped each time a re-fetch at the same URL finds changed content
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_expires ON knowledge_documents(expires_at);",
@@ -260,6 +262,13 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     # shipped with only a raw `content` column, so existing rows/DBs need
     # this migrated in rather than recreated.
     ("crawled_sources", "summary", "TEXT"),
+    # Added after knowledge_documents first shipped with no notion of a
+    # document being re-verified in place - see app/knowledge/dedup.py and
+    # knowledge_store.save_document for how these get populated on a
+    # same-URL re-fetch (unchanged content just bumps last_verified_at,
+    # changed content bumps revision too).
+    ("knowledge_documents", "last_verified_at", "TEXT"),
+    ("knowledge_documents", "revision", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 

@@ -17,7 +17,7 @@ def test_content_hash_is_deterministic():
     assert dedup.content_hash("hello world") != dedup.content_hash("goodbye world")
 
 
-def test_is_duplicate_true_for_matching_url(temp_db):
+def test_find_by_url_returns_row_for_matching_url(temp_db):
     initialize_schema()
     doc = Document(
         source_key=_SOURCE.key,
@@ -29,10 +29,18 @@ def test_is_duplicate_true_for_matching_url(temp_db):
     )
     knowledge_store.save_document(doc, _SOURCE)
     with get_connection() as conn:
-        assert dedup.is_duplicate(conn, "https://example.com/a", "irrelevant-hash", _SOURCE.key)
+        row = dedup.find_by_url(conn, "https://example.com/a")
+        assert row is not None
+        assert row["url"] == "https://example.com/a"
 
 
-def test_is_duplicate_true_for_matching_content_hash_same_source(temp_db):
+def test_find_by_url_returns_none_for_unseen_url(temp_db):
+    initialize_schema()
+    with get_connection() as conn:
+        assert dedup.find_by_url(conn, "https://example.com/never-seen") is None
+
+
+def test_is_content_duplicate_true_for_matching_content_hash_same_source(temp_db):
     initialize_schema()
     doc = Document(
         source_key=_SOURCE.key,
@@ -45,10 +53,10 @@ def test_is_duplicate_true_for_matching_content_hash_same_source(temp_db):
     knowledge_store.save_document(doc, _SOURCE)
     content_hash = dedup.content_hash("Same content")
     with get_connection() as conn:
-        assert dedup.is_duplicate(conn, "https://example.com/different-url", content_hash, _SOURCE.key)
+        assert dedup.is_content_duplicate(conn, _SOURCE.key, content_hash)
 
 
-def test_is_duplicate_false_for_new_url_and_content(temp_db):
+def test_is_content_duplicate_false_for_new_content(temp_db):
     initialize_schema()
     with get_connection() as conn:
-        assert not dedup.is_duplicate(conn, "https://example.com/new", "some-hash", _SOURCE.key)
+        assert not dedup.is_content_duplicate(conn, _SOURCE.key, "some-hash")
