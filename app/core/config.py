@@ -182,6 +182,18 @@ class Settings:
     # Left empty, it defaults to the source file's own name.
     crawl_source_list_name: str = ""
 
+    # Web Knowledge & Context Engine (V1.1, opt-in, off by default) - lets
+    # Mochi maintain a small, freshness-aware evidence cache from a fixed
+    # source registry (see app/knowledge/source_manager.py) and reference
+    # it for questions that look like they need current information (e.g.
+    # "what's trending today"). Off by default for the same reason as
+    # trend_awareness_enabled above: it's another opt-in "reaches the open
+    # internet" feature, separate from that flag since it stores full
+    # provenance-tagged evidence rather than a paraphrased flavor label.
+    # See app/knowledge/scheduler.py for how often ingestion actually runs.
+    web_knowledge_enabled: bool = False
+    web_knowledge_fetch_interval_hours: int = 6
+
     # General behavior
     start_with_windows: bool = False
     always_on_top: bool = True
@@ -253,6 +265,12 @@ class Settings:
             ),
             trend_fetch_interval_hours=_int(
                 os.getenv("MOCHI_TREND_FETCH_INTERVAL_HOURS"), 6
+            ),
+            web_knowledge_enabled=_bool(
+                os.getenv("MOCHI_WEB_KNOWLEDGE_ENABLED"), False
+            ),
+            web_knowledge_fetch_interval_hours=_int(
+                os.getenv("MOCHI_WEB_KNOWLEDGE_FETCH_INTERVAL_HOURS"), 6
             ),
             crawl_sources_path=os.getenv("MOCHI_CRAWL_SOURCES_PATH", ""),
             crawl_source_list_name=os.getenv("MOCHI_CRAWL_SOURCE_LIST_NAME", ""),

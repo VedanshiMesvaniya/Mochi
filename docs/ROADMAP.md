@@ -1,8 +1,12 @@
 # Mochi — Versioned Product & Engineering Roadmap
 
-> **Where the codebase is right now: V1.0 — Correct Assistant** (see
-> section 7 below for what that phase covers, and section 56 "Release
-> gates" for what has to be true before moving to V1.2). This file is the
+> **Where the codebase is right now: V1.0 — Correct Assistant**, with an
+> opt-in first slice of **V1.1: Web Knowledge & Context Engine** also
+> implemented (off by default, `MOCHI_WEB_KNOWLEDGE_ENABLED`). See
+> `docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for that spec and what v1.1
+> currently implements vs defers, and section 7 below for what the base
+> V1.0 phase covers, and section 56 "Release gates" for what has to be
+> true before moving to V1.2. This file is the
 > full versioned plan — V1.0 → V1.2 → V2.0 → V2.1 → V3.0 → V3.1 — kept in
 > the repo so architecture decisions can be checked against it. When this
 > roadmap changes, update this file, then check whether

@@ -39,6 +39,7 @@ from app.core.exceptions import (
 from app.core.logger import get_logger
 from app.humor.meme_fetcher import pick_one_meme
 from app.humor.trend_fetcher import pick_one_trend
+from app.knowledge.context_engine import get_web_context
 from app.memory import relationship
 from app.reminders import manager as reminder_manager
 from app.tasks import manager as task_manager
@@ -1522,17 +1523,20 @@ def handle_message(
     # if one isn't available (see app/ai/llm.py for why this is safe).
     if intent.name == "unknown":
         try:
-            # pick_one_meme()/pick_one_trend() are cheap cache reads (near-
-            # instant no-op unless settings.trend_awareness_enabled is on
-            # and something's already cached) - never fetch over the
-            # network here, only read whatever the background job already
-            # cached. See app/humor/meme_fetcher.py, app/humor/trend_fetcher.py.
+            # pick_one_meme()/pick_one_trend()/get_web_context() are all
+            # cheap local cache reads (near-instant no-op unless their
+            # respective settings are on and something's already cached)
+            # - never fetch over the network here, only read whatever the
+            # background job already cached. See
+            # app/humor/meme_fetcher.py, app/humor/trend_fetcher.py, and
+            # app/knowledge/context_engine.py (V1.1 Web Knowledge Engine).
             llm_reply = ask_llm(
                 text,
                 familiarity=familiarity,
                 history=history,
                 trend_topic=pick_one_trend(),
                 meme_premise=pick_one_meme(),
+                web_context=get_web_context(text),
             )
             response = llm_reply["response"]
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])
