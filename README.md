@@ -7,11 +7,14 @@ creates local reminders/tasks/timers, answers open-ended questions
 through an optional local LLM, and remembers roughly how often you talk
 to it.
 
-**Status:** V1.0 — Correct Assistant. This phase is about making Mochi
-*reliable* before making it clever: deterministic tools for anything
-that touches real data, a local LLM only for open-ended chat, never the
-other way around. Full versioned roadmap: [`docs/ROADMAP.md`](./docs/ROADMAP.md)
-(V1.0 → V1.2 → V2.0 → V2.1 → V3.0 → V3.1).
+**Status:** V1.0 (Correct Assistant) is complete, plus a first opt-in
+slice of V1.1 (Web Knowledge & Context Engine) is implemented and
+partially wired up. V1.0's focus is making Mochi *reliable* before
+making it clever: deterministic tools for anything that touches real
+data, a local LLM only for open-ended chat, never the other way around.
+Full versioned roadmap: [`docs/ROADMAP.md`](./docs/ROADMAP.md)
+(V1.0 -> V1.1 -> V1.2 -> V2.0 -> V2.1 -> V3.0 -> V3.1). Web Knowledge
+specifics and known limitations: [`docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md`](./docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md).
 
 **Privacy in one line:** nothing leaves your machine unless you turn on
 an integration that needs the network. Chat's optional LLM step talks to
@@ -418,19 +421,27 @@ one news RSS feed and one subreddit) and reference it when a chat
 message looks like it's asking about something current, such as "what's
 trending today" or "what's the latest on X," instead of only its
 general/local knowledge. Unlike the trend/meme flavor cache above, this
-evidence keeps full provenance (source, freshness label, confidence) and
-is meant to actually ground the answer, not just season its tone.
+evidence keeps full provenance (source URL, published/retrieved/
+last-verified timestamps, authority, freshness label, confidence) and is
+meant to actually ground the answer with a real excerpt, not just season
+its tone with a headline.
 
-Fetching only ever happens on a manual refresh (the same right-click
-"Refresh trends & memes" action, or `python scripts/run_knowledge_ingestion.py`)
-or the app's own periodic cadence, never synchronously while you're
-mid-conversation, so chat stays just as fast whether this is on or off.
-Each cached item ages out on its own schedule (a trending Reddit post
-expires in a day; a documentation-style item doesn't), and older or
+Fetching happens automatically in the background (`KnowledgeScheduler`,
+wired into `app/main.py`, wakes on `MOCHI_WEB_KNOWLEDGE_FETCH_INTERVAL_HOURS`
+and checks which sources are actually due per their own frequency), or on
+a manual refresh (the same right-click "Refresh trends & memes" action,
+or `python scripts/run_knowledge_ingestion.py`). Either way it never runs
+synchronously while you're mid-conversation, so chat stays just as fast
+whether this is on or off. If a page at an already-stored URL comes back
+with different content on a later fetch, the existing entry is updated in
+place (its revision count goes up) rather than the old content being kept
+forever. Each cached item ages out on its own schedule (a trending Reddit
+post expires in a day; a documentation-style item doesn't), and older or
 lower-authority evidence is ranked below fresher, more authoritative
 evidence rather than presented as equally certain. See
-`docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for the full design and
-`PROJECT_ARCHITECTURE.md` section 5i for the implementation.
+`docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for the full design, known
+limitations, and what's still deferred, and `PROJECT_ARCHITECTURE.md`
+section 5i for the implementation.
 
 ---
 

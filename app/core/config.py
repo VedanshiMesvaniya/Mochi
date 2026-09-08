@@ -190,7 +190,13 @@ class Settings:
     # trend_awareness_enabled above: it's another opt-in "reaches the open
     # internet" feature, separate from that flag since it stores full
     # provenance-tagged evidence rather than a paraphrased flavor label.
-    # See app/knowledge/scheduler.py for how often ingestion actually runs.
+    #
+    # web_knowledge_fetch_interval_hours is how often
+    # app/knowledge/scheduler.KnowledgeScheduler wakes up (wired into
+    # app/main.py) to check whether anything is due - a global scheduler
+    # polling interval, separate from each individual Source's own
+    # frequency_hours (app/knowledge/models.py), which decides whether
+    # that specific source is actually fetched on a given wake-up.
     web_knowledge_enabled: bool = False
     web_knowledge_fetch_interval_hours: int = 6
 

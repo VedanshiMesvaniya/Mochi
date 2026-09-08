@@ -34,14 +34,25 @@ logger = get_logger("mochi.knowledge.context_engine")
 # Signals that a question is asking about the current/live state of the
 # world rather than a stable, timeless concept (spec section 24's
 # "Current Knowledge" / "Live Information" categories). Deliberately a
-# small, high-precision keyword list rather than an LLM classification
-# call - this router itself must stay a cheap, synchronous, no-network
-# check (see module docstring).
+# keyword/pattern list rather than an LLM classification call - this
+# router itself must stay a cheap, synchronous, no-network check (see
+# module docstring). Broader than a handful of single words: covers
+# relative-date references, version/release language, and "what
+# changed/happened" phrasing, which single-word matching on just
+# "latest/current/today/news" was missing (e.g. "who won yesterday's
+# match", "what changed in Python 3.15", "is version 3.14 released").
 _CURRENT_SIGNAL_WORDS = {
-    "latest", "current", "currently", "today", "trending", "trend",
-    "recent", "recently", "now", "update", "updated", "news",
-    "happening", "right now",
+    "latest", "current", "currently", "today", "tonight", "tomorrow",
+    "yesterday", "trending", "trend", "recent", "recently", "now",
+    "update", "updated", "updates", "news", "happening", "happened",
+    "new", "newest", "released", "release", "changed", "changes",
 }
+_CURRENT_SIGNAL_PHRASES = (
+    "right now", "this week", "this month", "this year", "as of",
+    "so far", "what happened", "what's happening", "whats happening",
+)
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+_VERSION_RE = re.compile(r"\bv?\d+\.\d+(\.\d+)?\b")
 _WORD_RE = re.compile(r"[a-z']+")
 
 _MAX_EVIDENCE_ITEMS = 3
@@ -52,20 +63,36 @@ def classify_query(text: str) -> str:
     """Returns "current" if `text` looks like it wants fresh/live
     information, else "stable". A "stable" classification is the safe
     default - it means "answer from existing knowledge as normal", not
-    "this question is unanswerable"."""
+    "this question is unanswerable". A year or a dotted version number
+    (e.g. "2026", "3.15") is also treated as a freshness signal, since
+    those overwhelmingly show up in questions about a specific
+    recent/current release or event rather than timeless ones."""
     lowered = text.lower()
-    if "right now" in lowered:
+    # Strip a trailing possessive/contraction "'s" (e.g. "yesterday's",
+    # "what's") before word-matching, so "yesterday's match" still hits
+    # the "yesterday" signal word instead of tokenizing as "yesterday's".
+    lowered_for_words = re.sub(r"'s\b", "", lowered)
+    if any(phrase in lowered for phrase in _CURRENT_SIGNAL_PHRASES):
         return "current"
-    words = set(_WORD_RE.findall(lowered))
-    return "current" if words & _CURRENT_SIGNAL_WORDS else "stable"
+    words = set(_WORD_RE.findall(lowered_for_words))
+    if words & _CURRENT_SIGNAL_WORDS:
+        return "current"
+    if _YEAR_RE.search(lowered) or _VERSION_RE.search(lowered):
+        return "current"
+    return "stable"
 
 
 def _format_evidence(items) -> str:
     lines = ["Fresh web evidence you may reference if relevant (never invent beyond this):"]
     for item in items:
         claim = item.claim[:_MAX_CLAIM_CHARS]
+        excerpt = (item.excerpt or "").strip().replace("\n", " ")
+        published = item.published_at or "unknown"
         lines.append(
-            f"- {claim} (source: {item.source}, freshness: {item.freshness})"
+            f"- {claim}\n"
+            f"  Source: {item.source} ({item.authority} authority) | URL: {item.url}\n"
+            f"  Published: {published} | Retrieved: {item.retrieved_at} | Freshness: {item.freshness}\n"
+            f"  Excerpt: {excerpt}"
         )
     return "\n".join(lines)
 

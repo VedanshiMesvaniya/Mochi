@@ -84,10 +84,26 @@ class Document:
 class EvidenceItem:
     """One ranked piece of evidence handed to the LLM by context_engine.py
     (spec section 30 - Answer Generation: a compact evidence package, not
-    the whole scraped database)."""
+    the whole scraped database).
+
+    Carries enough provenance (url, published_at, retrieved_at,
+    last_verified_at) that the LLM prompt - and eventually the UI - can
+    show where a claim came from and how current it is, rather than that
+    provenance being captured at storage time and then lost before it
+    ever reaches an answer. `excerpt` is a short slice of the document's
+    actual body (not just its title), so the LLM has real content to
+    ground an answer in, not merely a headline.
+    """
 
     claim: str
+    excerpt: str
+    url: str
     source: str
+    category: str  # "temporal" | "knowledge"
+    authority: str  # "high" | "medium" | "low"
+    published_at: Optional[str]  # ISO 8601, or None if unknown
+    retrieved_at: str
+    last_verified_at: Optional[str]  # ISO 8601, or None if never re-verified
     freshness: str  # FRESH | RECENT | AGING | STALE | EXPIRED | UNKNOWN
     confidence: float
     score: float

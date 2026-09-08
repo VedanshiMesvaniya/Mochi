@@ -616,11 +616,19 @@ class PetWindow(QWidget):
         (with an explanatory speech bubble) if the feature is off
         entirely, since firing a network call the person has explicitly
         disabled would be wrong even on an explicit manual request.
+
+        Trend/meme awareness and Web Knowledge are separate opt-in
+        settings (see app/core/config.py) - either one alone is enough to
+        make this action do something. Gating the whole worker on
+        trend_awareness_enabled alone (the previous behavior) meant
+        web_knowledge_enabled=True + trend_awareness_enabled=False could
+        never refresh at all, silently, which defeats a setting that's
+        explicitly documented as independent.
         """
-        if not settings.trend_awareness_enabled:
+        if not (settings.trend_awareness_enabled or settings.web_knowledge_enabled):
             self.show_speech_bubble(
-                "Trend/meme awareness is off right now - "
-                "turn on MOCHI_TREND_AWARENESS_ENABLED to use this.",
+                "Trend, meme, and web-knowledge awareness are all off right now - "
+                "turn on MOCHI_TREND_AWARENESS_ENABLED or MOCHI_WEB_KNOWLEDGE_ENABLED to use this.",
                 duration_ms=6000,
             )
             return

@@ -43,6 +43,46 @@ def test_save_document_skips_exact_url_duplicate(temp_db):
     assert knowledge_store.save_document(doc, _KNOWLEDGE_SOURCE) is False
 
 
+def test_save_document_updates_in_place_when_url_content_changes(temp_db):
+    from app.memory.database import get_connection
+
+    original = _doc(_KNOWLEDGE_SOURCE, "https://example.com/living-doc", "Docs v1", "Version 1 content")
+    assert knowledge_store.save_document(original, _KNOWLEDGE_SOURCE) is True
+
+    updated = _doc(_KNOWLEDGE_SOURCE, "https://example.com/living-doc", "Docs v2", "Version 2 content")
+    assert knowledge_store.save_document(updated, _KNOWLEDGE_SOURCE) is True
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM knowledge_documents WHERE url = ?;", ("https://example.com/living-doc",)
+        ).fetchall()
+    assert len(rows) == 1  # updated in place, not a second row
+    assert rows[0]["content"] == "Version 2 content"
+    assert rows[0]["revision"] == 2
+
+
+def test_save_document_bumps_last_verified_at_when_content_unchanged(temp_db):
+    from app.memory.database import get_connection
+
+    doc = _doc(_KNOWLEDGE_SOURCE, "https://example.com/stable-doc", "Title", "Same content")
+    knowledge_store.save_document(doc, _KNOWLEDGE_SOURCE)
+    with get_connection() as conn:
+        first_verified = conn.execute(
+            "SELECT last_verified_at FROM knowledge_documents WHERE url = ?;",
+            ("https://example.com/stable-doc",),
+        ).fetchone()["last_verified_at"]
+    assert first_verified is not None
+
+    # Re-fetching identical content should not create a second row and
+    # should not bump revision, only re-confirm last_verified_at.
+    assert knowledge_store.save_document(doc, _KNOWLEDGE_SOURCE) is False
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM knowledge_documents WHERE url = ?;", ("https://example.com/stable-doc",)
+        ).fetchone()
+    assert row["revision"] == 1
+
+
 def test_fetch_state_round_trip(temp_db):
     assert knowledge_store.get_fetch_state("reddit:test") is None
     knowledge_store.update_fetch_state("reddit:test", "etag1", "lastmod1", "hash1")
