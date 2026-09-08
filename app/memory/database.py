@@ -178,6 +178,46 @@ SCHEMA_STATEMENTS: list[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_crawled_sources_list ON crawled_sources(source_list);",
+    """
+    -- Web Knowledge Engine (V1.1, opt-in - settings.web_knowledge_enabled)
+    -- raw document store (see app/knowledge/knowledge_store.py). Unlike
+    -- crawled_sources above (permanent, append-only, never re-fetched),
+    -- this table holds freshness-aware evidence: `category` = 'temporal'
+    -- rows carry a real `expires_at` and are purged once stale (spec
+    -- section 16), while `category` = 'knowledge' rows have no hard TTL
+    -- but are still aged for ranking by app/knowledge/freshness.py.
+    -- `url` is UNIQUE for the same reason as crawled_sources - see
+    -- app/knowledge/dedup.py for the full duplicate-detection logic.
+    CREATE TABLE IF NOT EXISTS knowledge_documents (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        source            TEXT NOT NULL,   -- Source.key, e.g. 'rss:google_news_top'
+        url               TEXT NOT NULL UNIQUE,
+        title             TEXT,
+        content           TEXT NOT NULL,
+        content_hash      TEXT NOT NULL,
+        category          TEXT NOT NULL,   -- 'temporal' | 'knowledge'
+        source_authority  TEXT NOT NULL,   -- 'high' | 'medium' | 'low'
+        confidence        REAL NOT NULL DEFAULT 0.6,
+        published_at      TEXT,            -- ISO 8601, NULL if unknown
+        retrieved_at      TEXT NOT NULL,
+        expires_at        TEXT             -- ISO 8601, NULL = no hard TTL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_expires ON knowledge_documents(expires_at);",
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_source ON knowledge_documents(source);",
+    """
+    -- Per-source incremental-fetch bookkeeping (spec section 9) for the
+    -- Web Knowledge Engine - lets app/knowledge/scheduler.py skip
+    -- reprocessing unchanged content and respect each source's own
+    -- frequency_hours policy. One row per Source.key.
+    CREATE TABLE IF NOT EXISTS knowledge_fetch_state (
+        source_key       TEXT PRIMARY KEY,
+        etag             TEXT,
+        last_modified    TEXT,
+        content_hash     TEXT,
+        last_checked_at  TEXT NOT NULL
+    );
+    """,
 ]
 
 

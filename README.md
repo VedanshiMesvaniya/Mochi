@@ -409,6 +409,29 @@ Details worth knowing:
   is skipped before any network call. A failed fetch (offline, timeout,
   404) is logged and not stored, so it's still eligible on a later run.
 
+### Web knowledge (V1.1, opt-in)
+
+Separately again, and **off by default**
+(`MOCHI_WEB_KNOWLEDGE_ENABLED=true` in `.env`), Mochi can keep a small,
+freshness-aware cache of evidence from a fixed set of sources (currently
+one news RSS feed and one subreddit) and reference it when a chat
+message looks like it's asking about something current, such as "what's
+trending today" or "what's the latest on X," instead of only its
+general/local knowledge. Unlike the trend/meme flavor cache above, this
+evidence keeps full provenance (source, freshness label, confidence) and
+is meant to actually ground the answer, not just season its tone.
+
+Fetching only ever happens on a manual refresh (the same right-click
+"Refresh trends & memes" action, or `python scripts/run_knowledge_ingestion.py`)
+or the app's own periodic cadence, never synchronously while you're
+mid-conversation, so chat stays just as fast whether this is on or off.
+Each cached item ages out on its own schedule (a trending Reddit post
+expires in a day; a documentation-style item doesn't), and older or
+lower-authority evidence is ranked below fresher, more authoritative
+evidence rather than presented as equally certain. See
+`docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for the full design and
+`PROJECT_ARCHITECTURE.md` section 5i for the implementation.
+
 ---
 
 ## Calendar

@@ -154,6 +154,14 @@ class _RefreshTrendsWorker(QThread):
                     settings.crawl_sources_path,
                 )
 
+        if settings.web_knowledge_enabled:
+            from app.knowledge.scheduler import run_ingestion_cycle
+
+            try:
+                run_ingestion_cycle()
+            except Exception:  # noqa: BLE001 - same "never crash the app" reasoning as above; a knowledge-engine hiccup must not take down a refresh that already succeeded
+                logger.exception("Manual web knowledge ingestion failed unexpectedly")
+
         self.finished_ok.emit(trend_count, meme_count, crawled_count)
 
 

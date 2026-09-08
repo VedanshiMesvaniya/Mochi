@@ -201,8 +201,9 @@ app/
 ├── memory/                     SQLite access layer
 │   ├── database.py              Connection management + schema (reminders,
 │   │                            tasks, timers + their `_done` archive
-│   │                            tables, relationship, app_settings) plus
-│   │                            archive_row()/restore_row()/list_done() -
+│   │                            tables, relationship, app_settings,
+│   │                            knowledge_documents/knowledge_fetch_state)
+│   │                            plus archive_row()/restore_row()/list_done() -
 │   │                            the move-to-archive machinery every
 │   │                            manager's complete/cancel path uses (§6)
 │   ├── relationship.py           Lightweight interaction counter (not ML) -
@@ -210,6 +211,31 @@ app/
 │   │                             grows (new / getting_to_know / familiar)
 │   └── settings_store.py         Tiny SQLite key-value store for small
 │                                 persisted preferences
+│
+├── knowledge/                  Web Knowledge & Context Engine (V1.1,
+│   │                           opt-in - settings.web_knowledge_enabled).
+│   │                           See §5i for the full pipeline diagram.
+│   ├── models.py                 Shared dataclasses passed between stages
+│   ├── source_manager.py          Fixed source registry - what Mochi is
+│   │                              allowed to fetch (one RSS feed, one
+│   │                              subreddit by default)
+│   ├── fetcher.py                 Incremental, best-effort raw fetch
+│   │                              (ETag/Last-Modified or content-hash)
+│   ├── parser.py                  Raw payload → normalized Document(s)
+│   ├── dedup.py                   Exact URL / same-source content-hash
+│   │                              duplicate detection
+│   ├── classifier.py               Source-level temporal-vs-knowledge split
+│   │                              + TTL assignment
+│   ├── freshness.py                Ages evidence (FRESH→RECENT→AGING→
+│   │                              STALE/EXPIRED) and scores it for ranking
+│   ├── knowledge_store.py          SQLite persistence + freshness-and-
+│   │                              relevance-ranked retrieval
+│   ├── context_engine.py           The only entry point chat_engine.py
+│   │                              calls - freshness router + compact
+│   │                              evidence package builder, always a
+│   │                              cheap local read, never a live fetch
+│   └── scheduler.py                Ties the pipeline together into one
+│                                  runnable ingestion cycle
 │
 ├── reminders/                  Local reminder engine
 │   ├── manager.py                CRUD over the `reminders` table + repeat rules
@@ -262,21 +288,23 @@ app/
 ### Dependency direction
 
 `core` depends on nothing else in the app. `character`, `memory`,
-`reminders`, `tasks`, `timers`, `calendar` depend only on `core`. `tools`
+`reminders`, `tasks`, `timers`, `calendar` depend only on `core`. `knowledge`
+depends only on `core` + `memory` (its own SQLite tables live in
+`memory/database.py`, same as every other subsystem). `tools`
 depends on `core` + the relevant subsystem (`reminders`/`tasks`/`timers`/
-`calendar`). `ai` depends on `core`, `memory`, `tools`, and `calendar`
-(for its own read-only chat handlers — see §9), and calls into
-`character`'s state/emotion types to describe a reaction — it never
+`calendar`). `ai` depends on `core`, `memory`, `tools`, `calendar`, and
+`knowledge` (for its own read-only chat handlers, see §9), and calls into
+`character`'s state/emotion types to describe a reaction; it never
 imports Qt directly. `ui` and `main.py` are the only layers allowed to
 wire multiple subsystems together.
 
 ```text
 core  ←  character, memory, reminders, tasks, timers, calendar, ai
-core + memory  ←  reminders, tasks, timers
+core + memory  ←  reminders, tasks, timers, knowledge
 core  ←  calendar
 core + memory + reminders/tasks/timers/calendar  ←  tools
-core + memory + tools + calendar + character(types only)  ←  ai
-core + character + ai + reminders + tasks + timers + calendar  ←  ui, main.py
+core + memory + tools + calendar + knowledge + character(types only)  ←  ai
+core + character + ai + reminders + tasks + timers + calendar + knowledge  ←  ui, main.py
 ```
 
 This keeps every subsystem testable without a running Qt app or a live
@@ -944,6 +972,83 @@ gap shows up in the log instead of silently doing nothing.
 
 ---
 
+## 5i. Web Knowledge & Context Engine (`app/knowledge/`, V1.1, opt-in)
+
+Off by default (`settings.web_knowledge_enabled` / `MOCHI_WEB_KNOWLEDGE_ENABLED`
+in `.env`). Gives Mochi a small, freshness-aware evidence cache from a
+fixed source registry, separate from `trend_fetcher`/`meme_fetcher`'s
+paraphrased flavor cache (section 5's `app/humor/` tables): where those
+exist to season a joke, this exists to actually ground a factual answer
+about something current, with full provenance kept alongside it.
+
+```text
+source_manager.get_enabled_sources()
+      │  small fixed registry (one RSS feed, one subreddit) - Mochi
+      │  never crawls the open internet
+      ▼
+scheduler.run_ingestion_cycle()
+      │  per source, only if due (its own frequency_hours vs
+      │  knowledge_fetch_state.last_checked_at)
+      ▼
+fetcher.fetch_source()
+      │  incremental: ETag/Last-Modified (rss) or content-hash (reddit) -
+      │  "not_modified" skips everything below without being a failure
+      ▼
+parser.parse_fetch()          - raw payload → normalized Document(s),
+      │                          provenance (source/url/published_at) kept
+      ▼
+dedup.is_duplicate()          - exact URL or same-source content-hash match
+      │                          skipped before it ever reaches storage
+      ▼
+classifier.classify()         - "temporal" (short TTL, e.g. current Reddit
+      │                          discussion) vs "knowledge" (no hard TTL)
+      ▼
+knowledge_store.save_document() → knowledge_documents (SQLite)
+```
+
+At chat time, `context_engine.get_web_context(text)` is the only function
+`app/ai/chat_engine.py` calls directly - a cheap local SQLite read, never
+a live fetch mid-chat (same "never fetch synchronously inside a chat
+reply" rule `trend_fetcher.pick_one_trend()` already follows). It:
+
+1. Routes the question with `classify_query()` - a small, high-precision
+   keyword check ("latest", "trending", "today", "right now", ...) for
+   whether this looks like it needs *current* information at all.
+   Anything else returns `None` immediately - the normal case, not an
+   error - and Mochi answers exactly as it would if this engine didn't
+   exist.
+2. If it does, `knowledge_store.query_relevant()` ranks cached evidence
+   by a combined score (`app/knowledge/freshness.py`): keyword-overlap
+   relevance, a freshness label aged from `retrieved_at` (FRESH → RECENT
+   → AGING → STALE/EXPIRED, with temporal content aging out far faster
+   than persistent knowledge), source authority (Reddit is evidence of
+   discussion, never authoritative fact), and a fixed per-source-kind
+   confidence estimate.
+3. The top few results become a short, bounded evidence block appended
+   to the LLM prompt via `app/ai/llm.ask`'s `web_context` parameter -
+   told to ground the answer, never to be presented as more certain than
+   its own freshness label, and never a license to invent beyond it.
+
+**Triggering ingestion.** Same dual path as the crawler in 5b:
+`python scripts/run_knowledge_ingestion.py`, or automatically alongside
+`_RefreshTrendsWorker`'s existing trend/meme/crawl refresh (its own
+`settings.web_knowledge_enabled` gate, isolated in its own try/except so
+a knowledge-engine hiccup can never suppress an otherwise-successful
+trend/meme refresh).
+
+**Deliberately deferred** (see `docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for
+the full spec this implements a first slice of): a real semantic/vector
+index (Layer B) and a structured, per-claim verification/contradiction
+pipeline (Layers C, spec sections 25-27) - v1.1 uses keyword-overlap
+relevance and a fixed per-source-kind confidence value instead, which
+needs no embeddings dependency and keeps this package stdlib-only, the
+same constraint the rest of `app/humor/`'s opt-in network features
+already follow. Near-duplicate similarity across different phrasings of
+the same story (beyond exact URL/content-hash matches) is likewise out
+of scope for the same reason.
+
+---
+
 ## 7. Error handling philosophy
 
 Each subsystem raises a specific exception from `app/core/exceptions.py`.
@@ -988,6 +1093,12 @@ running Qt app window or a live Ollama server:
   a contributor without those optional packages still gets full
   coverage locally.
 - `test_movement.py` - screen-bounds math used when dragging the window
+- `test_knowledge_*.py` (fetcher, parser, dedup, classifier, freshness,
+  store, context_engine, scheduler, source_manager) - the V1.1 Web
+  Knowledge Engine (§5i), each pipeline stage tested independently with
+  network calls mocked out; `test_knowledge_scheduler.py` specifically
+  covers one source failing without blocking the others, matching the
+  same "never crash the app" contract as `trend_fetcher`/`meme_fetcher`
 
 `pixel_face.py` and `chat_window.py` tests that need a real `QWidget` use
 a session-scoped `qapp` fixture (`tests/conftest.py`) running Qt in

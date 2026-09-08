@@ -159,6 +159,22 @@ _FAMILIARITY_HINTS = {
 }
 
 
+# Optional fresh-evidence context (see app/knowledge/context_engine.py,
+# opt-in via settings.web_knowledge_enabled) - a compact, already-ranked
+# evidence package for questions that look like they need current
+# information (spec: Mochi v1.1 Web Knowledge & Context Engine). Unlike
+# the meme/trend flavor templates above (purely stylistic seasoning),
+# this is meant to actually ground the answer - the model is told to use
+# it as fact when relevant, but never invent beyond it. get_web_context()
+# already caps how many items/characters land here, so this template just
+# wraps whatever compact block it produced.
+_WEB_CONTEXT_TEMPLATE = (
+    "\n{evidence}\nUse this evidence only if it's actually relevant to what "
+    "the person asked; never present it as more certain than its freshness "
+    "label suggests, and never invent additional facts beyond it.\n"
+)
+
+
 class LLMUnavailable(Exception):
     """Raised whenever the local LLM can't be reached or didn't return a
     usable reply - callers must catch this and fall back gracefully."""
@@ -170,6 +186,7 @@ def ask(
     history: Optional[list[tuple[str, str]]] = None,
     trend_topic: Optional[str] = None,
     meme_premise: Optional[str] = None,
+    web_context: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
@@ -201,6 +218,15 @@ def ask(
     never raw scraped text, see that module for why. Purely a light
     seasoning of the prompt; the model is explicitly told not to force it.
 
+    `web_context` (opt-in, see app/knowledge/context_engine.py) is an
+    optional compact evidence block the caller may have built from
+    Mochi's local, freshness-aware knowledge cache (V1.1 Web Knowledge
+    Engine) - never a live network fetch made here, and never raw
+    unbounded scraped text (see get_web_context()'s own bounding). Unlike
+    `trend_topic`/`meme_premise` above, this is meant to actually ground
+    factual answers, not just flavor tone, so it's appended independently
+    of those rather than competing with them for one "flavor" slot.
+
     `now` (spec section 26: "always provide the model with the current
     local date/time when interpreting today/tomorrow/tonight/etc.") is
     injectable for tests; defaults to the real current local time. Fed
@@ -220,6 +246,8 @@ def ask(
     else:
         flavor_context = ""
 
+    web_context_block = _WEB_CONTEXT_TEMPLATE.format(evidence=web_context) if web_context else ""
+
     conversation_block = ""
     if history:
         recent = history[-_MAX_HISTORY_TURNS:]
@@ -234,7 +262,7 @@ def ask(
     )
 
     prompt = (
-        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{time_block}{conversation_block}"
+        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{web_context_block}{time_block}{conversation_block}"
         f"\nUser message: {user_text}\nMochi (JSON only):"
     )
     payload = {
