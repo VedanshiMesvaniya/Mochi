@@ -1407,3 +1407,59 @@ requirement, but isn't yet wired to a chat trigger in `app/ai/intent.py`
 - only create and cancel are reachable from chat today, matching the two
 literal examples in the spec ("Mochi, add a meeting..." / "Cancel my 5
 PM meeting").
+
+## 9b. Google Tasks (shares Calendar's OAuth, one combined sign-in)
+
+Deliberately built as a thin sibling of §9 above, not a copy with its
+own sign-in - the whole point is that turning this on never asks the
+user to connect a second time:
+
+```text
+"connect my calendar"
+      │
+      ▼
+app/calendar/google_calendar.py - _required_scopes() now returns
+      [calendar scope(s)] + [tasks scope(s)] whenever
+      settings.google_tasks_enabled is on (lazily imports
+      app/tasks/google_tasks.py's required_scopes() to avoid an
+      import cycle) - one flow, one consent screen, one token.json
+      covering both, saved by the SAME connect()/_write_token() as
+      before
+```
+
+`app/tasks/google_tasks.py`'s own `connect()`/`disconnect()` are thin
+delegates to `google_calendar.connect()`/`disconnect()` - there is no
+Tasks-specific OAuth flow anywhere, only a Tasks-specific *capability
+check* (`_capability_level`/`_required_level`, same two-level shape as
+Calendar's: readonly vs. `tasks` full scope) run against whatever the
+one shared token actually contains. This means:
+
+- A token connected before `MOCHI_GOOGLE_TASKS_ENABLED` was turned on
+  correctly fails with `GoogleTasksNotConnected` ("say 'connect my
+  calendar' to reconnect - it now also asks for Tasks access") rather
+  than silently working or crashing - the granted scope is checked, not
+  the setting.
+- Disconnecting deletes the one shared `token.json`, so it disconnects
+  both integrations at once; there's nothing Tasks-specific left to
+  clean up.
+
+Distinct from `app/tasks/manager.py`, which is Mochi's own fully local
+to-do list (no Google account, no network call, no opt-in setting) -
+every chat trigger for this module requires the literal word "google"
+before "task(s)" (`app/ai/intent.py`'s `GOOGLE_TASKS_*_TRIGGER`
+patterns) specifically so the two can never be confused by the regex
+layer or by the LLM's tool choice. Those triggers are checked *before*
+the generic local task done/cancel patterns (which would otherwise also
+match "delete my google task X"), and create/complete/delete are
+checked before the (deliberately loose) list trigger so "add X to my
+google tasks" is never mistaken for a read.
+
+Writes (`create_google_task`/`complete_google_task`/`delete_google_task`
+in `app/tools/google_tasks_tools.py`) follow the exact same
+propose-then-confirm shape as calendar writes in §9 - same
+`pending_action` mechanism, same two independent confirmation-enforcement
+layers (the tool wrapper's `confirmed=True` requirement, and the
+underlying capability check on the shared token), same "operates on the
+default task list only, no multi-list support yet" scoping decision as
+a deliberate v1 simplification.
+

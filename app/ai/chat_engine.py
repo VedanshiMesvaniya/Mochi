@@ -34,7 +34,10 @@ from app.core.exceptions import (
     CalendarError,
     GoogleCalendarNotConfigured,
     GoogleCalendarNotConnected,
+    GoogleTasksNotConfigured,
+    GoogleTasksNotConnected,
     MochiError,
+    TaskSyncError,
 )
 from app.core.logger import get_logger
 from app.humor.meme_fetcher import pick_one_meme
@@ -42,9 +45,15 @@ from app.humor.trend_fetcher import pick_one_trend
 from app.knowledge.context_engine import get_web_context
 from app.memory import relationship
 from app.reminders import manager as reminder_manager
-from app.tasks import manager as task_manager
+from app.tasks import google_tasks, manager as task_manager
 from app.timers import manager as timer_manager
-from app.tools import calendar_tools, reminder_tools, task_tools, timer_tools
+from app.tools import (
+    calendar_tools,
+    google_tasks_tools,
+    reminder_tools,
+    task_tools,
+    timer_tools,
+)
 
 logger = get_logger("mochi.ai.chat_engine")
 
@@ -748,8 +757,15 @@ def _calendar_connect_reaction() -> "ChatReaction":
         google_calendar.connect()
     except CalendarError as exc:
         return _calendar_error_reaction(exc)
+    # One shared sign-in flow (see app/calendar/google_calendar.py's
+    # _required_scopes) - if Tasks is also enabled it was just granted
+    # in the same consent screen, so say so rather than leaving the user
+    # to wonder whether they need to connect a second time.
+    text = "Connected! I can check your Google Calendar now."
+    if settings.google_tasks_enabled:
+        text = "Connected! I can check your Google Calendar and Google Tasks now."
     return ChatReaction(
-        text="Connected! I can check your Google Calendar now.",
+        text=text,
         emotion=Emotion.EXCITED,
         animation=CharacterState.EXCITED,
         sound="chirp",
@@ -863,6 +879,123 @@ def _calendar_delete_proposal(tool_args: dict) -> "ChatReaction":
             "kind": "calendar_delete",
             "event_id": target["id"],
             "title": target["title"],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Google Tasks - shares Calendar's connect() (see app/tasks/google_tasks.py
+# and app/core/config.py's google_tasks_enabled), so there's no separate
+# connect/disconnect reaction here - "connect my calendar" already covers
+# it. Reads happen immediately (_google_tasks_list_reaction, same reasoning
+# as the calendar read reactions above: never let the LLM guess at real
+# task-list contents); writes propose-then-confirm exactly like calendar
+# writes, resolved in _resolve_pending_action below.
+# ---------------------------------------------------------------------------
+
+
+def _google_tasks_error_reaction(exc: TaskSyncError) -> "ChatReaction":
+    if isinstance(exc, (GoogleTasksNotConfigured, GoogleTasksNotConnected)):
+        text = str(exc)
+    else:
+        text = f"Hmm, I couldn't reach Google Tasks: {exc}"
+    return ChatReaction(text=text, emotion=Emotion.CONFUSED, animation=CharacterState.CONFUSED)
+
+
+def _format_google_task(task: dict) -> str:
+    return task["title"]
+
+
+def _google_tasks_list_reaction() -> "ChatReaction":
+    try:
+        tasks = google_tasks.list_tasks()
+    except TaskSyncError as exc:
+        return _google_tasks_error_reaction(exc)
+    if not tasks:
+        return ChatReaction(
+            text="Your Google Tasks list is empty!",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+    shown = "; ".join(_format_google_task(t) for t in tasks[:5])
+    more = f" (+{len(tasks) - 5} more)" if len(tasks) > 5 else ""
+    plural = "task" if len(tasks) == 1 else "tasks"
+    return ChatReaction(
+        text=f"You've got {len(tasks)} Google {plural}: {shown}{more}.",
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+    )
+
+
+def _google_tasks_create_proposal(tool_args: dict) -> "ChatReaction":
+    title = tool_args["title"]
+    return ChatReaction(
+        text=f'Add "{title}" to your Google Tasks? (yes/no)',
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+        pending_action={"kind": "google_task_create", "title": title},
+    )
+
+
+def _google_tasks_find_one(query: Optional[str], verb: str) -> tuple:
+    """Shared lookup for complete/delete proposals below. Returns
+    (ChatReaction | None, matched_task | None) - a non-None reaction
+    means "stop here and show this instead", same pattern as
+    _calendar_delete_proposal's find_event handling."""
+    if not query:
+        return (
+            ChatReaction(
+                text=f"Which Google Task do you want to {verb}?",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            ),
+            None,
+        )
+    try:
+        matches = google_tasks.find_task(query)
+    except TaskSyncError as exc:
+        return (_google_tasks_error_reaction(exc), None)
+    if not matches:
+        return (
+            ChatReaction(
+                text=f"I couldn't find a Google Task matching \"{query}\".",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            ),
+            None,
+        )
+    return (None, matches[0])
+
+
+def _google_tasks_complete_proposal(tool_args: dict) -> "ChatReaction":
+    reaction, task = _google_tasks_find_one(tool_args.get("query"), "complete")
+    if reaction is not None:
+        return reaction
+    return ChatReaction(
+        text=f'Mark "{task["title"]}" as done on Google Tasks? (yes/no)',
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+        pending_action={
+            "kind": "google_task_complete",
+            "task_id": task["id"],
+            "title": task["title"],
+        },
+    )
+
+
+def _google_tasks_delete_proposal(tool_args: dict) -> "ChatReaction":
+    reaction, task = _google_tasks_find_one(tool_args.get("query"), "delete")
+    if reaction is not None:
+        return reaction
+    return ChatReaction(
+        text=f'Delete "{task["title"]}" from Google Tasks? (yes/no)',
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+        pending_action={
+            "kind": "google_task_delete",
+            "task_id": task["id"],
+            "title": task["title"],
         },
     )
 
@@ -1157,6 +1290,9 @@ def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None
 _PROPOSAL_HANDLERS = {
     "calendar_create_event": _calendar_create_proposal,
     "calendar_delete_event": _calendar_delete_proposal,
+    "google_tasks_create": _google_tasks_create_proposal,
+    "google_tasks_complete": _google_tasks_complete_proposal,
+    "google_tasks_delete": _google_tasks_delete_proposal,
 }
 
 
@@ -1201,6 +1337,53 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
             animation=CharacterState.IDLE,
         )
 
+    if kind == "google_task_create":
+        try:
+            google_tasks_tools.create_google_task(pending_action["title"], confirmed=True)
+        except MochiError as exc:
+            return ChatReaction(
+                text=f"Hmm, I couldn't add that: {exc}",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        return ChatReaction(
+            text=f"Done! Added \"{pending_action['title']}\" to your Google Tasks.",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+
+    if kind == "google_task_complete":
+        try:
+            google_tasks_tools.complete_google_task(pending_action["task_id"], confirmed=True)
+        except MochiError as exc:
+            return ChatReaction(
+                text=f"Hmm, I couldn't mark that done: {exc}",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        return ChatReaction(
+            text=f"Done! Marked \"{pending_action['title']}\" as complete.",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+        )
+
+    if kind == "google_task_delete":
+        try:
+            google_tasks_tools.delete_google_task(pending_action["task_id"], confirmed=True)
+        except MochiError as exc:
+            return ChatReaction(
+                text=f"Hmm, I couldn't delete that: {exc}",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+            )
+        return ChatReaction(
+            text=f"Done! Deleted \"{pending_action['title']}\" from Google Tasks.",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+        )
+
     # Should be unreachable (every place that sets pending_action uses a
     # known `kind`) - but per spec section 41/36, never silently no-op on
     # something we don't recognize.
@@ -1230,6 +1413,7 @@ _LIST_HANDLERS = {
     "calendar_upcoming": _calendar_upcoming_reaction,
     "calendar_connect": _calendar_connect_reaction,
     "calendar_disconnect": _calendar_disconnect_reaction,
+    "google_tasks_list": _google_tasks_list_reaction,
 }
 
 # "Act on an existing item" handlers (spec bug fix: "mark my task ... as

@@ -517,6 +517,29 @@ CALENDAR_DELETE_TRIGGER = re.compile(
 # distinct from TIME_AT above since that one requires the word "at".
 CALENDAR_DELETE_TIME = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", re.IGNORECASE)
 
+# --- Google Tasks (opt-in, shares Calendar's connect() - see
+# app/tasks/google_tasks.py and app/core/config.py's
+# google_tasks_enabled). Every trigger below requires the literal word
+# "google" before "task(s)" so these can never fire on Mochi's own local
+# task list ("add a task" -> app/ai/intent.py's TASK_* triggers further
+# up, app/tools/task_tools.py) - the two are separate systems and must
+# stay unambiguous to both the regex layer here and the LLM's tool
+# choice in app/ai/chat_engine.py.
+GOOGLE_TASKS_LIST_TRIGGER = re.compile(
+    r"\b((what(?:'s| is) on |show |list |check )?my google tasks?\b"
+    r"|what(?:'s| is) on my google task list)",
+    re.IGNORECASE,
+)
+GOOGLE_TASKS_CREATE_TRIGGER = re.compile(
+    r"\badd\s+(.{1,80}?)\s+to my google tasks?\b", re.IGNORECASE
+)
+GOOGLE_TASKS_COMPLETE_TRIGGER = re.compile(
+    r"\b(complete|finish|mark (?:as )?done)\b.{0,40}\bgoogle task\b", re.IGNORECASE
+)
+GOOGLE_TASKS_DELETE_TRIGGER = re.compile(
+    r"\b(delete|remove)\b.{0,40}\bgoogle task\b", re.IGNORECASE
+)
+
 TIME_AT = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 TIME_IN = re.compile(
     r"\bin\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b", re.IGNORECASE
@@ -795,6 +818,60 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         )
 
     # --- Completing/cancelling an existing task/reminder/timer ---------
+    # Google Tasks (opt-in, shares Calendar's connect - see app/tasks/
+    # google_tasks.py) is checked FIRST in this whole group, ahead of
+    # both the generic task-cancel/task-done triggers right below (which
+    # would otherwise swallow "delete my google task X" as a *local*
+    # task cancellation) and its own list trigger further down (create/
+    # complete/delete are checked before list so "add X to my google
+    # tasks" can't be mistaken for a read). Every phrase here requires
+    # the literal word "google" before "task(s)" so Mochi's local task
+    # list is never matched - see the trigger definitions above.
+    gtask_create_match = GOOGLE_TASKS_CREATE_TRIGGER.search(text)
+    if gtask_create_match:
+        title = gtask_create_match.group(1).strip(" ,.!")
+        return DetectedIntent(
+            name="google_tasks_create",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine builds the confirmation prompt
+            tool="google_tasks_create",
+            tool_args={"title": title},
+        )
+
+    gtask_complete_match = GOOGLE_TASKS_COMPLETE_TRIGGER.search(text)
+    if gtask_complete_match:
+        query = _extract_action_query(text[gtask_complete_match.end():])
+        return DetectedIntent(
+            name="google_tasks_complete",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine builds the confirmation prompt
+            tool="google_tasks_complete",
+            tool_args={"query": query or None},
+        )
+
+    gtask_delete_match = GOOGLE_TASKS_DELETE_TRIGGER.search(text)
+    if gtask_delete_match:
+        query = _extract_action_query(text[gtask_delete_match.end():])
+        return DetectedIntent(
+            name="google_tasks_delete",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine builds the confirmation prompt
+            tool="google_tasks_delete",
+            tool_args={"query": query or None},
+        )
+
+    if GOOGLE_TASKS_LIST_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="google_tasks_list",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from a live API read
+            tool="google_tasks_list",
+        )
+
     # Checked before the create triggers below and before calendar (no
     # overlap risk either way, but grouped with the listing checks above
     # since these are all "look something up / act on something that

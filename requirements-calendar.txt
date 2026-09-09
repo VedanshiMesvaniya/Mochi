@@ -1,7 +1,10 @@
-# Optional - only needed if you turn on MOCHI_GOOGLE_CALENDAR_ENABLED.
-# Kept out of requirements.txt so a normal (fully local) Mochi install
-# never pulls in Google's client libraries. See app/calendar/google_calendar.py
-# for the one-time setup steps, and README's Calendar section.
+# Optional - only needed if you turn on MOCHI_GOOGLE_CALENDAR_ENABLED or
+# MOCHI_GOOGLE_TASKS_ENABLED. Kept out of requirements.txt so a normal
+# (fully local) Mochi install never pulls in Google's client libraries.
+# See app/calendar/google_calendar.py and app/tasks/google_tasks.py for
+# the one-time setup steps, and README's Calendar section (Tasks shares
+# the same setup and the same OAuth sign-in - see that module's
+# docstring).
 #
 #   pip install -r requirements-calendar.txt
 

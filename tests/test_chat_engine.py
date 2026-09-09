@@ -789,3 +789,174 @@ def test_relational_message_flavored_by_familiarity(temp_db):
     familiar_reaction = handle_message("I'm back")
 
     assert new_reaction.text != familiar_reaction.text
+
+
+# ---------------------------------------------------------------------------
+# Google Tasks (opt-in, shares Calendar's connect - see
+# app/tasks/google_tasks.py)
+# ---------------------------------------------------------------------------
+
+
+def test_google_tasks_query_never_falls_through_to_llm(temp_db, monkeypatch):
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("Google Tasks queries must never fall through to the LLM")
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fail_if_called)
+    monkeypatch.setattr("app.ai.chat_engine.google_tasks.list_tasks", lambda: [])
+
+    reaction = handle_message("what is on my google tasks")
+    assert reaction.text
+
+
+def test_google_tasks_list_reports_not_connected(temp_db, monkeypatch):
+    from app.core.exceptions import GoogleTasksNotConnected
+
+    def _raise():
+        raise GoogleTasksNotConnected(
+            'Google Tasks isn\'t connected yet. Say "connect my calendar" to set it up.'
+        )
+
+    monkeypatch.setattr("app.ai.chat_engine.google_tasks.list_tasks", _raise)
+
+    reaction = handle_message("what is on my google tasks")
+    assert "connect my calendar" in reaction.text.lower()
+    assert reaction.animation == CharacterState.CONFUSED
+
+
+def test_google_tasks_list_empty_is_happy(temp_db, monkeypatch):
+    monkeypatch.setattr("app.ai.chat_engine.google_tasks.list_tasks", lambda: [])
+    reaction = handle_message("what is on my google tasks")
+    assert reaction.emotion == Emotion.HAPPY
+    assert "empty" in reaction.text.lower()
+
+
+def test_google_tasks_list_lists_tasks(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks.list_tasks",
+        lambda: [{"id": "t1", "title": "Buy milk", "status": "needsAction", "completed": False}],
+    )
+    reaction = handle_message("show my google tasks")
+    assert "buy milk" in reaction.text.lower()
+
+
+def test_google_tasks_connect_uses_shared_calendar_connect(temp_db, monkeypatch):
+    """'connect my calendar' is the one shared trigger - it should
+    mention Tasks when Tasks is also enabled."""
+    from app.core.config import settings
+
+    monkeypatch.setattr("app.ai.chat_engine.google_calendar.connect", lambda: None)
+    monkeypatch.setattr(settings, "google_tasks_enabled", True)
+
+    reaction = handle_message("connect my calendar")
+    assert "connected" in reaction.text.lower()
+    assert "google tasks" in reaction.text.lower()
+
+
+def test_create_google_task_proposes_and_waits_for_confirmation(temp_db):
+    reaction = handle_message("add buy milk to my google tasks")
+    assert reaction.pending_action is not None
+    assert reaction.pending_action["kind"] == "google_task_create"
+    assert reaction.pending_action["title"] == "buy milk"
+    assert "add" in reaction.text.lower()
+    assert "google tasks" in reaction.text.lower()
+
+
+def test_confirming_create_google_task_calls_tools_with_confirmed_true(temp_db, monkeypatch):
+    calls = []
+
+    def _fake_create(title, confirmed=False):
+        calls.append((title, confirmed))
+        return {"id": "t1", "title": title}
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks_tools.create_google_task", _fake_create
+    )
+
+    proposal = handle_message("add buy milk to my google tasks")
+    pending = proposal.pending_action
+    assert pending is not None
+
+    reaction = handle_message("yes", pending_action=pending)
+
+    assert len(calls) == 1
+    assert calls[0][1] is True  # confirmed=True
+    assert reaction.pending_action is None
+    assert "done" in reaction.text.lower() or "added" in reaction.text.lower()
+    assert reaction.emotion == Emotion.HAPPY
+
+
+def test_declining_create_google_task_never_calls_tools(temp_db, monkeypatch):
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("declined action must never be executed")
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks_tools.create_google_task", _fail_if_called
+    )
+
+    proposal = handle_message("add buy milk to my google tasks")
+    reaction = handle_message("no", pending_action=proposal.pending_action)
+
+    assert reaction.pending_action is None
+    assert "never mind" in reaction.text.lower()
+
+
+def test_delete_google_task_proposes_after_finding_a_match(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks.find_task",
+        lambda query: [{"id": "t1", "title": "Buy milk"}],
+    )
+    reaction = handle_message("delete my google task buy milk")
+    assert reaction.pending_action is not None
+    assert reaction.pending_action["kind"] == "google_task_delete"
+    assert reaction.pending_action["task_id"] == "t1"
+
+
+def test_delete_google_task_no_match_asks_again(temp_db, monkeypatch):
+    monkeypatch.setattr("app.ai.chat_engine.google_tasks.find_task", lambda query: [])
+    reaction = handle_message("delete my google task nonexistent thing")
+    assert reaction.pending_action is None
+    assert "couldn't find" in reaction.text.lower()
+
+
+def test_confirming_delete_google_task_calls_tools_with_confirmed_true(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks.find_task",
+        lambda query: [{"id": "t1", "title": "Buy milk"}],
+    )
+    calls = []
+
+    def _fake_delete(task_id, confirmed=False):
+        calls.append((task_id, confirmed))
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks_tools.delete_google_task", _fake_delete
+    )
+
+    proposal = handle_message("delete my google task buy milk")
+    reaction = handle_message("yes", pending_action=proposal.pending_action)
+
+    assert calls == [("t1", True)]
+    assert reaction.pending_action is None
+    assert "deleted" in reaction.text.lower()
+
+
+def test_confirming_complete_google_task_calls_tools_with_confirmed_true(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks.find_task",
+        lambda query: [{"id": "t1", "title": "Buy milk"}],
+    )
+    calls = []
+
+    def _fake_complete(task_id, confirmed=False):
+        calls.append((task_id, confirmed))
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_tasks_tools.complete_google_task", _fake_complete
+    )
+
+    proposal = handle_message("complete my google task buy milk")
+    reaction = handle_message("yes", pending_action=proposal.pending_action)
+
+    assert calls == [("t1", True)]
+    assert reaction.pending_action is None
+    assert "complete" in reaction.text.lower()
