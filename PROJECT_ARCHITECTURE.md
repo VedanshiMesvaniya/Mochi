@@ -1087,6 +1087,85 @@ oversight.
 
 ---
 
+## 5j. Active-goal slot-filling and calendar write verification (Cognitive Upgrade, phase 1)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md` for the full spec and what's
+implemented vs deferred. Phase 1 closes two concrete gaps:
+
+**Active-goal completion (`app/ai/goal_state.py`).** Same shape of
+problem section 5c fixed for entity references, but for an unfinished
+*slot*, not an unfinished *reference*: `calendar_create_needs_time` /
+`create_reminder_needs_time` / `reschedule_reference_needs_time` /
+`create_timer_needs_duration` (all in `app/ai/intent.py`) ask a
+clarifying question ("but when?") and previously threw the conversation
+away completely - a reply of just "5" matched no trigger and fell
+through to "unknown".
+
+```text
+handle_message(text, active_goal=...)
+        │
+        ├─ active_goal present ──► intent.resolve_pending_goal(kind, known_slots, text)
+        │         │
+        │         ├─ text parses as the missing slot ──► completed intent,
+        │         │   same shape detect_intent()/build_semantic_intent()
+        │         │   would have produced - flows through the normal
+        │         │   tool/proposal dispatch below exactly as before
+        │         │
+        │         └─ doesn't parse ──► goal abandoned, `text` runs through
+        │             detect_intent() as an ordinary new message - never
+        │             guesses a slot value (mirrors _classify_confirmation's
+        │             "ambiguous -> abandon" rule for `pending_action`)
+        │
+        └─ no active_goal ──► detect_intent(text) as always
+                │
+                ▼
+        intent.name is one of the four "*_needs_*" names above
+                │
+                ▼
+        goal_state.from_intent_name(intent.name, intent.tool_args) -> new active_goal
+```
+
+Threaded exactly like `pending_action`/`conversation_state` (section
+5c) - owned by `app/ui/chat_window.py`'s `_active_goal`, read in, acted
+on, written back, reset on close, never carried forward except by being
+freshly re-issued. The already-known slots (e.g. a reminder's title) are
+carried in the triggering `DetectedIntent.tool_args`, which is otherwise
+unused for a "*_needs_*" intent since it has no `tool` to run. The slot
+value itself is still only ever parsed by the same deterministic
+`_parse_absolute_time`/`_parse_relative_minutes`/`_parse_bare_time`/
+`_parse_duration_seconds` helpers every creation trigger already uses -
+`resolve_pending_goal()` never asks the model to interpret the reply.
+
+Phase 1 scope is deliberately one missing slot per goal - covers every
+"*_needs_*" intent that currently exists. A goal needing more than one
+clarifying question in a row is a documented deferral (see the roadmap
+doc), not an oversight - no current intent needs it.
+
+See `tests/test_goal_state.py` (the module in isolation),
+`tests/test_intent.py` (`resolve_pending_goal` unit tests), and
+`tests/test_chat_engine.py`/`tests/test_chat_window.py` (end-to-end:
+ask → bare reply → completed action, plus the abandon-on-unrelated-reply
+case).
+
+**Calendar write verification (`app/tools/calendar_tools.py`,
+`app/calendar/google_calendar.get_event`).** `create_event`/
+`update_event`/`delete_event` previously reported success as soon as the
+Google Calendar API call itself returned without raising. They now
+re-fetch the event via the new `get_event()` before returning: `create`/
+`update` raise `ToolValidationError` if the event still isn't there;
+`delete` raises if it's still there. A failure in the verification *read
+itself* (rate limit, transient network blip) fails open rather than
+turning a real success into a false one - only a verifiably wrong state
+is treated as failure. `get_event()` also normalizes Google's several
+different "not found" shapes (404, 410 "gone", and a live event with
+`status: "cancelled"`) down to a single `None`.
+
+See `tests/test_google_calendar.py` (`get_event` in isolation) and
+`tests/test_calendar_tools.py` (verification wiring, including the
+fails-open-on-flaky-read case).
+
+---
+
 ## 7. Error handling philosophy
 
 Each subsystem raises a specific exception from `app/core/exceptions.py`.

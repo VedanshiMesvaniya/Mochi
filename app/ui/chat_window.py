@@ -254,6 +254,7 @@ class ChatWorker(QThread):
         history: Optional[list[tuple[str, str]]] = None,
         pending_action: Optional[dict] = None,
         conversation_state: Optional[dict] = None,
+        active_goal: Optional[dict] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -261,6 +262,7 @@ class ChatWorker(QThread):
         self._history = history
         self._pending_action = pending_action
         self._conversation_state = conversation_state
+        self._active_goal = active_goal
 
     def run(self) -> None:  # noqa: D102 - QThread override
         try:
@@ -269,6 +271,7 @@ class ChatWorker(QThread):
                 history=self._history,
                 pending_action=self._pending_action,
                 conversation_state=self._conversation_state,
+                active_goal=self._active_goal,
             )
         except Exception:  # noqa: BLE001 - chat must never crash the app
             logger.exception("Chat engine failed on message: %s", self._text)
@@ -316,6 +319,12 @@ class ChatWindow(TranslucentDialog):
         # one" in the next message should resolve to. Same lifetime as
         # _pending_action above.
         self._conversation_state: Optional[dict] = None
+
+        # Active-goal slot-filling state (Cognitive Upgrade spec sections
+        # 3-4/16, see app/ai/goal_state.py) - a single-slot clarifying
+        # question ("but when?") still awaiting an answer. Same lifetime
+        # as _pending_action above.
+        self._active_goal: Optional[dict] = None
 
         # Typing indicator (spec: "chat looks closed/frozen while waiting").
         # The pet's face already changes state while a reply is pending,
@@ -405,6 +414,7 @@ class ChatWindow(TranslucentDialog):
         self._history = []  # session memory ends when the window does
         self._pending_action = None  # ...and so does any unconfirmed calendar action
         self._conversation_state = None  # ...and so does "it"/"that" reference memory
+        self._active_goal = None  # ...and so does any unanswered clarifying question
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -479,6 +489,7 @@ class ChatWindow(TranslucentDialog):
             history=list(self._history[:-1]),
             pending_action=self._pending_action,
             conversation_state=self._conversation_state,
+            active_goal=self._active_goal,
             parent=self,
         )
         self._worker.finished_reaction.connect(self._on_reaction_ready)
@@ -490,6 +501,7 @@ class ChatWindow(TranslucentDialog):
         self._history.append(("mochi", reaction.text))
         self._pending_action = reaction.pending_action
         self._conversation_state = reaction.conversation_state
+        self._active_goal = reaction.active_goal
         if self._on_reaction is not None:
             self._on_reaction(reaction)
 

@@ -960,3 +960,71 @@ def test_confirming_complete_google_task_calls_tools_with_confirmed_true(temp_db
     assert calls == [("t1", True)]
     assert reaction.pending_action is None
     assert "complete" in reaction.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Active-goal completion (Cognitive Upgrade spec sections 3-4/16) - the
+# exact scenario the spec calls out: "Schedule Devika tomorrow" -> "what
+# time?" -> "5" must complete the SAME event, not be treated as a fresh,
+# unrelated message. See app/ai/goal_state.py.
+# ---------------------------------------------------------------------------
+
+
+def test_calendar_create_needs_time_then_bare_reply_completes_it(temp_db):
+    asked = handle_message("schedule a meeting with Devika tomorrow")
+    assert asked.pending_action is None
+    assert "when" in asked.text.lower()
+    assert asked.active_goal is not None
+    assert asked.active_goal["kind"] == "calendar_create_event"
+
+    answered = handle_message("5", active_goal=asked.active_goal)
+    assert answered.pending_action is not None
+    assert answered.pending_action["kind"] == "calendar_create"
+    assert "devika" in answered.pending_action["title"].lower()
+    # The goal is consumed once it resolves into a fresh proposal - not
+    # left dangling to (mis)apply to some later, unrelated message.
+    assert answered.active_goal is None
+
+
+def test_reminder_needs_time_then_bare_reply_completes_it(temp_db):
+    asked = handle_message("remind me to call mom")
+    assert asked.active_goal is not None
+    assert asked.active_goal["kind"] == "create_reminder"
+
+    answered = handle_message("at 7pm", active_goal=asked.active_goal)
+    assert answered.active_goal is None
+    assert "call mom" in answered.text.lower()
+    reminders = reminder_manager.list_reminders()
+    assert any("call mom" in r.title.lower() for r in reminders)
+
+
+def test_timer_needs_duration_then_bare_reply_completes_it(temp_db):
+    asked = handle_message("start a timer")
+    assert asked.active_goal is not None
+    assert asked.active_goal["kind"] == "start_timer"
+
+    answered = handle_message("10 minutes", active_goal=asked.active_goal)
+    assert answered.active_goal is None
+    assert "10 min" in answered.text.lower()
+
+
+def test_active_goal_is_abandoned_by_an_unrelated_reply(temp_db):
+    """An ambiguous reply must never guess a slot value - it should fall
+    back to processing the message normally, exactly like an ambiguous
+    pending_action reply is abandoned rather than carried forward."""
+    asked = handle_message("remind me to call mom")
+    assert asked.active_goal is not None
+
+    reaction = handle_message("hows it going", active_goal=asked.active_goal)
+    # Treated as an ordinary new (small-talk) message, not a broken/stuck
+    # reminder flow.
+    assert reaction.active_goal is None
+    reminders = reminder_manager.list_reminders()
+    assert not any("call mom" in r.title.lower() for r in reminders)
+
+
+def test_active_goal_not_reissued_by_unrelated_intents(temp_db):
+    """A normal, self-contained command must never pick up a leftover
+    active_goal field - only the four "*_needs_*" intents do."""
+    reaction = handle_message("what's the weather like")
+    assert reaction.active_goal is None

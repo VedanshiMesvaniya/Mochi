@@ -4,8 +4,11 @@
 > opt-in first slice of **V1.1: Web Knowledge & Context Engine** also
 > implemented (off by default, `MOCHI_WEB_KNOWLEDGE_ENABLED`). See
 > `docs/ROADMAP_V1_1_WEB_KNOWLEDGE.md` for that spec and what v1.1
-> currently implements vs defers, and section 7 below for what the base
-> V1.0 phase covers, and section 56 "Release gates" for what has to be
+> currently implements vs defers, `docs/ROADMAP_COGNITIVE_UPGRADE.md` for
+> the separate Cognitive Intelligence Upgrade spec (active-goal
+> slot-filling and calendar write verification implemented so far - see
+> that file's "Implementation status" section), and section 7 below for
+> what the base V1.0 phase covers, and section 56 "Release gates" for what has to be
 > true before moving to V1.2. This file is the
 > full versioned plan — V1.0 → V1.2 → V2.0 → V2.1 → V3.0 → V3.1 — kept in
 > the repo so architecture decisions can be checked against it. When this

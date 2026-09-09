@@ -237,6 +237,12 @@ chat popup.
   remembered pointer to a real database row, not a guess. If that thing
   was since completed/deleted another way, Mochi asks instead of acting
   on something else. (`PROJECT_ARCHITECTURE.md` §5c)
+- **Finishing an unanswered question.** If Mochi asks "but when?" (a
+  reminder/event/timer that's missing only its time or duration), the
+  very next message is tried against that question first - a bare "5"
+  or "10 minutes" completes the original request instead of being
+  treated as an unrelated new message. An unrelated reply is never
+  guessed at - it's simply processed as ordinary chat instead. (§5j)
 - **Multiple at once** ("all of them", "the first two", "three of
   them"). Same deterministic guarantee — if the quantity doesn't match
   what was shown, Mochi asks rather than guessing. (§5d)
@@ -504,6 +510,13 @@ Mochi: Done! Cancelled "Standup".
 If it's disabled, not set up yet, or the sign-in has expired/lacks the
 right permission, Mochi says so directly (e.g. *"say 'connect my
 calendar' to reconnect with edit access"*) instead of guessing.
+
+**Writes verify themselves before Mochi calls them done.** After
+creating, updating, or cancelling an event, Mochi re-checks your actual
+calendar for it rather than just trusting that the request didn't
+error out. If Google accepted the request but the change genuinely
+isn't showing up when checked, Mochi says so ("I couldn't add that...")
+instead of claiming success on faith. (`PROJECT_ARCHITECTURE.md` §5j)
 
 ---
 

@@ -31,7 +31,19 @@ class _FakeRefreshError(Exception):
 
 
 class _FakeHttpError(Exception):
-    pass
+    """Optionally carries a `.resp.status` (via a tiny stand-in object,
+    not the real googleapiclient response) so get_event() tests can
+    exercise its 404/410 "not found" special-casing without needing the
+    real HttpError type."""
+
+    def __init__(self, message="", status=None):
+        super().__init__(message)
+        self.resp = _FakeHttpResponse(status) if status is not None else None
+
+
+class _FakeHttpResponse:
+    def __init__(self, status):
+        self.status = status
 
 
 class _FakeCredentials:
@@ -123,6 +135,10 @@ class _FakeEventsResource:
     def list(self, **kwargs):
         self.last_kwargs = kwargs
         self.last_call = ("list", kwargs)
+        return _FakeEventsList(self._response, self._raises)
+
+    def get(self, **kwargs):
+        self.last_call = ("get", kwargs)
         return _FakeEventsList(self._response, self._raises)
 
     def insert(self, **kwargs):
@@ -596,9 +612,68 @@ def test_delete_event_http_error_wrapped(enabled, monkeypatch):
         google_calendar.delete_event("evt1")
 
 
+# ---------------------------------------------------------------------------
+# get_event (Cognitive Upgrade spec section 12: used by
+# app/tools/calendar_tools.py to verify create/update/delete actually
+# took effect before reporting success).
+# ---------------------------------------------------------------------------
+
+
+def test_get_event_returns_serialized_event_when_found(enabled, monkeypatch):
+    service = _FakeService(
+        response={
+            "id": "evt1",
+            "summary": "Sync",
+            "start": {"dateTime": "2026-08-15T17:00:00"},
+            "end": {"dateTime": "2026-08-15T18:00:00"},
+        }
+    )
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    event = google_calendar.get_event("evt1")
+
+    assert event["id"] == "evt1"
+    assert event["title"] == "Sync"
+    method, kwargs = service._events.last_call
+    assert method == "get"
+    assert kwargs["eventId"] == "evt1"
+
+
+def test_get_event_returns_none_on_404(enabled, monkeypatch):
+    service = _FakeService(raises=_FakeHttpError("gone", status=404))
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    assert google_calendar.get_event("missing") is None
+
+
+def test_get_event_returns_none_on_410(enabled, monkeypatch):
+    """410 ('gone') is what Google actually returns for an id that used
+    to exist and was hard-deleted."""
+    service = _FakeService(raises=_FakeHttpError("gone", status=410))
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    assert google_calendar.get_event("deleted-long-ago") is None
+
+
+def test_get_event_returns_none_when_status_is_cancelled(enabled, monkeypatch):
+    """A recently-deleted event isn't 404/410 - Google keeps it around
+    with status "cancelled" instead, so that needs its own check."""
+    service = _FakeService(response={"id": "evt1", "status": "cancelled"})
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    assert google_calendar.get_event("evt1") is None
+
+
+def test_get_event_raises_calendar_error_on_other_http_errors(enabled, monkeypatch):
+    service = _FakeService(raises=_FakeHttpError("server error", status=500))
+    _connect_write_token(monkeypatch, lambda *a, **k: service)
+
+    with pytest.raises(CalendarError):
+        google_calendar.get_event("evt1")
+
+
 def test_find_event_filters_by_time_of_day(enabled, monkeypatch):
     import datetime as dt
-
     response = {
         "items": [
             {"id": "e1", "summary": "Standup", "start": {"dateTime": "2026-08-15T09:00:00-07:00"}, "end": {"dateTime": "2026-08-15T09:15:00-07:00"}},

@@ -478,6 +478,38 @@ def find_event(
     return matches
 
 
+def get_event(event_id: str) -> Optional[dict]:
+    """Fetch a single event by id, or None if it doesn't exist (already
+    deleted, cancelled, or never created).
+
+    Cognitive Upgrade spec section 12 ("Tool Verification"): a
+    create/delete call returning without raising only means the HTTP
+    request succeeded, not that the change is actually reflected in the
+    calendar - see app/tools/calendar_tools.py's create_event/
+    delete_event, which call this immediately afterward to confirm
+    before telling the user it worked, rather than equating "tool call
+    was generated" with "action succeeded" (spec section 27, rule 10)."""
+    _, _, _, _, _build, HttpError = _import_google_libraries()
+    service = _get_service()
+    try:
+        event = service.events().get(calendarId="primary", eventId=event_id).execute()
+    except HttpError as exc:
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if status in (404, 410):
+            # 404 = never existed; 410 = "gone" (Google's status for an
+            # already-deleted event id) - both mean "not there", not an
+            # error to surface.
+            return None
+        raise CalendarError(
+            f"Google Calendar couldn't be reached right now ({exc})."
+        ) from exc
+    if event.get("status") == "cancelled":
+        # Deleted events aren't actually removed from Google's index -
+        # they're returned with status "cancelled" instead of a 404/410.
+        return None
+    return _serialize_event(event)
+
+
 # ---------------------------------------------------------------------------
 # Write operations (V4, opt-in via settings.google_calendar_write_enabled).
 #
