@@ -655,3 +655,67 @@ def test_reschedule_reference_without_a_time_asks_for_one():
     result = detect_intent("make it better", now=NOW)
     assert result.name == "reschedule_reference_needs_time"
     assert result.response
+
+
+# ---------------------------------------------------------------------------
+# Google Tasks (opt-in, shares Calendar's connect - see
+# app/tasks/google_tasks.py). Every trigger requires the literal word
+# "google" so these can never collide with Mochi's own local task list.
+# ---------------------------------------------------------------------------
+
+
+def test_google_tasks_list_query():
+    result = detect_intent("what is on my google tasks", now=NOW)
+    assert result.name == "google_tasks_list"
+    assert result.tool == "google_tasks_list"
+    assert result.response == ""  # chat_engine fills this in from a live read
+
+
+def test_google_tasks_list_alternate_phrasing():
+    result = detect_intent("show my google tasks", now=NOW)
+    assert result.name == "google_tasks_list"
+
+
+def test_google_tasks_create():
+    result = detect_intent("add buy milk to my google tasks", now=NOW)
+    assert result.name == "google_tasks_create"
+    assert result.tool == "google_tasks_create"
+    assert result.tool_args["title"] == "buy milk"
+
+
+def test_google_tasks_create_not_shadowed_by_local_task_creation():
+    """'add task X' (no 'google') must still create a LOCAL task, not a
+    Google Task."""
+    result = detect_intent("add task buy milk", now=NOW)
+    assert result.name == "create_task"
+
+
+def test_google_tasks_complete():
+    result = detect_intent("complete my google task buy milk", now=NOW)
+    assert result.name == "google_tasks_complete"
+    assert result.tool == "google_tasks_complete"
+    assert "buy milk" in result.tool_args["query"]
+
+
+def test_google_tasks_delete():
+    result = detect_intent("delete my google task buy milk", now=NOW)
+    assert result.name == "google_tasks_delete"
+    assert result.tool == "google_tasks_delete"
+    assert "buy milk" in result.tool_args["query"]
+
+
+def test_google_tasks_delete_not_shadowed_by_local_task_cancel():
+    """'delete my task X' (no 'google') must still cancel a LOCAL task -
+    bug-prone case since TASK_CANCEL_TRIGGER also matches on
+    delete/remove + 'task'."""
+    result = detect_intent("delete my task buy milk", now=NOW)
+    assert result.name == "cancel_task"
+
+
+def test_google_tasks_create_not_shadowed_by_list_trigger():
+    """Regression: GOOGLE_TASKS_LIST_TRIGGER's loose 'my google tasks'
+    phrasing must not swallow create/complete/delete requests that also
+    contain that substring - create/complete/delete are checked first."""
+    result = detect_intent("add finish the report to my google tasks", now=NOW)
+    assert result.name == "google_tasks_create"
+    assert result.tool_args["title"] == "finish the report"

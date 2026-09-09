@@ -60,6 +60,26 @@ class GoogleCalendarNotConnected(CalendarError):
     stored token was revoked/expired and refresh failed)."""
 
 
+class TaskSyncError(MochiError):
+    """Raised on Google Tasks failures. Distinct from `TaskError`, which
+    covers Mochi's own local task list - this is only for the optional
+    Google Tasks sync integration."""
+
+
+class GoogleTasksNotConfigured(TaskSyncError):
+    """Raised when Google Tasks is disabled, or its optional client
+    libraries / OAuth client secret aren't set up. Distinct from
+    `GoogleTasksNotConnected` so callers (chat_engine) can point the
+    user at the right fix - install/enable vs. connect."""
+
+
+class GoogleTasksNotConnected(TaskSyncError):
+    """Raised when Google Tasks is enabled and configured, but the
+    shared Google sign-in (see app/calendar/google_calendar.py, the
+    same token covers both Calendar and Tasks) hasn't been granted
+    Tasks permission yet."""
+
+
 class ToolValidationError(MochiError):
     """
     Raised when an LLM-proposed tool call/action fails schema or permission

@@ -86,7 +86,22 @@ SCOPE_EVENTS = "https://www.googleapis.com/auth/calendar.events"
 
 
 def _required_scopes() -> list[str]:
-    return [SCOPE_EVENTS] if settings.google_calendar_write_enabled else [SCOPE_READONLY]
+    """The scope list requested by connect(). Includes Google Tasks
+    scopes too when `settings.google_tasks_enabled` is on, so a single
+    "connect my calendar" grants both integrations in one OAuth consent
+    screen - there is only ever one Google sign-in for the whole app
+    (see app/tasks/google_tasks.py, which shares this same token file
+    and checks its own required scope against whatever was granted
+    here). Imported lazily to avoid a calendar/tasks import cycle and so
+    tests that never touch tasks are unaffected."""
+    scopes = [SCOPE_EVENTS] if settings.google_calendar_write_enabled else [SCOPE_READONLY]
+    if settings.google_tasks_enabled:
+        from app.tasks import google_tasks
+
+        for scope in google_tasks.required_scopes():
+            if scope not in scopes:
+                scopes.append(scope)
+    return scopes
 
 
 def _capability_level(scopes) -> int:

@@ -149,6 +149,21 @@ class Settings:
     # touching the Google account's actual grant.
     google_token_filename: str = "token.json"
 
+    # Google Tasks (opt-in, off by default, alongside Google Calendar
+    # above). Shares the SAME OAuth client secret and the SAME cached
+    # token file as Calendar - there is only ever one Google sign-in
+    # flow. Turning this on simply widens what that one flow asks for:
+    # the next "connect my calendar" also requests Tasks permission, so
+    # the user only ever signs in once, not once per feature (see
+    # app/calendar/google_calendar.py's _required_scopes and
+    # app/tasks/google_tasks.py).
+    google_tasks_enabled: bool = False
+    # Same idea as google_calendar_write_enabled: widens the requested
+    # scope from tasks.readonly to tasks, letting Mochi create/complete/
+    # delete Google Tasks - but only after explicit per-action
+    # confirmation in chat, same as calendar writes.
+    google_tasks_write_enabled: bool = False
+
     # Humor (spec: "once in a while it should crawl internet and fetch...
     # so it be more of sense of humor") - the one optional feature that
     # reaches the open internet for something other than an explicit
@@ -264,6 +279,12 @@ class Settings:
             ),
             google_token_filename=_safe_filename(
                 os.getenv("MOCHI_GOOGLE_TOKEN_FILENAME", "token.json"), "token.json"
+            ),
+            google_tasks_enabled=_bool(
+                os.getenv("MOCHI_GOOGLE_TASKS_ENABLED"), False
+            ),
+            google_tasks_write_enabled=_bool(
+                os.getenv("MOCHI_GOOGLE_TASKS_WRITE_ENABLED"), False
             ),
             humor_enabled=_bool(os.getenv("MOCHI_HUMOR_ENABLED"), True),
             trend_awareness_enabled=_bool(

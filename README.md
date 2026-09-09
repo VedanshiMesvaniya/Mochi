@@ -507,6 +507,51 @@ calendar' to reconnect with edit access"*) instead of guessing.
 
 ---
 
+## Google Tasks
+
+Say *"what's on my google tasks?"* and Mochi answers from your real
+Google Tasks default list. Off by default, same as Calendar, and shares
+Calendar's sign-in — there is only ever **one** Google consent screen for
+the whole app, never a separate one per feature.
+
+**Setup** (on top of Calendar's setup above):
+
+1. Do the same `pip install -r requirements-calendar.txt` and client
+   secret steps as Calendar (same file, same client).
+2. Set `MOCHI_GOOGLE_CALENDAR_ENABLED=true` **and**
+   `MOCHI_GOOGLE_TASKS_ENABLED=true` in `.env`.
+3. Say **"connect my calendar"** to Mochi. The one consent screen now
+   also asks for Tasks permission, and the resulting token (still just
+   `config/token.json`) covers both — no second sign-in, ever.
+   - Already connected before turning Tasks on? Say "connect my
+     calendar" again once to pick up the added permission.
+
+**Read vs. write access** works the same way as Calendar's:
+`MOCHI_GOOGLE_TASKS_WRITE_ENABLED=true` widens the scope so Mochi can
+create, complete, and delete Google Tasks — again, only after you
+explicitly confirm each one:
+
+```
+You:   add buy milk to my google tasks
+Mochi: Add "buy milk" to your Google Tasks? (yes/no)
+You:   yes
+Mochi: Done! Added "buy milk" to your Google Tasks.
+```
+
+```
+You:   complete my google task buy milk
+Mochi: Mark "buy milk" as done on Google Tasks? (yes/no)
+You:   yes
+Mochi: Done! Marked "buy milk" as complete.
+```
+
+Every trigger phrase requires the word **"google"** before "task(s)" —
+"add a task" still creates Mochi's own local to-do list, entirely
+separate from this and requiring no internet or Google account. Say
+"google task" specifically when you mean the synced one.
+
+---
+
 ## Running it
 
 ```bash
