@@ -1022,6 +1022,12 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
                     f"Got it - \"{title}\" - but when? Try "
                     "\"tomorrow at 5pm\" or \"in 2 hours\"."
                 ),
+                # Cognitive Upgrade spec sections 3-4/16: the title already
+                # extracted is carried in tool_args (unused otherwise, since
+                # this intent has no `tool`) so chat_engine.py can turn it
+                # into an active_goal - a bare reply like "5" on the next
+                # turn should complete THIS event, not start a fresh one.
+                tool_args={"title": title},
             )
         return DetectedIntent(
             name="calendar_create_event",
@@ -1139,6 +1145,9 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
                     f"Got it - \"{title}\" - but when? Try "
                     "\"at 7pm\" or \"in 30 minutes\"."
                 ),
+                # See the matching comment on calendar_create_needs_time
+                # above - same active_goal mechanism.
+                tool_args={"title": title},
             )
         return DetectedIntent(
             name="create_reminder",
@@ -1152,14 +1161,17 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
 
     if timer_match is not None and timer_match.start() == winner:
         seconds = _parse_duration_seconds(lowered)
+        label = _timer_label_from(text) or "Timer"
         if not seconds:
             return DetectedIntent(
                 name="create_timer_needs_duration",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
                 response="How long should the timer be? e.g. \"timer for 10 minutes\".",
+                # See the matching comment on calendar_create_needs_time
+                # above - same active_goal mechanism.
+                tool_args={"label": label},
             )
-        label = _timer_label_from(text) or "Timer"
         purpose_note = f" - I'll remind you to {label.lower()}" if label != "Timer" else ""
         return DetectedIntent(
             name="start_timer",
@@ -1470,6 +1482,10 @@ def build_semantic_intent(name: str, raw_text: str, now: Optional[datetime] = No
                     f"Sounds like you want a reminder for \"{title}\" - but when? "
                     "Try \"at 7pm\" or \"in 30 minutes\"."
                 ),
+                # See the matching comment on the keyword-path
+                # calendar_create_needs_time above - same active_goal
+                # mechanism, shared by both the keyword and semantic paths.
+                tool_args={"title": title},
             )
         return DetectedIntent(
             name="create_reminder",
@@ -1537,6 +1553,104 @@ def build_semantic_intent(name: str, raw_text: str, now: Optional[datetime] = No
             animation=CharacterState.HAPPY if name == "complete_ambiguous" else CharacterState.IDLE,
             response="",
             tool_args={},
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Goal-stack completion (Cognitive Upgrade spec sections 3-4/16-17:
+# "Active Conversation State" / "Goal Stack" / "Reference Resolution") -
+# see app/ai/goal_state.py.
+# ---------------------------------------------------------------------------
+
+
+def resolve_pending_goal(
+    kind: str, known_slots: dict, reply_text: str, now: Optional[datetime] = None
+) -> Optional[DetectedIntent]:
+    """Attempts to complete an active_goal's single missing slot using
+    `reply_text` alone - e.g. "Schedule Devika tomorrow" -> "What time?"
+    -> "5" should complete THAT event, not start an unrelated fresh one
+    (spec section 16's exact example). Uses the same deterministic
+    time/duration parsers the keyword/semantic paths above already use
+    (_parse_absolute_time / _parse_relative_minutes / _parse_bare_time /
+    _parse_duration_seconds) - never the model's own judgement (spec
+    section 60: "the LLM should reason about actions; it should not be
+    trusted to directly perform actions").
+
+    `kind` is the intent name completion should resume as
+    ("create_reminder" / "calendar_create_event" / "start_timer" /
+    "reschedule_reference" - see app/ai/goal_state.create_goal()`),
+    `known_slots` is whatever was already extracted before the
+    clarifying question was asked (e.g. {"title": "Meeting with Devika"}).
+
+    Returns None if `reply_text` still doesn't contain a usable value for
+    the missing slot. The caller (app/ai/chat_engine.handle_message) must
+    then treat `reply_text` as an ordinary new message and run normal
+    intent detection on it, rather than guessing a value - exactly like
+    an ambiguous pending_action reply is abandoned rather than carried
+    forward (spec section 27: "never guess on a consequential action").
+    """
+    now = now or datetime.now()
+    body = reply_text.strip()
+
+    if kind in ("create_reminder", "calendar_create_event", "reschedule_reference"):
+        due = _parse_absolute_time(body, now)
+        minutes = _parse_relative_minutes(body)
+        if due is None and minutes is not None:
+            due = now + timedelta(minutes=minutes)
+        if due is None:
+            due = _parse_bare_time(body, now)
+        if due is None:
+            return None
+
+        if kind == "create_reminder":
+            title = known_slots.get("title") or "Reminder"
+            return DetectedIntent(
+                name="create_reminder",
+                emotion=Emotion.HAPPY,
+                animation=CharacterState.HAPPY,
+                sound="chirp",
+                response=f"Okay! I'll remind you to {title.lower()} at {due:%I:%M %p}.",
+                tool="create_reminder",
+                tool_args={"title": title, "datetime_iso": due.isoformat()},
+            )
+        if kind == "calendar_create_event":
+            title = known_slots.get("title") or "Event"
+            return DetectedIntent(
+                name="calendar_create_event",
+                emotion=Emotion.CURIOUS,
+                animation=CharacterState.THINKING,
+                response="",  # chat_engine builds the confirmation prompt
+                tool="calendar_create_event",
+                tool_args={"title": title, "start_iso": due.isoformat()},
+            )
+        # reschedule_reference - which entity "it" refers to is resolved
+        # separately in chat_engine.py via app/ai/conversation_state.py,
+        # exactly like the original keyword path already does.
+        return DetectedIntent(
+            name="reschedule_reference",
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            response="",  # chat_engine fills this in once it resolves which entity "it" means
+            tool_args={"due_iso": due.isoformat()},
+        )
+
+    if kind == "start_timer":
+        seconds = _parse_duration_seconds(body.lower())
+        if not seconds:
+            return None
+        label = known_slots.get("label") or "Timer"
+        purpose_note = f" - I'll remind you to {label.lower()}" if label != "Timer" else ""
+        return DetectedIntent(
+            name="start_timer",
+            emotion=Emotion.EXCITED,
+            animation=CharacterState.EXCITED,
+            sound="chirp",
+            response=f"Timer started for {seconds // 60 or seconds}"
+            f"{' min' if seconds >= 60 else ' sec'}!{purpose_note}",
+            tool="start_timer",
+            tool_args={"duration_seconds": seconds, "label": label},
         )
 
     return None

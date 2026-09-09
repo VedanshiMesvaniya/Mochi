@@ -19,6 +19,14 @@ convention - so a write can never happen without confirmation regardless
 of what calls this module. `app/ai/chat_engine.py`'s two-step
 propose-then-confirm chat flow is the only current caller that ever
 passes `confirmed=True`, and only after the user has explicitly agreed.
+
+All three writes also verify their own result via
+`google_calendar.get_event()` before returning (Cognitive Upgrade spec
+section 12, "Tool Verification") - a `ToolValidationError` here means
+the underlying Google Calendar API call itself returned successfully but
+the change still isn't reflected when checked, rather than assuming
+"the request didn't raise" is the same thing as "the change took
+effect".
 """
 
 from __future__ import annotations
@@ -164,6 +172,27 @@ def create_event(
         )
     except CalendarError as exc:
         raise ToolValidationError(str(exc)) from exc
+
+    # Cognitive Upgrade spec section 12 ("Tool Verification") / rule 10
+    # ("never assume a tool call equals successful execution"): the
+    # insert() call above returning without raising only means the HTTP
+    # request succeeded - re-fetch the event before telling the user it
+    # worked. Best-effort: if the verification READ itself fails for an
+    # unrelated reason (rate limit, transient network blip), that's a
+    # separate problem and shouldn't turn a real success into a false
+    # failure - only raise when the event is verifiably NOT there.
+    event_id = event.get("id")
+    if event_id:
+        try:
+            verified = google_calendar.get_event(event_id)
+        except CalendarError:
+            verified = "unknown"  # couldn't check - don't punish success for this
+        if verified is None:
+            raise ToolValidationError(
+                "Google Calendar accepted the request but the event isn't "
+                "showing up when I check for it - it may not have actually "
+                "been created."
+            )
     logger.info("Chat-confirmed calendar event created: '%s'", title)
     return event
 
@@ -187,6 +216,22 @@ def update_event(
         event = google_calendar.update_event(event_id, title=title, start=start, end=end)
     except CalendarError as exc:
         raise ToolValidationError(str(exc)) from exc
+
+    # See create_event's matching comment above - same verification
+    # reasoning (spec section 12), scoped to existence rather than a
+    # full field-by-field diff: patch()'s own response already echoes
+    # back the fields that were sent, so re-checking those too would
+    # mostly just be re-trusting the same response a second time.
+    try:
+        verified = google_calendar.get_event(event_id)
+    except CalendarError:
+        verified = "unknown"  # couldn't check - don't punish success for this
+    if verified is None:
+        raise ToolValidationError(
+            "Google Calendar accepted the update but that event isn't "
+            "showing up when I check for it - it may not have actually "
+            "been applied."
+        )
     logger.info("Chat-confirmed calendar event updated: %s", event_id)
     return event
 
@@ -202,5 +247,21 @@ def delete_event(event_id: str, confirmed: bool = False) -> dict:
         google_calendar.delete_event(event_id)
     except CalendarError as exc:
         raise ToolValidationError(str(exc)) from exc
+
+    # See create_event's matching comment above - same verification
+    # reasoning (spec section 12), inverted: confirm the event is
+    # actually gone rather than actually present. A verification-read
+    # failure fails open (assume deleted) for the same reason - it's a
+    # separate, unrelated problem from whether the delete itself worked.
+    try:
+        still_there = google_calendar.get_event(event_id)
+    except CalendarError:
+        still_there = None
+    if still_there is not None:
+        raise ToolValidationError(
+            "Google Calendar accepted the request but that event still "
+            "shows up when I check for it - it may not have actually "
+            "been deleted."
+        )
     logger.info("Chat-confirmed calendar event deleted: %s", event_id)
     return {"event_id": event_id, "deleted": True}

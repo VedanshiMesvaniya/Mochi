@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from app.character.state_machine import CharacterState, Emotion
-from app.ai.intent import detect_intent
+from app.ai.intent import detect_intent, resolve_pending_goal
 
 NOW = datetime(2026, 8, 14, 15, 0, 0)  # 3:00 PM, for deterministic time math
 
@@ -719,3 +719,75 @@ def test_google_tasks_create_not_shadowed_by_list_trigger():
     result = detect_intent("add finish the report to my google tasks", now=NOW)
     assert result.name == "google_tasks_create"
     assert result.tool_args["title"] == "finish the report"
+
+
+# ---------------------------------------------------------------------------
+# resolve_pending_goal() - Cognitive Upgrade spec sections 3-4/16 goal-stack
+# completion (app/ai/goal_state.py). A "*_needs_time"/"*_needs_duration"
+# intent's response asks a clarifying question; these tests cover the NEXT
+# message, which should complete the original request rather than being
+# treated as an unrelated new one.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_pending_goal_completes_calendar_create_from_bare_time():
+    result = resolve_pending_goal(
+        "calendar_create_event", {"title": "Meeting with Devika"}, "5", now=NOW
+    )
+    assert result is not None
+    assert result.name == "calendar_create_event"
+    assert result.tool == "calendar_create_event"
+    assert result.tool_args["title"] == "Meeting with Devika"
+    assert result.tool_args["start_iso"] == "2026-08-14T17:00:00"
+
+
+def test_resolve_pending_goal_completes_reminder_from_at_phrase():
+    result = resolve_pending_goal(
+        "create_reminder", {"title": "Call mom"}, "at 7pm", now=NOW
+    )
+    assert result is not None
+    assert result.name == "create_reminder"
+    assert result.tool == "create_reminder"
+    assert result.tool_args["title"] == "Call mom"
+
+
+def test_resolve_pending_goal_completes_reminder_from_relative_minutes():
+    result = resolve_pending_goal(
+        "create_reminder", {"title": "Call mom"}, "in 30 minutes", now=NOW
+    )
+    assert result is not None
+    assert result.tool_args["datetime_iso"] == "2026-08-14T15:30:00"
+
+
+def test_resolve_pending_goal_completes_timer_from_bare_duration():
+    result = resolve_pending_goal("start_timer", {"label": "Timer"}, "10 minutes", now=NOW)
+    assert result is not None
+    assert result.name == "start_timer"
+    assert result.tool_args["duration_seconds"] == 600
+
+
+def test_resolve_pending_goal_completes_reschedule_reference():
+    result = resolve_pending_goal("reschedule_reference", {}, "8pm", now=NOW)
+    assert result is not None
+    assert result.name == "reschedule_reference"
+    assert "due_iso" in result.tool_args
+
+
+def test_resolve_pending_goal_returns_none_when_reply_has_no_time():
+    """Must never guess - an unrelated reply abandons the goal rather than
+    being misread as a time (spec section 27)."""
+    result = resolve_pending_goal(
+        "calendar_create_event", {"title": "Meeting with Devika"}, "never mind", now=NOW
+    )
+    assert result is None
+
+
+def test_resolve_pending_goal_returns_none_when_reply_has_no_duration():
+    result = resolve_pending_goal("start_timer", {"label": "Timer"}, "actually don't", now=NOW)
+    assert result is None
+
+
+def test_resolve_pending_goal_defaults_missing_title_gracefully():
+    result = resolve_pending_goal("create_reminder", {}, "at 7pm", now=NOW)
+    assert result is not None
+    assert result.tool_args["title"]  # non-empty fallback, never crashes

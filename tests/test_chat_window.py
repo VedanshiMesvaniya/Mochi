@@ -103,7 +103,7 @@ def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None, active_goal=None: ChatReaction(
             text=f"echo: {text}", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY
         ),
     )
@@ -122,7 +122,7 @@ def test_chat_worker_runs_off_thread_and_emits_reaction(qapp, monkeypatch):
 def test_chat_worker_falls_back_gracefully_on_exception(qapp, monkeypatch):
     from app.ui.chat_window import ChatWorker
 
-    def _boom(_text, history=None, pending_action=None, conversation_state=None):
+    def _boom(_text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         raise RuntimeError("simulated failure")
 
     monkeypatch.setattr("app.ui.chat_window.handle_message", _boom)
@@ -141,7 +141,7 @@ def test_chat_worker_falls_back_gracefully_on_exception(qapp, monkeypatch):
 def test_send_disables_input_while_waiting_then_reenables(qapp, monkeypatch):
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None):
+    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         time.sleep(0.3)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -182,7 +182,7 @@ def test_window_is_reshown_if_hidden_while_reply_pending(qapp, monkeypatch):
     no-ops on an already-hidden window)."""
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None):
+    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         time.sleep(0.2)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -213,7 +213,7 @@ def test_typing_indicator_shows_while_waiting_and_clears_on_reply(qapp, monkeypa
     silently frozen or closed."""
     from app.ui.chat_window import ChatWindow
 
-    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None):
+    def _slow_reply(_text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         time.sleep(0.3)
         return ChatReaction(text="done", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -277,7 +277,7 @@ def test_session_history_accumulates_and_is_passed_to_handle_message(qapp, monke
 
     seen_histories = []
 
-    def _capture(text, history=None, pending_action=None, conversation_state=None):
+    def _capture(text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         seen_histories.append(list(history or []))
         return ChatReaction(text=f"reply to {text}", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
 
@@ -310,7 +310,7 @@ def test_session_history_is_cleared_on_close(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None, active_goal=None: ChatReaction(
             text="ok", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY
         ),
     )
@@ -337,7 +337,7 @@ def test_pending_action_is_carried_across_messages_and_passed_through(qapp, monk
 
     seen_pending_actions = []
 
-    def _propose_then_track(text, history=None, pending_action=None, conversation_state=None):
+    def _propose_then_track(text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         seen_pending_actions.append(pending_action)
         if pending_action is None:
             return ChatReaction(
@@ -373,7 +373,7 @@ def test_pending_action_is_cleared_on_close(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None, active_goal=None: ChatReaction(
             text="confirm?",
             emotion=Emotion.CURIOUS,
             animation=CharacterState.THINKING,
@@ -405,7 +405,7 @@ def test_conversation_state_is_carried_across_messages_and_passed_through(qapp, 
 
     seen_states = []
 
-    def _create_then_reference(text, history=None, pending_action=None, conversation_state=None):
+    def _create_then_reference(text, history=None, pending_action=None, conversation_state=None, active_goal=None):
         seen_states.append(conversation_state)
         if conversation_state is None:
             return ChatReaction(
@@ -445,7 +445,7 @@ def test_conversation_state_is_cleared_on_close(qapp, monkeypatch):
 
     monkeypatch.setattr(
         "app.ui.chat_window.handle_message",
-        lambda text, history=None, pending_action=None, conversation_state=None: ChatReaction(
+        lambda text, history=None, pending_action=None, conversation_state=None, active_goal=None: ChatReaction(
             text="added!",
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
@@ -464,3 +464,74 @@ def test_conversation_state_is_cleared_on_close(qapp, monkeypatch):
 
     window.close()
     assert window._conversation_state is None
+
+
+def test_active_goal_is_carried_across_messages_and_passed_through(qapp, monkeypatch):
+    """Cognitive Upgrade spec sections 3-4/16 (app/ai/goal_state.py): a
+    single-slot clarifying question ("but when?") must survive to the
+    *next* handle_message() call so a bare reply like "5" can complete
+    it - the window is responsible for round-tripping
+    ChatReaction.active_goal back in as handle_message's kwarg, exactly
+    like pending_action above."""
+    from app.ui.chat_window import ChatWindow
+
+    seen_goals = []
+
+    def _ask_then_track(text, history=None, pending_action=None, conversation_state=None, active_goal=None):
+        seen_goals.append(active_goal)
+        if active_goal is None:
+            return ChatReaction(
+                text="but when?",
+                emotion=Emotion.CONFUSED,
+                animation=CharacterState.CONFUSED,
+                active_goal={"kind": "create_reminder", "awaiting": "time", "known_slots": {"title": "Call mom"}},
+            )
+        return ChatReaction(text="done!", emotion=Emotion.HAPPY, animation=CharacterState.HAPPY)
+
+    monkeypatch.setattr("app.ui.chat_window.handle_message", _ask_then_track)
+
+    def _send(window, text):
+        window.input_field.setText(text)
+        window._on_send_clicked()
+        deadline = time.time() + 5
+        while window._worker is not None and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+
+    window = ChatWindow()
+    _send(window, "remind me to call mom")
+    assert seen_goals[-1] is None
+    assert window._active_goal is not None
+
+    _send(window, "5")
+    assert seen_goals[-1] == {
+        "kind": "create_reminder", "awaiting": "time", "known_slots": {"title": "Call mom"},
+    }
+    assert window._active_goal is None
+    window.close()
+
+
+def test_active_goal_is_cleared_on_close(qapp, monkeypatch):
+    from app.ui.chat_window import ChatWindow
+
+    monkeypatch.setattr(
+        "app.ui.chat_window.handle_message",
+        lambda text, history=None, pending_action=None, conversation_state=None, active_goal=None: ChatReaction(
+            text="but when?",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+            active_goal={"kind": "start_timer", "awaiting": "duration", "known_slots": {}},
+        ),
+    )
+
+    window = ChatWindow()
+    window.input_field.setText("start a timer")
+    window._on_send_clicked()
+    deadline = time.time() + 5
+    while window._worker is not None and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert window._active_goal is not None
+
+    window.close()
+    assert window._active_goal is None

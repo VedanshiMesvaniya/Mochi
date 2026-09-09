@@ -24,8 +24,9 @@ from typing import Optional
 
 from app.ai import semantic_intent
 from app.ai import conversation_state as convo
+from app.ai import goal_state
 from app.ai.db_glossary import QueryPlan, build_plan
-from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent
+from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent, resolve_pending_goal
 from app.ai.llm import LLMUnavailable, ask as ask_llm, phrase_data_answer
 from app.calendar import google_calendar
 from app.character.state_machine import EMOTION_PROFILE, CharacterState, Emotion
@@ -131,6 +132,17 @@ class ChatReaction:
     # (app/ui/chat_window.py's `_conversation_state`). None means "nothing
     # in particular to remember right now."
     conversation_state: Optional[dict] = None
+    # Cognitive Upgrade spec sections 3-4/16 (app/ai/goal_state.py): a
+    # single-slot clarifying question this module just asked (e.g. "but
+    # when?") that the *next* handle_message() call should try to
+    # complete before running normal intent detection - e.g. a bare "5"
+    # reply should finish the event just asked about, not be treated as
+    # an unrelated new message. Same ownership/lifetime convention as
+    # `pending_action` above: threaded by the caller, and never carried
+    # forward unless a handler below has freshly re-issued it - a stale
+    # clarifying question must not outlive the conversation that asked
+    # it. None means "nothing awaiting a slot value right now."
+    active_goal: Optional[dict] = None
 
 
 def _emotion_and_animation(name: str) -> tuple[Emotion, CharacterState]:
@@ -1473,6 +1485,7 @@ def handle_message(
     history: Optional[list[tuple[str, str]]] = None,
     pending_action: Optional[dict] = None,
     conversation_state: Optional[dict] = None,
+    active_goal: Optional[dict] = None,
 ) -> ChatReaction:
     """Process one chat message end-to-end and return how Mochi should react.
 
@@ -1504,6 +1517,17 @@ def handle_message(
     forward across unrelated turns (it's just a hint for reference
     resolution, never itself a write) - it's only ever replaced when a
     handler below has something fresher to remember.
+
+    `active_goal` (Cognitive Upgrade spec sections 3-4/16,
+    app/ai/goal_state.py) is a single-slot clarifying question ("but
+    when?") this module asked on a *previous* call, still awaiting an
+    answer. If present, THIS message is tried against it first (see
+    app/ai/intent.resolve_pending_goal()) before falling through to
+    normal intent detection - unlike `pending_action`, there's no
+    separate yes/no gate here, since resolve_pending_goal() itself
+    returns None (rather than guessing) when the reply doesn't contain a
+    usable slot value, at which point `text` is simply run through
+    ordinary intent detection as if no goal were active.
     """
     if pending_action is not None:
         confirmation = _classify_confirmation(text)
@@ -1538,7 +1562,27 @@ def handle_message(
             )
         pending_action = None
 
-    intent: DetectedIntent = detect_intent(text)
+    # --- Active-goal completion (Cognitive Upgrade spec sections 3-4/16)
+    # Tried BEFORE normal intent detection - a bare reply like "5" only
+    # means anything in light of the clarifying question just asked, and
+    # would otherwise fail every trigger below and land on "unknown".
+    # resolve_pending_goal() itself refuses to guess (returns None) when
+    # `text` doesn't contain a usable slot value, in which case the goal
+    # is simply abandoned and `text` is treated as an ordinary new
+    # message - never carried forward to a later, unrelated reply.
+    intent: Optional[DetectedIntent] = None
+    if active_goal is not None and goal_state.is_goal(active_goal):
+        intent = resolve_pending_goal(
+            active_goal["kind"], active_goal.get("known_slots", {}), text
+        )
+        if intent is None:
+            logger.info(
+                "Expiring stale active_goal kind=%s (reply didn't resolve)",
+                active_goal.get("kind"),
+            )
+
+    if intent is None:
+        intent = detect_intent(text)
 
     # --- Hybrid semantic fallback (understand intent by MEANING, not
     # just keywords) --------------------------------------------------
@@ -1783,6 +1827,16 @@ def handle_message(
                 title = result.get("title") or result.get("label") or ""
                 conversation_state = convo.remember_entity(new_entity_kind, result["id"], title)
 
+    # Cognitive Upgrade spec sections 3-4/16: if this turn's intent is
+    # itself a fresh "*_needs_*" clarifying question (either because
+    # `text` was a brand-new message, or because active_goal resolution
+    # above failed and `text` was re-run as one), remember it as the new
+    # active_goal so THIS question's answer can complete it next turn.
+    # Every other intent falls through with the field left at its
+    # default None - a goal is never carried forward except by being
+    # freshly re-issued here, same convention as `pending_action`.
+    new_active_goal = goal_state.from_intent_name(intent.name, intent.tool_args)
+
     return ChatReaction(
         text=response,
         emotion=emotion,
@@ -1790,4 +1844,5 @@ def handle_message(
         sound=sound,
         pending_action=pending_action,
         conversation_state=conversation_state,
+        active_goal=new_active_goal,
     )
