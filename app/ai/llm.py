@@ -174,6 +174,22 @@ _WEB_CONTEXT_TEMPLATE = (
     "label suggests, and never invent additional facts beyond it.\n"
 )
 
+# Semantic memory (Cognitive Upgrade phase 2, spec section 7, opt-in via
+# settings.memory_enabled) - a short list of facts Mochi has actually
+# stored about the user (app/memory/semantic_memory.py), relevant to
+# THIS message (app/ai/chat_engine._relevant_user_facts_context). Same
+# grounding-not-flavor treatment as _WEB_CONTEXT_TEMPLATE above, and the
+# same explicit instruction never to go beyond what's listed - a model
+# confidently inventing a "remembered" fact that was never actually
+# stored would be a worse failure than not knowing it at all (spec
+# section 27, rule 4: never save/present uncertain information as
+# certain; rule 1: never claim without evidence).
+_USER_FACTS_TEMPLATE = (
+    "\n{facts}\nOnly mention one of these if it's actually relevant right "
+    "now; never claim to know or remember anything about the user beyond "
+    "what's listed here.\n"
+)
+
 
 class LLMUnavailable(Exception):
     """Raised whenever the local LLM can't be reached or didn't return a
@@ -187,6 +203,7 @@ def ask(
     trend_topic: Optional[str] = None,
     meme_premise: Optional[str] = None,
     web_context: Optional[str] = None,
+    user_facts: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
@@ -227,6 +244,15 @@ def ask(
     factual answers, not just flavor tone, so it's appended independently
     of those rather than competing with them for one "flavor" slot.
 
+    `user_facts` (Cognitive Upgrade phase 2, spec section 7, opt-in via
+    settings.memory_enabled) is an optional compact block of facts Mochi
+    has actually stored about the user (app/memory/semantic_memory.py),
+    pre-filtered for relevance to THIS message by the caller (see
+    app/ai/chat_engine._relevant_user_facts_context) - never a live
+    database read made here. Same grounding treatment as `web_context`
+    above: appended independently, with the same explicit instruction
+    never to present it as more than what's actually listed.
+
     `now` (spec section 26: "always provide the model with the current
     local date/time when interpreting today/tomorrow/tonight/etc.") is
     injectable for tests; defaults to the real current local time. Fed
@@ -247,6 +273,7 @@ def ask(
         flavor_context = ""
 
     web_context_block = _WEB_CONTEXT_TEMPLATE.format(evidence=web_context) if web_context else ""
+    user_facts_block = _USER_FACTS_TEMPLATE.format(facts=user_facts) if user_facts else ""
 
     conversation_block = ""
     if history:
@@ -262,7 +289,7 @@ def ask(
     )
 
     prompt = (
-        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{web_context_block}{time_block}{conversation_block}"
+        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{web_context_block}{user_facts_block}{time_block}{conversation_block}"
         f"\nUser message: {user_text}\nMochi (JSON only):"
     )
     payload = {

@@ -419,6 +419,18 @@ def test_confirming_create_event_calls_calendar_tools_with_confirmed_true(
     assert reaction.emotion == Emotion.HAPPY
 
 
+def test_confirming_create_event_is_recorded_as_an_episodic_event(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "abc", "title": title},
+    )
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    handle_message("yes", pending_action=proposal.pending_action)
+
+    activity = handle_message("what have you done for me today")
+    assert "meeting" in activity.text.lower()
+
+
 def test_declining_create_event_never_calls_calendar_tools(temp_db, monkeypatch):
     def _fail_if_called(*_a, **_kw):
         raise AssertionError("declined action must never be executed")
@@ -1028,3 +1040,147 @@ def test_active_goal_not_reissued_by_unrelated_intents(temp_db):
     active_goal field - only the four "*_needs_*" intents do."""
     reaction = handle_message("what's the weather like")
     assert reaction.active_goal is None
+
+
+# ---------------------------------------------------------------------------
+# Semantic memory (Cognitive Upgrade phase 2, spec section 7) - explicit
+# remember/recall/forget commands, passive extraction, and contradiction
+# handling. See app/memory/semantic_memory.py and app/ai/fact_extraction.py.
+# ---------------------------------------------------------------------------
+
+
+def test_remember_that_stores_a_fact(temp_db):
+    reaction = handle_message("remember that I live in Austin")
+    assert "austin" in reaction.text.lower()
+
+    recalled = handle_message("what do you know about me")
+    assert "austin" in recalled.text.lower()
+
+
+def test_remember_that_i_need_to_still_creates_a_task_not_a_fact(temp_db):
+    """Backward compatibility: TASK_TRIGGER's existing "remember (that)
+    i need to ..." phrasing must keep creating a task exactly as before -
+    the new semantic-memory REMEMBER_TRIGGER must never intercept it."""
+    handle_message("remember that i need to call aunt")
+    tasks = task_manager.list_tasks()
+    assert any("call aunt" in t.title.lower() for t in tasks)
+
+    recalled = handle_message("what do you know about me")
+    assert "call aunt" not in recalled.text.lower()
+
+
+def test_recall_facts_when_nothing_stored_yet(temp_db):
+    reaction = handle_message("what do you know about me")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_passive_extraction_does_not_change_the_visible_reply(temp_db):
+    """A plain, ordinary sentence like "I live in Austin" should be
+    answered as normal chat (whatever that reply would have been
+    anyway) - the fact is noticed silently in the background, never
+    announced uninvited."""
+    reaction = handle_message("I live in Austin")
+    assert "remember" not in reaction.text.lower()
+    assert "noted" not in reaction.text.lower()
+
+    recalled = handle_message("what do you know about me")
+    assert "austin" in recalled.text.lower()
+
+
+def test_passive_extraction_ordinary_message_without_a_pattern_saves_nothing(temp_db):
+    handle_message("hows it going today")
+    handle_message("I finally finished the API")
+    reaction = handle_message("what do you know about me")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_passive_extraction_contradiction_handling(temp_db):
+    """Spec section 9's exact example: a later statement about the same
+    thing supersedes the earlier one rather than piling up as a second,
+    conflicting fact."""
+    handle_message("I use Windows")
+    handle_message("I switched to Linux")
+
+    recalled = handle_message("what do you know about me")
+    assert "linux" in recalled.text.lower()
+    assert "windows" not in recalled.text.lower()
+
+
+def test_passive_extraction_hedged_statement_stored_as_considering(temp_db):
+    handle_message("I might switch to Linux")
+    recalled = handle_message("what do you know about me")
+    assert "considering" in recalled.text.lower()
+    # Never stored as a confident current-state claim.
+    assert "user switched to linux" not in recalled.text.lower()
+    assert "user uses linux" not in recalled.text.lower()
+
+
+def test_forget_removes_a_previously_remembered_fact(temp_db):
+    handle_message("remember that I live in Austin")
+    reaction = handle_message("forget that I live in Austin")
+    assert "forgotten" in reaction.text.lower() or "austin" in reaction.text.lower()
+
+    recalled = handle_message("what do you know about me")
+    assert "austin" not in recalled.text.lower()
+
+
+def test_forget_with_no_match_says_so(temp_db):
+    reaction = handle_message("forget about my imaginary pet dragon")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_memory_disabled_degrades_gracefully_instead_of_crashing(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "memory_enabled", False)
+
+    remember_reaction = handle_message("remember that I live in Austin")
+    assert "turned off" in remember_reaction.text.lower()
+
+    recall_reaction = handle_message("what do you know about me")
+    assert "turned off" in recall_reaction.text.lower()
+
+    # Passive extraction must also stay silent (never raise) when disabled.
+    handle_message("I live in Austin")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Episodic memory (Cognitive Upgrade phase 2, spec section 7) - a running
+# record of things Mochi actually DID, distinct from semantic memory's
+# facts about the user. See app/memory/episodic_memory.py.
+# ---------------------------------------------------------------------------
+
+
+def test_recent_activity_is_empty_before_anything_happens(temp_db):
+    reaction = handle_message("what have you done for me today")
+    assert "nothing" in reaction.text.lower()
+
+
+def test_creating_a_reminder_is_recorded_as_an_episodic_event(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    reaction = handle_message("what have you done for me today")
+    assert "call mom" in reaction.text.lower()
+
+
+def test_creating_a_timer_is_recorded_as_an_episodic_event(temp_db):
+    handle_message("start a timer for 10 minutes")
+    reaction = handle_message("what have we done recently")
+    assert "timer" in reaction.text.lower()
+
+
+def test_recent_activity_orders_newest_first(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    handle_message("start a timer for 10 minutes")
+    reaction = handle_message("what have you done for me today")
+    lowered = reaction.text.lower()
+    # The timer (created second) should be mentioned before the reminder.
+    assert lowered.index("timer") < lowered.index("call mom")
+
+
+def test_recent_activity_disabled_degrades_gracefully(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    handle_message("remind me to call mom at 7pm")
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    reaction = handle_message("what have you done for me today")
+    assert "turned off" in reaction.text.lower()

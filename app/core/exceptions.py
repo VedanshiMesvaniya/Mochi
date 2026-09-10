@@ -31,6 +31,11 @@ class MemoryError_(MochiError):
     """Raised on local memory/database failures."""
 
 
+class MemoryDisabled(MemoryError_):
+    """Raised when semantic memory (app/memory/semantic_memory.py) is
+    turned off via settings.memory_enabled (MOCHI_MEMORY_ENABLED)."""
+
+
 class ReminderError(MochiError):
     """Raised on reminder creation/scheduling failures."""
 

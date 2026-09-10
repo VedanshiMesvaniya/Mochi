@@ -540,6 +540,50 @@ GOOGLE_TASKS_DELETE_TRIGGER = re.compile(
     r"\b(delete|remove)\b.{0,40}\bgoogle task\b", re.IGNORECASE
 )
 
+# --- Semantic memory (Cognitive Upgrade phase 2, spec section 7) --------
+# Anchored at the START of the message (not \b anywhere, unlike most
+# triggers above) - "remember"/"forget" are common enough words in
+# ordinary conversation ("you'll always remember me", "I'll never
+# forget this") that matching them mid-sentence would misfire constantly;
+# requiring the command to be how the message OPENS (optionally after
+# "please") is what keeps this a deliberate command rather than a loose
+# keyword match. RECALL_TRIGGER doesn't need this anchoring - its
+# phrases are distinctive enough not to appear accidentally.
+#
+# REMEMBER_TRIGGER is checked (in detect_intent, below) only after the
+# reminder/timer/task creation trigger race - TASK_TRIGGER's own
+# "remember (that )?i need to" phrasing already wins that race for a
+# task-shaped request, so "remember that I need to call mom" keeps
+# creating a task exactly as before; this trigger only ever fires for
+# phrasing that ISN'T a task ("remember that I live in Austin").
+RECALL_TRIGGER = re.compile(
+    r"\bwhat (?:do you|have you) (?:know|remember(?:ed)?) about me\b|"
+    r"\bdo you (?:know|remember) anything about me\b|"
+    r"\bwhat (?:facts|things) do you (?:know|remember) about me\b",
+    re.IGNORECASE,
+)
+FORGET_TRIGGER = re.compile(
+    r"^forget(?: that| about my| what i said about)?\s+(.+)", re.IGNORECASE
+)
+REMEMBER_TRIGGER = re.compile(
+    r"^(?:please )?remember(?: that)?[,:]?\s+(.+)", re.IGNORECASE
+)
+
+# Episodic memory (Cognitive Upgrade phase 2, spec section 7) - "what
+# have you done" style questions, answered from app/memory/
+# episodic_memory.py's real action log (spec: "ask database, not LLM").
+# Deliberately does NOT require the literal word "task"/"reminder"/
+# "timer" the way LIST_DONE_TRIGGER above does - this is a broader,
+# cross-entity "what happened" view, not a per-entity done-list, so the
+# two never collide (LIST_DONE_TRIGGER is checked well before this
+# point regardless - see its own comment above detect_intent).
+RECENT_ACTIVITY_TRIGGER = re.compile(
+    r"\bwhat(?:'ve| have) (?:you|we) done(?: for me)?(?: today| recently| lately| so far)?\b|"
+    r"\bwhat(?:'s| has) happened(?: recently| lately| today)?\b|"
+    r"\bshow me (?:my )?recent activity\b",
+    re.IGNORECASE,
+)
+
 TIME_AT = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 TIME_IN = re.compile(
     r"\bin\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b", re.IGNORECASE
@@ -1209,6 +1253,51 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             tool="create_task",
             tool_args=tool_args,
         )
+
+    # --- Semantic memory (Cognitive Upgrade phase 2, spec section 7) ----
+    # Checked after the reminder/timer/task creation race above (see
+    # REMEMBER_TRIGGER's definition for why: "remember that I need to
+    # call mom" is a task, handled and returned already by the block
+    # above, well before this point). RECALL/FORGET/REMEMBER order
+    # matters here: RECALL first since "what do you remember about me"
+    # contains "remember" too, and would otherwise wrongly fall into
+    # REMEMBER_TRIGGER below.
+    if RECALL_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="recall_facts",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from real stored facts
+        )
+    if RECENT_ACTIVITY_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="recent_activity",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from the real episodic-memory log
+        )
+    forget_match = FORGET_TRIGGER.match(lowered)
+    if forget_match:
+        query = forget_match.group(1).strip(" ,.!?")
+        return DetectedIntent(
+            name="forget_fact",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+            response="",  # chat_engine fills this in once it finds (or can't find) a match
+            tool_args={"query": query},
+        )
+    remember_match = REMEMBER_TRIGGER.match(text)
+    if remember_match:
+        fact_text = remember_match.group(1).strip(" ,.!?")
+        if fact_text:
+            return DetectedIntent(
+                name="remember_fact",
+                emotion=Emotion.HAPPY,
+                animation=CharacterState.HAPPY,
+                sound="chirp",
+                response="",  # chat_engine fills this in once the fact is actually saved
+                tool_args={"text": fact_text},
+            )
 
     # --- Check-on / ambiguous done (see CHECK_ON_TRIGGER/AMBIGUOUS_DONE_TRIGGER
     # definitions above for why these are checked here specifically; the

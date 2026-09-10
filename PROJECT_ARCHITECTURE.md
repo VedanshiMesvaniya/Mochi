@@ -1166,6 +1166,144 @@ fails-open-on-flaky-read case).
 
 ---
 
+## 5k. Semantic memory (Cognitive Upgrade, phase 2)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md` for the full spec and what's
+implemented vs deferred (only semantic memory, one of the spec's four
+memory layers, is built so far). Gated by `settings.memory_enabled`
+(`MOCHI_MEMORY_ENABLED`, default true) - a config flag that existed
+since V1 but was dead code (nothing read it) until this.
+
+**Storage (`app/memory/semantic_memory.py`).** A `Fact` is `(subject,
+text, confidence, source, status)` in the new `user_facts` SQLite table.
+`subject` is the contradiction-handling key (spec section 9): calling
+`remember_fact(text, subject="lives_in")` when an ACTIVE fact already
+has that same subject flips the old row to `status="superseded"`
+(pointing at the new row via `superseded_by`) and inserts the new one as
+active, rather than ending up with two conflicting active facts about
+the same thing. A `subject=None` open-ended note gets a unique subject
+of its own instead, so unrelated notes never supersede each other by
+accident. `find_relevant(query)` ranks active facts by keyword overlap
+with `query` - the same no-embeddings approach section 5i/the Web
+Knowledge Engine already uses, for the same reason (no extra dependency,
+stays stdlib-only). `find_matching(query)` is a plainer substring search
+used for "forget ..." commands, where a precise match matters more than
+a ranked one.
+
+**Extraction (`app/ai/fact_extraction.py`).** Deterministic regex
+patterns, not an LLM call - matches the project's existing "no
+synchronous network/model call just to decide something" bar. Covers:
+`lives_in`, `works_at`, `job_role`, `favorite:<category>`,
+`allergic_to:<thing>`, `dislikes:<thing>`, `likes:<thing>`,
+`preference:<thing>`, `diet`, and `uses`/`switched_to` (mapped through a
+small fixed keyword->category lookup - e.g. "Windows"/"Linux" both
+resolve to `uses:operating_system` - so "I use Windows" then "I switched
+to Linux" correctly supersede each other, reproducing spec section 9's
+own example exactly). A hedged statement ("I might switch to Linux")
+is stored as a separate, low-confidence, explicitly-worded fact ("User
+is considering switching to Linux") rather than as a confident
+current-state claim, matching spec section 8's own example. Because
+it's pattern-based, only fairly direct phrasings are recognized - a
+missed inference is safe (nothing happens); a wrong one stored as a
+confident fact is not, so this stays narrow on purpose (see that
+module's docstring for the full reasoning, including why LLM-based
+extraction is deferred).
+
+**Chat integration (`app/ai/chat_engine.py`, `app/ai/intent.py`,
+`app/ai/llm.py`).**
+
+```text
+"remember that I live in Austin"
+        │
+        ▼
+REMEMBER_TRIGGER (intent.py, anchored at message START - "remember"/
+"forget" are common mid-sentence words, so only recognized as a command
+when the message OPENS with them)
+        │
+        ▼
+_remember_fact_reaction (chat_engine.py) - reuses fact_extraction.extract()
+for subject/confidence detection on the EXPLICIT text too, so "remember
+that I live in Seattle now" still keys off the same "lives_in" subject
+an earlier passive "I live in Austin" would have
+        │
+        ▼
+semantic_memory.remember_fact() - stores, supersedes if applicable
+```
+
+Three deterministic DB-answer commands (spec: "it can not read db, make
+it read db so it can answer" - same principle as list_tasks/
+list_reminders/calendar_* in section 5's read-only handlers): "remember
+that ..." (`remember_fact`), "what do you know about me"
+(`recall_facts`), "forget ..." (`forget_fact`). `REMEMBER_TRIGGER` is
+checked only AFTER the existing reminder/timer/task creation trigger
+race, so `TASK_TRIGGER`'s pre-existing `"remember (that )?i need to"`
+phrasing keeps creating a task exactly as before - the new trigger only
+ever fires for phrasing that isn't shaped like a task. `RECALL_TRIGGER`
+is checked before `REMEMBER_TRIGGER` for the same reason: "what do you
+*remember* about me" contains the word "remember" too.
+
+Passive extraction (`_extract_and_remember_passively`) runs once per
+message as a side effect, right after intent classification and
+independent of which handler processes the message afterward - so it
+also catches a fact mentioned alongside an unrelated command ("remind me
+to call mom, I live in Austin now"). It never changes the visible chat
+reply either way (spec section 5's own caution: noticing something
+quietly is fine, announcing it uninvited on every message is not) and
+is wrapped to never raise - a database error or a surprising exception
+in extraction must never be able to break the actual reply the rest of
+`handle_message()` already computed.
+
+Retrieval into open-ended chat: `_relevant_user_facts_context(text)`
+(a cheap local SQLite read, never a model call of its own) feeds the
+top few relevant stored facts into `app/ai/llm.ask`'s new `user_facts`
+parameter for the LLM-fallback path - same treatment as `web_context`
+(section 5i): grounding, not flavor, with an explicit instruction never
+to claim more than what's actually listed.
+
+See `tests/test_semantic_memory.py`, `tests/test_fact_extraction.py`
+(both modules in isolation), `tests/test_chat_engine.py` (explicit
+remember/recall/forget, passive extraction, contradiction handling,
+`memory_enabled=False` degradation, and the "remember that I need to..."
+backward-compatibility case), and `tests/test_llm.py` (`user_facts`
+actually reaching the prompt, including the full chat_engine-to-LLM
+path).
+
+**Episodic memory (`app/memory/episodic_memory.py`).** The second of
+the spec's four memory layers, distinct from semantic memory above:
+semantic memory holds stable facts ABOUT the user, episodic memory logs
+notable things Mochi itself DID - `record_event`/`recent_events`/
+`important_events` against a new `episodic_events` table, same
+`memory_enabled` gate. Deliberately scoped to Mochi's own confirmed
+actions rather than a free-text summary of the conversation (the
+spec's own richer example - "User worked on Google Calendar integration
+and encountered OAuth problems" - would need either an LLM call or much
+richer NLP than a deterministic match can safely produce); see that
+module's docstring for the full reasoning.
+
+`record_event` is deliberately best-effort and NEVER raises, unlike
+semantic memory's `remember_fact` - every call site here sits right
+after an action that has ALREADY succeeded (a reminder really was
+created, a calendar event really was added), so a logging failure must
+never be able to turn that real success into a visible chat error. It's
+called from two places in `chat_engine.py`: the generic create-tool
+completion block (reminders/timers/tasks - the same spot that already
+remembers the new entity for conversation_state, section 5c) and
+`_resolve_pending_action`'s calendar create/delete branches (the one
+place calendar writes actually execute, per section 5's confirmation
+gate). A new "what have you done for me" / "what have we done recently"
+chat command (`RECENT_ACTIVITY_TRIGGER` in `intent.py`, deliberately NOT
+requiring the literal word "task"/"reminder"/"timer" the way the
+existing per-entity `LIST_DONE_TRIGGER` does, so the two never collide)
+answers from this real log - spec: "ask database, not LLM" - rather than
+letting the LLM guess at what happened.
+
+See `tests/test_episodic_memory.py` (the module in isolation) and
+`tests/test_chat_engine.py` (recording hooks for reminder/timer/
+calendar-event creation and calendar-event cancellation, ordering,
+and `memory_enabled=False` degradation).
+
+---
+
 ## 7. Error handling philosophy
 
 Each subsystem raises a specific exception from `app/core/exceptions.py`.

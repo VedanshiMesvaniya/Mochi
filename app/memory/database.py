@@ -220,6 +220,52 @@ SCHEMA_STATEMENTS: list[str] = [
         last_checked_at  TEXT NOT NULL
     );
     """,
+    """
+    -- Cognitive Upgrade phase 2 (semantic memory, spec section 7) - opt-in
+    -- via settings.memory_enabled (MOCHI_MEMORY_ENABLED, default true) -
+    -- see app/memory/semantic_memory.py. `subject` is a normalized topic
+    -- key ('lives_in', 'favorite:color', 'allergic_to:peanuts', ...) used
+    -- to detect when a NEW fact should supersede an OLD one about the
+    -- same thing (spec section 9's contradiction handling) rather than
+    -- just piling up duplicates - open-ended "remember that ..." notes
+    -- that don't fit a known subject pattern get a unique per-row subject
+    -- instead, so they're never accidentally superseded by an unrelated
+    -- later note. `status`/`superseded_by` implement that supersession as
+    -- an explicit chain (never a silent overwrite/delete) so a fact's
+    -- history stays inspectable.
+    CREATE TABLE IF NOT EXISTS user_facts (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject         TEXT NOT NULL,
+        fact            TEXT NOT NULL,
+        confidence      REAL NOT NULL DEFAULT 0.8,
+        source          TEXT NOT NULL,   -- 'stated' (explicit "remember that...") | 'inferred' (pattern-matched from ordinary chat)
+        status          TEXT NOT NULL DEFAULT 'active',  -- active|superseded
+        superseded_by   INTEGER,         -- id of the fact that replaced this one, when status = superseded
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        last_confirmed  TEXT NOT NULL    -- last time this exact fact was (re)stated
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_user_facts_subject ON user_facts(subject);",
+    "CREATE INDEX IF NOT EXISTS idx_user_facts_status ON user_facts(status);",
+    """
+    -- Cognitive Upgrade phase 2 (episodic memory, spec section 7) - same
+    -- settings.memory_enabled gate as user_facts above - see
+    -- app/memory/episodic_memory.py. A running record of notable things
+    -- MOCHI ITSELF DID (created a reminder, added a calendar event,
+    -- ...), not a free-text summary of the conversation - see that
+    -- module's docstring for why the scope stops there.
+    CREATE TABLE IF NOT EXISTS episodic_events (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        event        TEXT NOT NULL,
+        context      TEXT,
+        importance   REAL NOT NULL DEFAULT 0.5,
+        entities     TEXT NOT NULL DEFAULT '[]',
+        occurred_at  TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_episodic_events_occurred ON episodic_events(occurred_at);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_events_importance ON episodic_events(importance);",
 ]
 
 

@@ -253,3 +253,118 @@ def test_prompt_includes_current_time_so_the_model_never_has_to_guess(monkeypatc
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_user_facts_appears_in_prompt_with_grounding_instruction(monkeypatch):
+    """Cognitive Upgrade phase 2 (spec section 7) - app/ai/chat_engine.py's
+    _relevant_user_facts_context feeds stored semantic-memory facts into
+    ask()'s new `user_facts` kwarg the same way web_context already
+    works; this is a regression test that the prompt actually includes
+    it, plus the explicit "never claim more than what's listed"
+    instruction (spec section 27, rule 4 - never present inferred/stored
+    info as more certain/complete than it actually is)."""
+    captured = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            captured["prompt"] = body.get("prompt", "")
+            payload = json.dumps(
+                {"response": '{"response": "ok", "emotion": "neutral"}', "done": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        ask("what do you know about me", user_facts="Known facts about the user: User lives in Austin.")
+        assert "User lives in Austin." in captured["prompt"]
+        assert "never claim to know or remember anything" in captured["prompt"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_user_facts_omitted_from_prompt_when_none(monkeypatch):
+    captured = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            captured["prompt"] = body.get("prompt", "")
+            payload = json.dumps(
+                {"response": '{"response": "ok", "emotion": "neutral"}', "done": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        ask("hello there")
+        assert "Known facts about the user" not in captured["prompt"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_chat_engine_feeds_relevant_stored_facts_to_the_llm(temp_db, monkeypatch):
+    """End-to-end: a fact stored via semantic memory should actually
+    reach the LLM prompt for a later open-ended (non-deterministic-
+    intent) message, via app/ai/chat_engine._relevant_user_facts_context."""
+    from app.ai.chat_engine import handle_message
+    from app.memory import semantic_memory
+
+    semantic_memory.remember_fact("User lives in Austin.", subject="lives_in", confidence=0.85)
+
+    captured = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            captured["prompt"] = body.get("prompt", "")
+            payload = json.dumps(
+                {"response": '{"response": "Austin, nice!", "emotion": "happy"}', "done": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        handle_message("do you know anything about austin")
+        assert "User lives in Austin." in captured["prompt"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

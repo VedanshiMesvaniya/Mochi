@@ -1,11 +1,11 @@
 # Mochi Cognitive Intelligence Upgrade
 
-Status: Phase 1 partially implemented (see "Implementation status"
-below) - active-goal single-slot clarification loops and calendar write
-verification are done; everything else in the spec (working/episodic/
-semantic/procedural memory, confidence system, reference resolution
-beyond what already existed, reasoning budget, model benchmarking, mood/
-initiative, voice) is still Phase 2+ and not started.
+Status: Phase 1 done; Phase 2 partially implemented (semantic memory and
+episodic memory - see "Implementation status" below). Working memory's
+role is covered by existing modules rather than a dedicated one (see
+below); procedural memory and consolidation-as-a-distinct-pipeline are
+not started. Confidence system, reasoning budget, model benchmarking,
+mood/initiative, and voice (phases 3-6) are also not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -47,6 +47,42 @@ section 5j for the actual code pointers and data flow.
   newly built for this spec, just already-matching prior architecture.
 - Tool schema validation (spec section 10) already existed via each
   tool module's `TOOL_SCHEMAS` + `ToolValidationError` - not newly built.
+- **Semantic memory** (spec section 7, one of Phase 2's four memory
+  layers) - `app/memory/semantic_memory.py` (storage: `remember_fact`/
+  `list_facts`/`forget_fact`/`find_relevant`/`find_matching`, SQLite
+  `user_facts` table) and `app/ai/fact_extraction.py` (deterministic,
+  non-LLM pattern matching for passive extraction from ordinary chat -
+  "I live in Austin", "I might switch to Linux", etc). Wired into
+  `app/ai/chat_engine.py`: explicit "remember that .../what do you know
+  about me/forget ..." commands, a passive best-effort extraction side
+  effect on every message, and relevant stored facts fed into the LLM's
+  context for open-ended chat (mirrors how `web_context` already works).
+  Contradiction handling (spec section 9) works exactly like the spec's
+  own example: "I use Windows" then "I switched to Linux" supersedes the
+  old fact rather than storing both, via a `status`/`superseded_by`
+  chain - simpler than the spec's suggested `valid_from`/`valid_until`
+  temporal-window metadata, which isn't implemented (a straight
+  supersede chain answers "what's true now" and "what did I used to
+  think" equally well for this scope, without needing range queries).
+  Gated by `settings.memory_enabled`
+  (`MOCHI_MEMORY_ENABLED`) - a flag that existed since V1 but was dead
+  config (nothing read it) until this.
+- **Episodic memory** (spec section 7, the second of Phase 2's four
+  memory layers) - `app/memory/episodic_memory.py` (storage:
+  `record_event`/`recent_events`/`important_events`, SQLite
+  `episodic_events` table, same `memory_enabled` gate as semantic
+  memory). Deliberately scoped to real actions Mochi itself took
+  (created a reminder, added a calendar event, ...) rather than a
+  free-text summary of what the conversation was about - see that
+  module's docstring for why the spec's own richer example (a
+  conversational summary mentioning an OAuth problem) isn't attempted.
+  `record_event` is called as a side effect right after a
+  reminder/task/timer/calendar-event create or a calendar-event cancel
+  succeeds (chat_engine.py), and is deliberately best-effort/never-raise
+  (unlike semantic memory's `remember_fact`), since every call site sits
+  alongside an action that has already succeeded. A new "what have you
+  done for me" chat command answers from this real log rather than
+  letting the LLM guess (spec: "ask database, not LLM").
 
 **Deferred** (not yet built - noted here so it isn't rediscovered as a
 gap by accident; roughly spec sections 5-9, 13-15, 18-19, 21-29's
@@ -60,11 +96,35 @@ remaining scope):
   untested. The natural extension point if/when a multi-slot flow is
   added is `known_slots`/`awaiting` becoming a list rather than a single
   string.
-- **Working/episodic/semantic/procedural memory layers** (sections 6-9)
-  - Mochi has `app/ai/conversation_state.py` (short-lived reference
-    memory) and `app/memory/` (relationship-level facts), but not the
-    four-layer architecture the spec describes, memory consolidation
-    (section 8), or contradiction/temporal-validity handling (section 9).
+- **Working memory as a single dedicated module, procedural memory, and
+  memory consolidation as a distinct pipeline** (sections 6, 7, 8) -
+  semantic and episodic memory (two of the four layers) are implemented,
+  see above. Working memory's role is currently split across
+  `app/ai/conversation_state.py` (short-lived entity/reference memory)
+  and `app/ai/goal_state.py` (Phase 1's active-goal state) rather than a
+  single unified module - functionally similar to the spec's
+  description, just not built as one dedicated piece. Procedural memory
+  (behavioral rules learned from failures, spec section 24 - e.g.
+  "calendar authentication expired; check auth state before trying
+  again") doesn't exist yet, even though the tool-verification failures
+  from Phase 1 (`ToolValidationError`) would be a natural source for it.
+  Consolidation as its own pipeline stage (candidate extraction ->
+  importance filter -> duplicate/contradiction detection -> storage) is
+  collapsed into `app/ai/fact_extraction.py` + `semantic_memory
+  .remember_fact`'s supersede-by-subject logic rather than being a
+  separate multi-stage process - sufficient for the deterministic-
+  pattern extraction actually implemented, but would need real design
+  work if/when LLM-based candidate extraction (see the next bullet) is
+  ever added.
+- **LLM-based (rather than pattern-based) fact/memory candidate
+  extraction.** `app/ai/fact_extraction.py` is deliberately regex-only -
+  see that module's docstring for why (no synchronous model call per
+  message, no background-job infrastructure yet either). This means
+  Mochi will never infer a fact from indirect phrasing the way a human
+  (or an LLM) would - "I finally finished the API and my back hurts"
+  produces nothing, on purpose (a missed inference is safe; a wrong one
+  stored as a confident fact is not). Revisiting this is real future
+  work, not an oversight.
 - **Confidence system and clarification policy as a general mechanism**
   (sections 13-14) - today's clarification is per-intent and rule-based
   (ask when a slot is missing), not a scored HIGH/MEDIUM/LOW confidence
