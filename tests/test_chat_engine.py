@@ -1028,3 +1028,105 @@ def test_active_goal_not_reissued_by_unrelated_intents(temp_db):
     active_goal field - only the four "*_needs_*" intents do."""
     reaction = handle_message("what's the weather like")
     assert reaction.active_goal is None
+
+
+# ---------------------------------------------------------------------------
+# Semantic memory (Cognitive Upgrade phase 2, spec section 7) - explicit
+# remember/recall/forget commands, passive extraction, and contradiction
+# handling. See app/memory/semantic_memory.py and app/ai/fact_extraction.py.
+# ---------------------------------------------------------------------------
+
+
+def test_remember_that_stores_a_fact(temp_db):
+    reaction = handle_message("remember that I live in Austin")
+    assert "austin" in reaction.text.lower()
+
+    recalled = handle_message("what do you know about me")
+    assert "austin" in recalled.text.lower()
+
+
+def test_remember_that_i_need_to_still_creates_a_task_not_a_fact(temp_db):
+    """Backward compatibility: TASK_TRIGGER's existing "remember (that)
+    i need to ..." phrasing must keep creating a task exactly as before -
+    the new semantic-memory REMEMBER_TRIGGER must never intercept it."""
+    handle_message("remember that i need to call aunt")
+    tasks = task_manager.list_tasks()
+    assert any("call aunt" in t.title.lower() for t in tasks)
+
+    recalled = handle_message("what do you know about me")
+    assert "call aunt" not in recalled.text.lower()
+
+
+def test_recall_facts_when_nothing_stored_yet(temp_db):
+    reaction = handle_message("what do you know about me")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_passive_extraction_does_not_change_the_visible_reply(temp_db):
+    """A plain, ordinary sentence like "I live in Austin" should be
+    answered as normal chat (whatever that reply would have been
+    anyway) - the fact is noticed silently in the background, never
+    announced uninvited."""
+    reaction = handle_message("I live in Austin")
+    assert "remember" not in reaction.text.lower()
+    assert "noted" not in reaction.text.lower()
+
+    recalled = handle_message("what do you know about me")
+    assert "austin" in recalled.text.lower()
+
+
+def test_passive_extraction_ordinary_message_without_a_pattern_saves_nothing(temp_db):
+    handle_message("hows it going today")
+    handle_message("I finally finished the API")
+    reaction = handle_message("what do you know about me")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_passive_extraction_contradiction_handling(temp_db):
+    """Spec section 9's exact example: a later statement about the same
+    thing supersedes the earlier one rather than piling up as a second,
+    conflicting fact."""
+    handle_message("I use Windows")
+    handle_message("I switched to Linux")
+
+    recalled = handle_message("what do you know about me")
+    assert "linux" in recalled.text.lower()
+    assert "windows" not in recalled.text.lower()
+
+
+def test_passive_extraction_hedged_statement_stored_as_considering(temp_db):
+    handle_message("I might switch to Linux")
+    recalled = handle_message("what do you know about me")
+    assert "considering" in recalled.text.lower()
+    # Never stored as a confident current-state claim.
+    assert "user switched to linux" not in recalled.text.lower()
+    assert "user uses linux" not in recalled.text.lower()
+
+
+def test_forget_removes_a_previously_remembered_fact(temp_db):
+    handle_message("remember that I live in Austin")
+    reaction = handle_message("forget that I live in Austin")
+    assert "forgotten" in reaction.text.lower() or "austin" in reaction.text.lower()
+
+    recalled = handle_message("what do you know about me")
+    assert "austin" not in recalled.text.lower()
+
+
+def test_forget_with_no_match_says_so(temp_db):
+    reaction = handle_message("forget about my imaginary pet dragon")
+    assert "don't have anything" in reaction.text.lower()
+
+
+def test_memory_disabled_degrades_gracefully_instead_of_crashing(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "memory_enabled", False)
+
+    remember_reaction = handle_message("remember that I live in Austin")
+    assert "turned off" in remember_reaction.text.lower()
+
+    recall_reaction = handle_message("what do you know about me")
+    assert "turned off" in recall_reaction.text.lower()
+
+    # Passive extraction must also stay silent (never raise) when disabled.
+    handle_message("I live in Austin")  # must not raise

@@ -355,6 +355,27 @@ manual window duplicating what chat already does.
 - Closing the chat window clears that session; opening it again starts
   fresh.
 
+**Remembering things about you (on by default):** `MOCHI_MEMORY_ENABLED=false` to turn off
+- Say "remember that I live in Austin" (or my favorite color, my job,
+  an allergy, a preference...) and Mochi saves it. Ask "what do you know
+  about me" any time to hear it back, or "forget that I live in Austin"
+  to remove it.
+- Mochi also quietly notices a small set of direct, common phrasings on
+  its own - "I live in Austin", "I switched to Linux", "I'm allergic to
+  peanuts" - without you having to say "remember" first. This never
+  changes what Mochi says back in the moment; it just happens in the
+  background. Only fairly direct statements are recognized on purpose -
+  an indirect or offhand comment is safely ignored rather than guessed
+  at.
+- A later correction replaces the earlier fact instead of piling up a
+  contradiction - "I use Windows" then later "I switched to Linux" and
+  Mochi only remembers Linux. An uncertain statement ("I might switch to
+  Linux") is kept as just that - something you're considering, not a
+  settled fact.
+- Relevant remembered facts can quietly inform an open-ended chat reply,
+  but Mochi is told never to claim to know something that isn't actually
+  stored. (`PROJECT_ARCHITECTURE.md` §5k)
+
 **Jokes (on by default):**
 - Once in a while, if Mochi's been idle long enough to get bored, it
   cracks a joke unprompted.

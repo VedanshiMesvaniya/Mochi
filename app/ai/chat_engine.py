@@ -24,6 +24,7 @@ from typing import Optional
 
 from app.ai import semantic_intent
 from app.ai import conversation_state as convo
+from app.ai import fact_extraction
 from app.ai import goal_state
 from app.ai.db_glossary import QueryPlan, build_plan
 from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent, resolve_pending_goal
@@ -37,6 +38,8 @@ from app.core.exceptions import (
     GoogleCalendarNotConnected,
     GoogleTasksNotConfigured,
     GoogleTasksNotConnected,
+    MemoryDisabled,
+    MemoryError_,
     MochiError,
     TaskSyncError,
 )
@@ -44,7 +47,7 @@ from app.core.logger import get_logger
 from app.humor.meme_fetcher import pick_one_meme
 from app.humor.trend_fetcher import pick_one_trend
 from app.knowledge.context_engine import get_web_context
-from app.memory import relationship
+from app.memory import relationship, semantic_memory
 from app.reminders import manager as reminder_manager
 from app.tasks import google_tasks, manager as task_manager
 from app.timers import manager as timer_manager
@@ -156,6 +159,57 @@ def _emotion_and_animation(name: str) -> tuple[Emotion, CharacterState]:
     except ValueError:
         animation = CharacterState.TALKING
     return emotion, animation
+
+
+def _relevant_user_facts_context(text: str) -> Optional[str]:
+    """Cheap local SQLite read (never a model call of its own - same
+    "no synchronous network/model call just to decide whether to look
+    something up" bar as get_web_context above) of whatever stored
+    semantic-memory facts (Cognitive Upgrade phase 2, spec section 7)
+    overlap with `text`, formatted for app/ai/llm.ask's `user_facts`
+    param. Returns None (not an empty string) when memory is disabled
+    or nothing relevant is stored - llm.ask already treats None as "no
+    extra context", the same convention web_context/trend_topic/
+    meme_premise all use."""
+    if not settings.memory_enabled:
+        return None
+    try:
+        relevant = semantic_memory.find_relevant(text, limit=3)
+    except (MemoryDisabled, MemoryError_) as exc:
+        logger.debug("Skipping user-facts context (%s)", exc)
+        return None
+    if not relevant:
+        return None
+    return "Known facts about the user: " + "; ".join(f.text for f in relevant)
+
+
+def _extract_and_remember_passively(text: str) -> None:
+    """Best-effort, never-raise passive fact extraction (Cognitive
+    Upgrade spec sections 5/7/8/9) - called once per handle_message()
+    call as a pure side effect, regardless of which intent the message
+    actually matched. Deliberately does NOT change the visible chat
+    reply either way (spec section 5: "I finally finished the API"
+    should not automatically create anything the user didn't ask for,
+    and the same caution applies here - noticing a fact quietly in the
+    background is fine, announcing it uninvited on every message would
+    not be). Any failure here (disabled memory, a database error, a
+    surprising exception in extraction itself) is swallowed rather than
+    propagated - this must never be able to break the actual chat
+    reply the rest of handle_message() already computed."""
+    if not settings.memory_enabled:
+        return
+    try:
+        candidate = fact_extraction.extract(text)
+        if candidate is None:
+            return
+        semantic_memory.remember_fact(
+            candidate.text,
+            subject=candidate.subject,
+            confidence=candidate.confidence,
+            source=candidate.source,
+        )
+    except Exception as exc:  # noqa: BLE001 - see docstring: never raise from here
+        logger.debug("Passive fact extraction skipped: %s", exc)
 
 
 def _list_tasks_reaction() -> "ChatReaction":
@@ -1407,6 +1461,143 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
     )
 
 
+# ---------------------------------------------------------------------------
+# Semantic memory (Cognitive Upgrade phase 2, spec section 7) - explicit
+# "remember that .../forget .../what do you know about me" commands. See
+# app/memory/semantic_memory.py for storage and app/ai/fact_extraction.py
+# for the pattern matching shared with passive extraction below.
+# ---------------------------------------------------------------------------
+
+
+def _remember_fact_reaction(tool_args: dict, _state: Optional[dict] = None) -> "ChatReaction":
+    text = (tool_args.get("text") or "").strip()
+    if not text:
+        return ChatReaction(
+            text="What should I remember?",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    # Reuse the same pattern matching passive extraction uses (see
+    # app/ai/fact_extraction.py) so an EXPLICIT "remember that I live in
+    # Seattle now" still keys off the same "lives_in" subject an earlier
+    # ordinary "I live in Austin" would have - a deliberate ask to
+    # remember something should supersede an old fact about the same
+    # thing exactly like a passively-noticed correction would (spec
+    # section 9), not create a second, conflicting, un-superseded note.
+    candidate = fact_extraction.extract(text)
+    if candidate is not None:
+        subject, fact_text = candidate.subject, candidate.text
+        # An explicit request is at least as trustworthy as a passively
+        # inferred one - never let the extractor's own (possibly hedged)
+        # confidence undercut something the user is directly asking
+        # Mochi to remember.
+        confidence = max(candidate.confidence, 0.85)
+    else:
+        subject, confidence = None, 0.9
+        fact_text = text[:1].upper() + text[1:]
+        if not fact_text.endswith((".", "!", "?")):
+            fact_text += "."
+
+    try:
+        semantic_memory.remember_fact(
+            fact_text, subject=subject, confidence=confidence, source=semantic_memory.SOURCE_STATED
+        )
+    except MemoryDisabled:
+        return ChatReaction(
+            text="My memory's turned off right now, so I can't save that - sorry!",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    except MemoryError_ as exc:
+        logger.warning("Failed to remember fact %r: %s", fact_text, exc)
+        return ChatReaction(
+            text="Hmm, I couldn't save that just now.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    return ChatReaction(
+        text=f"Got it, I'll remember that: {fact_text}",
+        emotion=Emotion.HAPPY,
+        animation=CharacterState.HAPPY,
+        sound="chirp",
+    )
+
+
+def _recall_facts_reaction() -> "ChatReaction":
+    try:
+        facts = semantic_memory.list_facts(active_only=True)
+    except MemoryDisabled:
+        return ChatReaction(
+            text="My memory's turned off right now, so there's nothing to recall.",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+        )
+    if not facts:
+        return ChatReaction(
+            text='I don\'t have anything saved about you yet - try "remember that ..." to teach me something!',
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+        )
+
+    labels = [f.text for f in facts]
+    fact_summary = f"Known facts about the user ({len(labels)} total): " + "; ".join(labels[:10])
+    deterministic_text = "Here's what I remember about you:\n" + _format_bullet_list(labels)
+    try:
+        phrased = phrase_data_answer("what do you know about me", fact_summary)
+        response_text = phrased["response"]
+        emotion, animation = _emotion_and_animation(phrased["emotion"])
+    except LLMUnavailable:
+        response_text = deterministic_text
+        emotion, animation = Emotion.CURIOUS, CharacterState.THINKING
+    return ChatReaction(text=response_text, emotion=emotion, animation=animation)
+
+
+def _forget_fact_reaction(tool_args: dict, _state: Optional[dict] = None) -> "ChatReaction":
+    query = (tool_args.get("query") or "").strip()
+    if not query:
+        return ChatReaction(
+            text="Forget what, exactly?", emotion=Emotion.CONFUSED, animation=CharacterState.CONFUSED
+        )
+    try:
+        matches = semantic_memory.find_matching(query)
+        if not matches:
+            # Raw substring match failed - try the same canonicalization
+            # used when facts are actually stored (e.g. "forget that I
+            # live in Austin" -> "User lives in Austin.") so a natural
+            # first-person phrasing still finds a fact that was stored
+            # in Mochi's own third-person wording (see
+            # app/ai/fact_extraction.py, reused the same way
+            # _remember_fact_reaction reuses it above).
+            candidate = fact_extraction.extract(query) or fact_extraction.extract(f"i {query}")
+            if candidate is not None:
+                matches = semantic_memory.find_matching(candidate.text.rstrip("."))
+    except MemoryDisabled:
+        return ChatReaction(
+            text="My memory's turned off right now, so there's nothing to forget.",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+        )
+    if not matches:
+        return ChatReaction(
+            text=f"I don't have anything like \"{query}\" saved.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    if len(matches) > 1:
+        listing = _format_bullet_list([m.text for m in matches])
+        return ChatReaction(
+            text=f"I've got a few things that match - which one should I forget?\n{listing}",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+        )
+    fact = matches[0]
+    semantic_memory.forget_fact(fact.id)
+    return ChatReaction(
+        text=f"Okay, forgotten: {fact.text}", emotion=Emotion.NEUTRAL, animation=CharacterState.IDLE
+    )
+
+
 # Read-only DB queries (spec: "it can not read db, make it read db so it
 # can answer") plus the Google Calendar read/connect/disconnect actions -
 # handled entirely separately from _TOOL_MODULES below. Those are
@@ -1426,6 +1617,7 @@ _LIST_HANDLERS = {
     "calendar_connect": _calendar_connect_reaction,
     "calendar_disconnect": _calendar_disconnect_reaction,
     "google_tasks_list": _google_tasks_list_reaction,
+    "recall_facts": _recall_facts_reaction,
 }
 
 # "Act on an existing item" handlers (spec bug fix: "mark my task ... as
@@ -1445,6 +1637,8 @@ _ACTION_HANDLERS = {
     "cancel_ambiguous": _cancel_ambiguous_reaction,
     "query_done": _query_done_reaction,
     "reschedule_reference": _reschedule_reference_reaction,
+    "remember_fact": _remember_fact_reaction,
+    "forget_fact": _forget_fact_reaction,
 }
 
 
@@ -1649,6 +1843,19 @@ def handle_message(
     # *which* handler it will hit, without persisting what it actually said.
     logger.info("Message classified: intent=%s tool=%s", intent.name, intent.tool)
 
+    # Passive fact extraction (Cognitive Upgrade phase 2, spec sections
+    # 5/7/8/9) - runs once per message, independent of whatever handler
+    # is about to process `intent` below, so it also catches a fact
+    # mentioned alongside an unrelated command (e.g. "remind me to call
+    # mom, I live in Austin now"). Skipped for "remember_fact" specifically
+    # since that handler (_remember_fact_reaction) already runs the exact
+    # same extraction itself for subject/confidence detection - doing it
+    # again here would just insert a redundant, no-op supersession of the
+    # fact that handler is about to store. Best-effort/never-raise - see
+    # _extract_and_remember_passively's own docstring.
+    if intent.name != "remember_fact":
+        _extract_and_remember_passively(text)
+
     if intent.name in _LIST_HANDLERS:
         try:
             reaction = _LIST_HANDLERS[intent.name]()
@@ -1758,6 +1965,10 @@ def handle_message(
             # background job already cached. See
             # app/humor/meme_fetcher.py, app/humor/trend_fetcher.py, and
             # app/knowledge/context_engine.py (V1.1 Web Knowledge Engine).
+            # user_facts (Cognitive Upgrade phase 2) is the same shape of
+            # thing - a cheap local SQLite read, never a model call of its
+            # own, just handing the LLM whatever's already stored (see
+            # app/memory/semantic_memory.find_relevant).
             llm_reply = ask_llm(
                 text,
                 familiarity=familiarity,
@@ -1765,6 +1976,7 @@ def handle_message(
                 trend_topic=pick_one_trend(),
                 meme_premise=pick_one_meme(),
                 web_context=get_web_context(text),
+                user_facts=_relevant_user_facts_context(text),
             )
             response = llm_reply["response"]
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])

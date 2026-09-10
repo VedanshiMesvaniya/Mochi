@@ -114,6 +114,16 @@ class Settings:
     stt_enabled: bool = True
 
     # Memory
+    # Gates the whole Cognitive Upgrade phase 2 semantic memory system
+    # (app/memory/semantic_memory.py, app/ai/fact_extraction.py) - both
+    # explicit "remember that ..." saves and passive fact extraction from
+    # ordinary chat messages ("I live in Austin"). Defined long before
+    # phase 2 existed but was dead config until now (nothing read it) -
+    # this is that flag's first real use. Defaults to True (unlike the
+    # opt-in-off-by-default network features above) since this never
+    # leaves the local SQLite database, matching create_reminder/
+    # create_task's own no-confirmation-needed local-write treatment
+    # rather than google_calendar's "touches an external account" bar.
     memory_enabled: bool = True
     conversation_history_length: int = 20
 
