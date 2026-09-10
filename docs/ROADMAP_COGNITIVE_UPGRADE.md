@@ -1,10 +1,11 @@
 # Mochi Cognitive Intelligence Upgrade
 
-Status: Phase 1 done; Phase 2 partially implemented (semantic memory only
-- see "Implementation status" below). Everything else in the spec
-(working/episodic/procedural memory, memory consolidation as a distinct
-pipeline, confidence system, reasoning budget, model benchmarking, mood/
-initiative, voice) is still not started.
+Status: Phase 1 done; Phase 2 partially implemented (semantic memory and
+episodic memory - see "Implementation status" below). Working memory's
+role is covered by existing modules rather than a dedicated one (see
+below); procedural memory and consolidation-as-a-distinct-pipeline are
+not started. Confidence system, reasoning budget, model benchmarking,
+mood/initiative, and voice (phases 3-6) are also not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -66,6 +67,22 @@ section 5j for the actual code pointers and data flow.
   Gated by `settings.memory_enabled`
   (`MOCHI_MEMORY_ENABLED`) - a flag that existed since V1 but was dead
   config (nothing read it) until this.
+- **Episodic memory** (spec section 7, the second of Phase 2's four
+  memory layers) - `app/memory/episodic_memory.py` (storage:
+  `record_event`/`recent_events`/`important_events`, SQLite
+  `episodic_events` table, same `memory_enabled` gate as semantic
+  memory). Deliberately scoped to real actions Mochi itself took
+  (created a reminder, added a calendar event, ...) rather than a
+  free-text summary of what the conversation was about - see that
+  module's docstring for why the spec's own richer example (a
+  conversational summary mentioning an OAuth problem) isn't attempted.
+  `record_event` is called as a side effect right after a
+  reminder/task/timer/calendar-event create or a calendar-event cancel
+  succeeds (chat_engine.py), and is deliberately best-effort/never-raise
+  (unlike semantic memory's `remember_fact`), since every call site sits
+  alongside an action that has already succeeded. A new "what have you
+  done for me" chat command answers from this real log rather than
+  letting the LLM guess (spec: "ask database, not LLM").
 
 **Deferred** (not yet built - noted here so it isn't rediscovered as a
 gap by accident; roughly spec sections 5-9, 13-15, 18-19, 21-29's
@@ -79,23 +96,26 @@ remaining scope):
   untested. The natural extension point if/when a multi-slot flow is
   added is `known_slots`/`awaiting` becoming a list rather than a single
   string.
-- **Working/episodic/procedural memory layers, and memory consolidation
-  as a distinct pipeline** (sections 6, 7, 8) - semantic memory (one of
-  the four layers) is implemented, see above. Working memory's role is
-  currently split across `app/ai/conversation_state.py` (short-lived
-  entity/reference memory) and `app/ai/goal_state.py` (Phase 1's
-  active-goal state) rather than a single unified module - functionally
-  similar to the spec's description, just not built as one dedicated
-  piece. Episodic memory (notable events/experiences, separate from
-  stable facts) and procedural memory (behavioral rules learned from
-  failures, spec section 24) don't exist yet. Consolidation as its own
-  pipeline stage (candidate extraction -> importance filter ->
-  duplicate/contradiction detection -> storage) is collapsed into
-  `app/ai/fact_extraction.py` + `semantic_memory.remember_fact`'s
-  supersede-by-subject logic rather than being a separate multi-stage
-  process - sufficient for the deterministic-pattern extraction actually
-  implemented, but would need real design work if/when LLM-based
-  candidate extraction (see the next bullet) is ever added.
+- **Working memory as a single dedicated module, procedural memory, and
+  memory consolidation as a distinct pipeline** (sections 6, 7, 8) -
+  semantic and episodic memory (two of the four layers) are implemented,
+  see above. Working memory's role is currently split across
+  `app/ai/conversation_state.py` (short-lived entity/reference memory)
+  and `app/ai/goal_state.py` (Phase 1's active-goal state) rather than a
+  single unified module - functionally similar to the spec's
+  description, just not built as one dedicated piece. Procedural memory
+  (behavioral rules learned from failures, spec section 24 - e.g.
+  "calendar authentication expired; check auth state before trying
+  again") doesn't exist yet, even though the tool-verification failures
+  from Phase 1 (`ToolValidationError`) would be a natural source for it.
+  Consolidation as its own pipeline stage (candidate extraction ->
+  importance filter -> duplicate/contradiction detection -> storage) is
+  collapsed into `app/ai/fact_extraction.py` + `semantic_memory
+  .remember_fact`'s supersede-by-subject logic rather than being a
+  separate multi-stage process - sufficient for the deterministic-
+  pattern extraction actually implemented, but would need real design
+  work if/when LLM-based candidate extraction (see the next bullet) is
+  ever added.
 - **LLM-based (rather than pattern-based) fact/memory candidate
   extraction.** `app/ai/fact_extraction.py` is deliberately regex-only -
   see that module's docstring for why (no synchronous model call per

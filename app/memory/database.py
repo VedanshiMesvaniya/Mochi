@@ -248,6 +248,24 @@ SCHEMA_STATEMENTS: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_user_facts_subject ON user_facts(subject);",
     "CREATE INDEX IF NOT EXISTS idx_user_facts_status ON user_facts(status);",
+    """
+    -- Cognitive Upgrade phase 2 (episodic memory, spec section 7) - same
+    -- settings.memory_enabled gate as user_facts above - see
+    -- app/memory/episodic_memory.py. A running record of notable things
+    -- MOCHI ITSELF DID (created a reminder, added a calendar event,
+    -- ...), not a free-text summary of the conversation - see that
+    -- module's docstring for why the scope stops there.
+    CREATE TABLE IF NOT EXISTS episodic_events (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        event        TEXT NOT NULL,
+        context      TEXT,
+        importance   REAL NOT NULL DEFAULT 0.5,
+        entities     TEXT NOT NULL DEFAULT '[]',
+        occurred_at  TEXT NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_episodic_events_occurred ON episodic_events(occurred_at);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_events_importance ON episodic_events(importance);",
 ]
 
 

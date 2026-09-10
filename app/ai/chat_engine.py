@@ -48,6 +48,7 @@ from app.humor.meme_fetcher import pick_one_meme
 from app.humor.trend_fetcher import pick_one_trend
 from app.knowledge.context_engine import get_web_context
 from app.memory import relationship, semantic_memory
+from app.memory import episodic_memory
 from app.reminders import manager as reminder_manager
 from app.tasks import google_tasks, manager as task_manager
 from app.timers import manager as timer_manager
@@ -1381,6 +1382,11 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
+        episodic_memory.record_event(
+            f"Created calendar event: {pending_action['title']}",
+            importance=0.7,
+            entities=[pending_action["title"]],
+        )
         return ChatReaction(
             text=f"Done! Added \"{pending_action['title']}\" to your calendar.",
             emotion=Emotion.HAPPY,
@@ -1397,6 +1403,11 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
+        episodic_memory.record_event(
+            f"Cancelled calendar event: {pending_action['title']}",
+            importance=0.6,
+            entities=[pending_action["title"]],
+        )
         return ChatReaction(
             text=f"Done! Cancelled \"{pending_action['title']}\".",
             emotion=Emotion.NEUTRAL,
@@ -1553,6 +1564,34 @@ def _recall_facts_reaction() -> "ChatReaction":
     return ChatReaction(text=response_text, emotion=emotion, animation=animation)
 
 
+def _recent_activity_reaction() -> "ChatReaction":
+    try:
+        events = episodic_memory.recent_events(limit=8)
+    except MemoryDisabled:
+        return ChatReaction(
+            text="My memory's turned off right now, so I don't have a log of that.",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+        )
+    if not events:
+        return ChatReaction(
+            text="Nothing yet - once I create or change something for you, it'll show up here.",
+            emotion=Emotion.NEUTRAL,
+            animation=CharacterState.IDLE,
+        )
+    labels = [e.event for e in events]
+    activity_summary = f"Recent things Mochi did ({len(labels)} shown, newest first): " + "; ".join(labels)
+    deterministic_text = "Here's what I've done recently:\n" + _format_bullet_list(labels)
+    try:
+        phrased = phrase_data_answer("what have you done for me", activity_summary)
+        response_text = phrased["response"]
+        emotion, animation = _emotion_and_animation(phrased["emotion"])
+    except LLMUnavailable:
+        response_text = deterministic_text
+        emotion, animation = Emotion.CURIOUS, CharacterState.THINKING
+    return ChatReaction(text=response_text, emotion=emotion, animation=animation)
+
+
 def _forget_fact_reaction(tool_args: dict, _state: Optional[dict] = None) -> "ChatReaction":
     query = (tool_args.get("query") or "").strip()
     if not query:
@@ -1618,6 +1657,7 @@ _LIST_HANDLERS = {
     "calendar_disconnect": _calendar_disconnect_reaction,
     "google_tasks_list": _google_tasks_list_reaction,
     "recall_facts": _recall_facts_reaction,
+    "recent_activity": _recent_activity_reaction,
 }
 
 # "Act on an existing item" handlers (spec bug fix: "mark my task ... as
@@ -2038,6 +2078,11 @@ def handle_message(
             if new_entity_kind is not None and isinstance(result, dict) and "id" in result:
                 title = result.get("title") or result.get("label") or ""
                 conversation_state = convo.remember_entity(new_entity_kind, result["id"], title)
+                episodic_memory.record_event(
+                    f"Created {new_entity_kind}: {title}" if title else f"Created {new_entity_kind}",
+                    importance=0.5,
+                    entities=[title] if title else [],
+                )
 
     # Cognitive Upgrade spec sections 3-4/16: if this turn's intent is
     # itself a fresh "*_needs_*" clarifying question (either because

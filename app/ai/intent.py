@@ -569,6 +569,21 @@ REMEMBER_TRIGGER = re.compile(
     r"^(?:please )?remember(?: that)?[,:]?\s+(.+)", re.IGNORECASE
 )
 
+# Episodic memory (Cognitive Upgrade phase 2, spec section 7) - "what
+# have you done" style questions, answered from app/memory/
+# episodic_memory.py's real action log (spec: "ask database, not LLM").
+# Deliberately does NOT require the literal word "task"/"reminder"/
+# "timer" the way LIST_DONE_TRIGGER above does - this is a broader,
+# cross-entity "what happened" view, not a per-entity done-list, so the
+# two never collide (LIST_DONE_TRIGGER is checked well before this
+# point regardless - see its own comment above detect_intent).
+RECENT_ACTIVITY_TRIGGER = re.compile(
+    r"\bwhat(?:'ve| have) (?:you|we) done(?: for me)?(?: today| recently| lately| so far)?\b|"
+    r"\bwhat(?:'s| has) happened(?: recently| lately| today)?\b|"
+    r"\bshow me (?:my )?recent activity\b",
+    re.IGNORECASE,
+)
+
 TIME_AT = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
 TIME_IN = re.compile(
     r"\bin\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b", re.IGNORECASE
@@ -1253,6 +1268,13 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             emotion=Emotion.CURIOUS,
             animation=CharacterState.THINKING,
             response="",  # chat_engine fills this in from real stored facts
+        )
+    if RECENT_ACTIVITY_TRIGGER.search(lowered):
+        return DetectedIntent(
+            name="recent_activity",
+            emotion=Emotion.CURIOUS,
+            animation=CharacterState.THINKING,
+            response="",  # chat_engine fills this in from the real episodic-memory log
         )
     forget_match = FORGET_TRIGGER.match(lowered)
     if forget_match:

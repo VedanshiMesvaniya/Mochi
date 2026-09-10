@@ -375,6 +375,11 @@ manual window duplicating what chat already does.
 - Relevant remembered facts can quietly inform an open-ended chat reply,
   but Mochi is told never to claim to know something that isn't actually
   stored. (`PROJECT_ARCHITECTURE.md` §5k)
+- Ask "what have you done for me today" (or "what have we done
+  recently") to see a real log of what Mochi has actually created or
+  changed for you - reminders, timers, calendar events - newest first.
+  This is a separate thing from the facts above: it's a log of Mochi's
+  own actions, not things you've told it about yourself.
 
 **Jokes (on by default):**
 - Once in a while, if Mochi's been idle long enough to get bored, it

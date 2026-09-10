@@ -1268,6 +1268,40 @@ backward-compatibility case), and `tests/test_llm.py` (`user_facts`
 actually reaching the prompt, including the full chat_engine-to-LLM
 path).
 
+**Episodic memory (`app/memory/episodic_memory.py`).** The second of
+the spec's four memory layers, distinct from semantic memory above:
+semantic memory holds stable facts ABOUT the user, episodic memory logs
+notable things Mochi itself DID - `record_event`/`recent_events`/
+`important_events` against a new `episodic_events` table, same
+`memory_enabled` gate. Deliberately scoped to Mochi's own confirmed
+actions rather than a free-text summary of the conversation (the
+spec's own richer example - "User worked on Google Calendar integration
+and encountered OAuth problems" - would need either an LLM call or much
+richer NLP than a deterministic match can safely produce); see that
+module's docstring for the full reasoning.
+
+`record_event` is deliberately best-effort and NEVER raises, unlike
+semantic memory's `remember_fact` - every call site here sits right
+after an action that has ALREADY succeeded (a reminder really was
+created, a calendar event really was added), so a logging failure must
+never be able to turn that real success into a visible chat error. It's
+called from two places in `chat_engine.py`: the generic create-tool
+completion block (reminders/timers/tasks - the same spot that already
+remembers the new entity for conversation_state, section 5c) and
+`_resolve_pending_action`'s calendar create/delete branches (the one
+place calendar writes actually execute, per section 5's confirmation
+gate). A new "what have you done for me" / "what have we done recently"
+chat command (`RECENT_ACTIVITY_TRIGGER` in `intent.py`, deliberately NOT
+requiring the literal word "task"/"reminder"/"timer" the way the
+existing per-entity `LIST_DONE_TRIGGER` does, so the two never collide)
+answers from this real log - spec: "ask database, not LLM" - rather than
+letting the LLM guess at what happened.
+
+See `tests/test_episodic_memory.py` (the module in isolation) and
+`tests/test_chat_engine.py` (recording hooks for reminder/timer/
+calendar-event creation and calendar-event cancellation, ordering,
+and `memory_enabled=False` degradation).
+
 ---
 
 ## 7. Error handling philosophy

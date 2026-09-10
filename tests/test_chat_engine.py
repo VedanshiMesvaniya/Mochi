@@ -419,6 +419,18 @@ def test_confirming_create_event_calls_calendar_tools_with_confirmed_true(
     assert reaction.emotion == Emotion.HAPPY
 
 
+def test_confirming_create_event_is_recorded_as_an_episodic_event(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "abc", "title": title},
+    )
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    handle_message("yes", pending_action=proposal.pending_action)
+
+    activity = handle_message("what have you done for me today")
+    assert "meeting" in activity.text.lower()
+
+
 def test_declining_create_event_never_calls_calendar_tools(temp_db, monkeypatch):
     def _fail_if_called(*_a, **_kw):
         raise AssertionError("declined action must never be executed")
@@ -1130,3 +1142,45 @@ def test_memory_disabled_degrades_gracefully_instead_of_crashing(temp_db, monkey
 
     # Passive extraction must also stay silent (never raise) when disabled.
     handle_message("I live in Austin")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Episodic memory (Cognitive Upgrade phase 2, spec section 7) - a running
+# record of things Mochi actually DID, distinct from semantic memory's
+# facts about the user. See app/memory/episodic_memory.py.
+# ---------------------------------------------------------------------------
+
+
+def test_recent_activity_is_empty_before_anything_happens(temp_db):
+    reaction = handle_message("what have you done for me today")
+    assert "nothing" in reaction.text.lower()
+
+
+def test_creating_a_reminder_is_recorded_as_an_episodic_event(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    reaction = handle_message("what have you done for me today")
+    assert "call mom" in reaction.text.lower()
+
+
+def test_creating_a_timer_is_recorded_as_an_episodic_event(temp_db):
+    handle_message("start a timer for 10 minutes")
+    reaction = handle_message("what have we done recently")
+    assert "timer" in reaction.text.lower()
+
+
+def test_recent_activity_orders_newest_first(temp_db):
+    handle_message("remind me to call mom at 7pm")
+    handle_message("start a timer for 10 minutes")
+    reaction = handle_message("what have you done for me today")
+    lowered = reaction.text.lower()
+    # The timer (created second) should be mentioned before the reminder.
+    assert lowered.index("timer") < lowered.index("call mom")
+
+
+def test_recent_activity_disabled_degrades_gracefully(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    handle_message("remind me to call mom at 7pm")
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    reaction = handle_message("what have you done for me today")
+    assert "turned off" in reaction.text.lower()
