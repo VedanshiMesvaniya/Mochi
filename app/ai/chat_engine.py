@@ -49,6 +49,7 @@ from app.humor.trend_fetcher import pick_one_trend
 from app.knowledge.context_engine import get_web_context
 from app.memory import relationship, semantic_memory
 from app.memory import episodic_memory
+from app.memory import procedural_memory
 from app.reminders import manager as reminder_manager
 from app.tasks import google_tasks, manager as task_manager
 from app.timers import manager as timer_manager
@@ -211,6 +212,30 @@ def _extract_and_remember_passively(text: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - see docstring: never raise from here
         logger.debug("Passive fact extraction skipped: %s", exc)
+
+
+def _remember_llm_extracted_fact(raw_fact: str) -> None:
+    """Best-effort, never-raise (same convention as
+    _extract_and_remember_passively above) storage for a "notable_fact"
+    the model volunteered (Cognitive Upgrade phase 2,
+    settings.llm_fact_extraction_enabled - see that setting's own
+    docstring for why this is a separate, lower-trust opt-in from
+    deterministic passive extraction). Always stored with subject=None
+    (its own open-ended note - a model's guess should never silently
+    supersede an existing, more reliably-sourced fact) and a lower,
+    fixed confidence, since a model's judgment call is inherently less
+    predictable than a fixed pattern match."""
+    if not settings.memory_enabled:
+        return
+    text = raw_fact.strip()
+    if not text:
+        return
+    try:
+        semantic_memory.remember_fact(
+            text, subject=None, confidence=0.6, source=semantic_memory.SOURCE_INFERRED_LLM
+        )
+    except Exception as exc:  # noqa: BLE001 - see docstring: never raise from here
+        logger.debug("LLM-extracted fact not recorded: %s", exc)
 
 
 def _list_tasks_reaction() -> "ChatReaction":
@@ -1363,6 +1388,72 @@ _PROPOSAL_HANDLERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Procedural memory (Cognitive Upgrade phase 2, spec section 24 "Learning
+# From Failure") - a small, fixed lookup from KNOWN, generalizable
+# failure types to a lesson worth remembering, applied to the write
+# confirmations below. Deliberately narrow: most MochiError subclasses (a
+# bad title, a malformed date) are one-off input problems with no
+# reusable lesson - only connection/auth-shaped failures (spec's own
+# worked example: "calendar authentication expired") get generalized
+# into a rule. See app/memory/procedural_memory.py's own docstring for
+# the full reasoning, including why this mirrors
+# app/ai/fact_extraction.py's "a missed lesson is safe, a wrong one
+# isn't" philosophy.
+# ---------------------------------------------------------------------------
+
+_FAILURE_LESSONS: dict[type, str] = {
+    GoogleCalendarNotConnected: (
+        "Google Calendar sign-in can expire or be revoked - check connection "
+        "status before assuming a write will go through."
+    ),
+    GoogleCalendarNotConfigured: (
+        "Google Calendar isn't connected yet - the user needs to connect it "
+        "before Mochi can write events."
+    ),
+    GoogleTasksNotConnected: (
+        "Google Tasks sign-in can expire or be revoked - check connection "
+        "status before assuming a write will go through."
+    ),
+    GoogleTasksNotConfigured: (
+        "Google Tasks isn't connected yet - the user needs to connect it "
+        "before Mochi can write tasks."
+    ),
+    TaskSyncError: "Google Tasks sync can fail transiently - a retry or reconnect may be needed.",
+}
+
+
+def _learn_from_failure(scope: str, exc: Exception) -> None:
+    """Best-effort, never-raise (see procedural_memory.learn_rule's own
+    docstring) - called from a write-confirmation failure path that's
+    already reporting a real error back to the user; a logging problem
+    here must never compound that into a second, unrelated failure."""
+    rule = _FAILURE_LESSONS.get(type(exc))
+    if rule is None:
+        return
+    try:
+        procedural_memory.learn_rule(rule, scope=scope)
+    except Exception as log_exc:  # noqa: BLE001 - see docstring above
+        logger.debug("Procedural lesson not recorded: %s", log_exc)
+
+
+def _failure_reaction(scope: str, base_text: str, exc: Exception) -> "ChatReaction":
+    """Shared failure-reporting helper for _resolve_pending_action's
+    branches below (spec section 27, rule 1: never claim success; rule
+    10: never assume a tool call succeeded). Also records a procedural
+    lesson when `exc` is a known, generalizable failure type, and - if
+    this exact scope has run into a recorded lesson repeatedly before -
+    appends a one-line "this has come up before" hint using that
+    lesson's own wording, rather than reporting each occurrence as if it
+    were a first-time surprise."""
+    _learn_from_failure(scope, exc)
+    text = f"{base_text}: {exc}"
+    recurring = procedural_memory.has_recurring_issue(scope)
+    if recurring is not None:
+        text += f" (This has come up before: {recurring.rule})"
+    return ChatReaction(text=text, emotion=Emotion.CONFUSED, animation=CharacterState.CONFUSED)
+
+
 def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
     """Called only after the user's message was classified as an explicit
     confirmation (see _classify_confirmation) for a proposal this module
@@ -1377,11 +1468,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
                 pending_action["title"], pending_action["start_iso"], confirmed=True
             )
         except MochiError as exc:
-            return ChatReaction(
-                text=f"Hmm, I couldn't add that: {exc}",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            return _failure_reaction("calendar", "Hmm, I couldn't add that", exc)
         episodic_memory.record_event(
             f"Created calendar event: {pending_action['title']}",
             importance=0.7,
@@ -1398,11 +1485,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
         try:
             calendar_tools.delete_event(pending_action["event_id"], confirmed=True)
         except MochiError as exc:
-            return ChatReaction(
-                text=f"Hmm, I couldn't cancel that: {exc}",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            return _failure_reaction("calendar", "Hmm, I couldn't cancel that", exc)
         episodic_memory.record_event(
             f"Cancelled calendar event: {pending_action['title']}",
             importance=0.6,
@@ -1418,11 +1501,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
         try:
             google_tasks_tools.create_google_task(pending_action["title"], confirmed=True)
         except MochiError as exc:
-            return ChatReaction(
-                text=f"Hmm, I couldn't add that: {exc}",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            return _failure_reaction("google_tasks", "Hmm, I couldn't add that", exc)
         return ChatReaction(
             text=f"Done! Added \"{pending_action['title']}\" to your Google Tasks.",
             emotion=Emotion.HAPPY,
@@ -1434,11 +1513,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
         try:
             google_tasks_tools.complete_google_task(pending_action["task_id"], confirmed=True)
         except MochiError as exc:
-            return ChatReaction(
-                text=f"Hmm, I couldn't mark that done: {exc}",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            return _failure_reaction("google_tasks", "Hmm, I couldn't mark that done", exc)
         return ChatReaction(
             text=f"Done! Marked \"{pending_action['title']}\" as complete.",
             emotion=Emotion.HAPPY,
@@ -1450,11 +1525,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
         try:
             google_tasks_tools.delete_google_task(pending_action["task_id"], confirmed=True)
         except MochiError as exc:
-            return ChatReaction(
-                text=f"Hmm, I couldn't delete that: {exc}",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+            return _failure_reaction("google_tasks", "Hmm, I couldn't delete that", exc)
         return ChatReaction(
             text=f"Done! Deleted \"{pending_action['title']}\" from Google Tasks.",
             emotion=Emotion.NEUTRAL,
@@ -2009,6 +2080,19 @@ def handle_message(
             # thing - a cheap local SQLite read, never a model call of its
             # own, just handing the LLM whatever's already stored (see
             # app/memory/semantic_memory.find_relevant).
+            #
+            # request_fact_extraction (Cognitive Upgrade phase 2,
+            # settings.llm_fact_extraction_enabled, off by default) rides
+            # along on this SAME call rather than making a second one -
+            # only requested when the deterministic extractor
+            # (app/ai/fact_extraction.py) found nothing for this exact
+            # message, so the two paths never both try to save the same
+            # thing.
+            want_llm_extraction = (
+                settings.memory_enabled
+                and settings.llm_fact_extraction_enabled
+                and fact_extraction.extract(text) is None
+            )
             llm_reply = ask_llm(
                 text,
                 familiarity=familiarity,
@@ -2017,10 +2101,13 @@ def handle_message(
                 meme_premise=pick_one_meme(),
                 web_context=get_web_context(text),
                 user_facts=_relevant_user_facts_context(text),
+                request_fact_extraction=want_llm_extraction,
             )
             response = llm_reply["response"]
             emotion, animation = _emotion_and_animation(llm_reply["emotion"])
             sound = EMOTION_PROFILE.get(emotion, {}).get("sound")
+            if want_llm_extraction and llm_reply.get("notable_fact"):
+                _remember_llm_extracted_fact(llm_reply["notable_fact"])
         except LLMUnavailable as exc:
             # Previously this fell back to the exact same generic "I'm not
             # sure what you mean yet" line used for a truly-unrecognized

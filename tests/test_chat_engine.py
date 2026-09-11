@@ -1184,3 +1184,166 @@ def test_recent_activity_disabled_degrades_gracefully(temp_db, monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
     reaction = handle_message("what have you done for me today")
     assert "turned off" in reaction.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Procedural memory (Cognitive Upgrade phase 2, spec section 24 "Learning
+# From Failure") - a known, generalizable connection/auth failure during
+# a confirmed write should be remembered as a lesson, and a recurring one
+# should be mentioned to the user. See app/memory/procedural_memory.py.
+# ---------------------------------------------------------------------------
+
+
+def test_calendar_connection_failure_is_learned_as_a_procedural_rule(temp_db, monkeypatch):
+    from app.core.exceptions import GoogleCalendarNotConnected
+    from app.memory import procedural_memory
+
+    def _raise(*_a, **_kw):
+        raise GoogleCalendarNotConnected("not connected")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _raise)
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    handle_message("yes", pending_action=proposal.pending_action)
+
+    rules = procedural_memory.relevant_rules("calendar")
+    assert len(rules) == 1
+    assert "sign-in" in rules[0].rule.lower() or "auth" in rules[0].rule.lower()
+
+
+def test_repeated_calendar_connection_failure_is_mentioned_to_the_user(temp_db, monkeypatch):
+    from app.core.exceptions import GoogleCalendarNotConnected
+
+    def _raise(*_a, **_kw):
+        raise GoogleCalendarNotConnected("not connected")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _raise)
+
+    proposal1 = handle_message("schedule a meeting tomorrow at 5pm")
+    first = handle_message("yes", pending_action=proposal1.pending_action)
+    assert "come up before" not in first.text.lower()
+
+    proposal2 = handle_message("schedule a meeting tomorrow at 6pm")
+    second = handle_message("yes", pending_action=proposal2.pending_action)
+    assert "come up before" in second.text.lower()
+
+
+def test_a_one_off_input_error_is_never_learned_as_a_procedural_rule(temp_db, monkeypatch):
+    """Not every failure generalizes into a lesson (see
+    app/ai/chat_engine._FAILURE_LESSONS's deliberately narrow scope) -
+    a bad title/malformed input is a one-off problem, not something
+    worth remembering as a reusable rule."""
+    from app.core.exceptions import ToolValidationError
+    from app.memory import procedural_memory
+
+    def _raise(*_a, **_kw):
+        raise ToolValidationError("that title is too long")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.create_event", _raise)
+
+    proposal = handle_message("schedule a meeting tomorrow at 5pm")
+    handle_message("yes", pending_action=proposal.pending_action)
+
+    assert procedural_memory.relevant_rules("calendar") == []
+
+
+# ---------------------------------------------------------------------------
+# LLM-based fact-candidate extraction (Cognitive Upgrade phase 2,
+# settings.llm_fact_extraction_enabled, opt-in and off by default). Rides
+# on the SAME "unknown"-intent LLM call already happening - never a
+# second model call - and is skipped whenever the deterministic
+# extractor already found something for the same message.
+# ---------------------------------------------------------------------------
+
+
+def test_llm_fact_extraction_off_by_default(temp_db, monkeypatch):
+    from app.memory import semantic_memory
+
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "Cool!", "emotion": "happy", "notable_fact": "User owns a boat."}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("just chatting about my weekend")
+    assert captured_kwargs.get("request_fact_extraction") is False
+    assert semantic_memory.list_facts() == []
+
+
+def test_llm_fact_extraction_stores_notable_fact_when_enabled(temp_db, monkeypatch):
+    from app.core.config import settings
+    from app.memory import semantic_memory
+
+    monkeypatch.setattr(settings, "llm_fact_extraction_enabled", True)
+
+    def _fake_ask(text, **kwargs):
+        return {"response": "Cool!", "emotion": "happy", "notable_fact": "User owns a boat."}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("just chatting about my weekend")
+
+    facts = semantic_memory.list_facts()
+    assert len(facts) == 1
+    assert facts[0].text == "User owns a boat."
+    assert facts[0].source == semantic_memory.SOURCE_INFERRED_LLM
+    assert facts[0].confidence < 0.8  # a model guess is lower-trust than a deterministic match
+
+
+def test_llm_fact_extraction_skipped_when_deterministic_extractor_already_matched(
+    temp_db, monkeypatch
+):
+    from app.core.config import settings
+    from app.memory import semantic_memory
+
+    monkeypatch.setattr(settings, "llm_fact_extraction_enabled", True)
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "Nice!", "emotion": "happy", "notable_fact": "User owns a boat."}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("I live in Austin, its pretty nice here")
+
+    assert captured_kwargs.get("request_fact_extraction") is False
+    facts = semantic_memory.list_facts()
+    # Only the deterministic extraction's fact should be stored - never
+    # also the model's, since it was never even asked.
+    assert len(facts) == 1
+    assert facts[0].source == semantic_memory.SOURCE_INFERRED
+
+
+def test_llm_fact_extraction_no_fact_offered_stores_nothing(temp_db, monkeypatch):
+    from app.core.config import settings
+    from app.memory import semantic_memory
+
+    monkeypatch.setattr(settings, "llm_fact_extraction_enabled", True)
+
+    def _fake_ask(text, **kwargs):
+        return {"response": "Cool!", "emotion": "happy", "notable_fact": None}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("just chatting about my weekend")
+    assert semantic_memory.list_facts() == []
+
+
+def test_llm_fact_extraction_disabled_when_memory_itself_is_off(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "llm_fact_extraction_enabled", True)
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "Cool!", "emotion": "happy", "notable_fact": "User owns a boat."}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("just chatting about my weekend")  # must not raise
+    assert captured_kwargs.get("request_fact_extraction") is False
