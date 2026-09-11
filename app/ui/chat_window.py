@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ai.chat_engine import ChatReaction, handle_message
+from app.ai.working_memory import WorkingMemory
 from app.character.state_machine import CharacterState, Emotion
 from app.core.logger import get_logger
 from app.ui.base_window import TranslucentDialog, current_palette
@@ -252,26 +253,20 @@ class ChatWorker(QThread):
         self,
         text: str,
         history: Optional[list[tuple[str, str]]] = None,
-        pending_action: Optional[dict] = None,
-        conversation_state: Optional[dict] = None,
-        active_goal: Optional[dict] = None,
+        working_memory: Optional[WorkingMemory] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._text = text
         self._history = history
-        self._pending_action = pending_action
-        self._conversation_state = conversation_state
-        self._active_goal = active_goal
+        self._working_memory = working_memory or WorkingMemory()
 
     def run(self) -> None:  # noqa: D102 - QThread override
         try:
             reaction = handle_message(
                 self._text,
                 history=self._history,
-                pending_action=self._pending_action,
-                conversation_state=self._conversation_state,
-                active_goal=self._active_goal,
+                **self._working_memory.as_kwargs(),
             )
         except Exception:  # noqa: BLE001 - chat must never crash the app
             logger.exception("Chat engine failed on message: %s", self._text)
@@ -325,6 +320,16 @@ class ChatWindow(TranslucentDialog):
         # question ("but when?") still awaiting an answer. Same lifetime
         # as _pending_action above.
         self._active_goal: Optional[dict] = None
+
+        # These three attributes together are exactly what Cognitive
+        # Upgrade spec section 7's "Working Memory" describes -
+        # app/ai/working_memory.py's WorkingMemory bundles them into one
+        # object for building the next handle_message() call and for
+        # unpacking a ChatReaction (see _on_send_clicked/
+        # _on_reaction_ready below); they stay as three separate
+        # attributes here rather than one WorkingMemory attribute so
+        # existing direct references to each (including in tests) don't
+        # need to change for what would otherwise be a pure rename.
 
         # Typing indicator (spec: "chat looks closed/frozen while waiting").
         # The pet's face already changes state while a reply is pending,
@@ -487,9 +492,11 @@ class ChatWindow(TranslucentDialog):
         self._worker = ChatWorker(
             text,
             history=list(self._history[:-1]),
-            pending_action=self._pending_action,
-            conversation_state=self._conversation_state,
-            active_goal=self._active_goal,
+            working_memory=WorkingMemory(
+                pending_action=self._pending_action,
+                reference=self._conversation_state,
+                goal=self._active_goal,
+            ),
             parent=self,
         )
         self._worker.finished_reaction.connect(self._on_reaction_ready)
@@ -499,9 +506,10 @@ class ChatWindow(TranslucentDialog):
         self._stop_typing_indicator()
         self._append("Mochi", reaction.text)
         self._history.append(("mochi", reaction.text))
-        self._pending_action = reaction.pending_action
-        self._conversation_state = reaction.conversation_state
-        self._active_goal = reaction.active_goal
+        working_memory = WorkingMemory.from_reaction(reaction)
+        self._pending_action = working_memory.pending_action
+        self._conversation_state = working_memory.reference
+        self._active_goal = working_memory.goal
         if self._on_reaction is not None:
             self._on_reaction(reaction)
 

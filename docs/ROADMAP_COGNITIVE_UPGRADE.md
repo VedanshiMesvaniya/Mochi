@@ -1,11 +1,13 @@
 # Mochi Cognitive Intelligence Upgrade
 
-Status: Phase 1 done; Phase 2 partially implemented (semantic memory and
-episodic memory - see "Implementation status" below). Working memory's
-role is covered by existing modules rather than a dedicated one (see
-below); procedural memory and consolidation-as-a-distinct-pipeline are
-not started. Confidence system, reasoning budget, model benchmarking,
-mood/initiative, and voice (phases 3-6) are also not started.
+Status: Phase 1 done; Phase 2 done (all four memory layers, working
+memory as a container module, procedural-memory learning from tool
+failures, and an opt-in LLM-based extraction path are all implemented -
+see "Implementation status" below; memory consolidation stays folded
+into fact_extraction.py/remember_fact rather than a separate pipeline
+stage, a deliberate scoping choice explained below). Phase 3 onward
+(confidence system, reasoning budget, model benchmarking, mood/
+initiative, voice) is not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -83,10 +85,64 @@ section 5j for the actual code pointers and data flow.
   alongside an action that has already succeeded. A new "what have you
   done for me" chat command answers from this real log rather than
   letting the LLM guess (spec: "ask database, not LLM").
+- **Procedural memory** (spec sections 7/24, the third of Phase 2's four
+  memory layers, "Learning From Failure") - `app/memory/procedural_memory.py`
+  (storage: `learn_rule`/`relevant_rules`/`has_recurring_issue`, SQLite
+  `procedural_rules` table, same `memory_enabled` gate). Wired into the
+  five write-confirmation branches of `app/ai/chat_engine._resolve_pending_action`
+  (calendar create/delete, Google Tasks create/complete/delete) via a
+  small, fixed lookup (`_FAILURE_LESSONS`) from KNOWN, generalizable
+  failure types (a Google Calendar/Tasks connection or sign-in problem)
+  to a lesson worth remembering - reproducing spec section 24's own
+  worked example exactly ("Google Calendar sign-in can expire or be
+  revoked - check connection status before assuming a write will go
+  through"). Deliberately narrow: a one-off input problem (a bad title,
+  a malformed date) never becomes a "rule", since it wouldn't generalize
+  to anything - only connection/auth-shaped failures do. A rule is
+  deduplicated by `(rule, scope)` rather than piling up a new row per
+  occurrence - repeat failures just bump a `trigger_count`. Once a scope
+  has failed the same way more than once, the next failure's error
+  message includes a one-line "this has come up before" hint using the
+  rule's own wording (`_failure_reaction`), rather than reporting each
+  occurrence as a first-time surprise.
+- **Working memory as one dedicated module** (spec section 7) -
+  `app/ai/working_memory.py`'s `WorkingMemory` container bundles
+  `pending_action`, the reference-resolution state
+  (`app/ai/conversation_state.py`), and the active-goal state
+  (`app/ai/goal_state.py`, Phase 1) into the single named concept the
+  spec describes - matching the spec's own framing of working memory as
+  a BUNDLE of several pieces, not one algorithm to reimplement. The
+  underlying reference-resolution and goal-completion logic
+  deliberately still lives in its original, already-tested modules
+  rather than being rewritten wholesale into one file - see that
+  module's docstring for why a pure rename/merge wasn't worth the risk
+  to already-working code. `app/ui/chat_window.py` uses it to build the
+  next `handle_message()` call's keyword arguments and to unpack a
+  `ChatReaction` in one step (`WorkingMemory.from_reaction(...)
+  .as_kwargs()`), while keeping its own three `_pending_action`/
+  `_conversation_state`/`_active_goal` attributes as the source of truth
+  (existing tests already assert against those names directly).
+- **LLM-based fact-candidate extraction** (spec section 5's fuller
+  vision beyond deterministic patterns) - opt-in via
+  `settings.llm_fact_extraction_enabled` (`MOCHI_LLM_FACT_EXTRACTION_ENABLED`,
+  off by default, and requires `memory_enabled=True` as well - see that
+  setting's own docstring in `app/core/config.py`). Adds **no extra
+  model call**: `app/ai/llm.ask`'s new `request_fact_extraction` param
+  rides on the SAME already-happening call for an "unknown"-intent chat
+  reply, asking the model to optionally add a `"notable_fact"` field to
+  its existing JSON response. `app/ai/chat_engine.py` only ever sets
+  that param when the deterministic extractor
+  (`app/ai/fact_extraction.py`) found NOTHING for the same message, so
+  the two paths never both try to save the same thing. A model-supplied
+  fact is stored with `subject=None` (its own note - a model's guess
+  should never silently supersede an existing, more reliably-sourced
+  fact) and a fixed, lower confidence (`source="inferred_llm"`) than the
+  deterministic paths, since a model's judgment call is inherently less
+  predictable than a fixed pattern match.
 
 **Deferred** (not yet built - noted here so it isn't rediscovered as a
-gap by accident; roughly spec sections 5-9, 13-15, 18-19, 21-29's
-remaining scope):
+gap by accident; roughly spec sections 6, 8-9 (partially), 13-15,
+18-19, 21-29's remaining scope):
 
 - **Multi-slot goals.** `goal_state.py` is deliberately scoped to
   exactly one missing slot per goal. A goal needing two or more
@@ -96,35 +152,21 @@ remaining scope):
   untested. The natural extension point if/when a multi-slot flow is
   added is `known_slots`/`awaiting` becoming a list rather than a single
   string.
-- **Working memory as a single dedicated module, procedural memory, and
-  memory consolidation as a distinct pipeline** (sections 6, 7, 8) -
-  semantic and episodic memory (two of the four layers) are implemented,
-  see above. Working memory's role is currently split across
-  `app/ai/conversation_state.py` (short-lived entity/reference memory)
-  and `app/ai/goal_state.py` (Phase 1's active-goal state) rather than a
-  single unified module - functionally similar to the spec's
-  description, just not built as one dedicated piece. Procedural memory
-  (behavioral rules learned from failures, spec section 24 - e.g.
-  "calendar authentication expired; check auth state before trying
-  again") doesn't exist yet, even though the tool-verification failures
-  from Phase 1 (`ToolValidationError`) would be a natural source for it.
-  Consolidation as its own pipeline stage (candidate extraction ->
-  importance filter -> duplicate/contradiction detection -> storage) is
-  collapsed into `app/ai/fact_extraction.py` + `semantic_memory
-  .remember_fact`'s supersede-by-subject logic rather than being a
-  separate multi-stage process - sufficient for the deterministic-
-  pattern extraction actually implemented, but would need real design
-  work if/when LLM-based candidate extraction (see the next bullet) is
-  ever added.
-- **LLM-based (rather than pattern-based) fact/memory candidate
-  extraction.** `app/ai/fact_extraction.py` is deliberately regex-only -
-  see that module's docstring for why (no synchronous model call per
-  message, no background-job infrastructure yet either). This means
-  Mochi will never infer a fact from indirect phrasing the way a human
-  (or an LLM) would - "I finally finished the API and my back hurts"
-  produces nothing, on purpose (a missed inference is safe; a wrong one
-  stored as a confident fact is not). Revisiting this is real future
-  work, not an oversight.
+- **Memory consolidation as its own distinct pipeline stage, and
+  temporal-window contradiction metadata** (sections 8, 9). Semantic
+  memory's contradiction handling (see above) uses a straight
+  `status`/`superseded_by` chain rather than the spec's suggested
+  `valid_from`/`valid_until` range metadata - sufficient for "what's
+  true now" and "what did I used to think", without needing range
+  queries. Consolidation (candidate extraction -> importance filter ->
+  duplicate/contradiction detection -> storage) stays collapsed into
+  `app/ai/fact_extraction.py` + `semantic_memory.remember_fact`'s
+  supersede-by-subject logic rather than being pulled out into a
+  separate multi-stage process - this was sufficient for both the
+  deterministic and the (now implemented, see above) LLM-based
+  extraction paths, so pulling it into its own pipeline stage has been
+  deferred until a concrete need for one actually shows up (e.g. an
+  importance-filtering step that isn't just "did a pattern match").
 - **Confidence system and clarification policy as a general mechanism**
   (sections 13-14) - today's clarification is per-intent and rule-based
   (ask when a slot is missing), not a scored HIGH/MEDIUM/LOW confidence

@@ -375,11 +375,21 @@ manual window duplicating what chat already does.
 - Relevant remembered facts can quietly inform an open-ended chat reply,
   but Mochi is told never to claim to know something that isn't actually
   stored. (`PROJECT_ARCHITECTURE.md` §5k)
+- Optionally (`MOCHI_LLM_FACT_EXTRACTION_ENABLED=true`, off by default),
+  Mochi can also let the AI model itself spot a fact in a message the
+  fixed patterns above missed - stored with lower confidence than a
+  direct pattern match, and only ever checked as part of a reply it was
+  already generating, never as an extra request of its own.
 - Ask "what have you done for me today" (or "what have we done
   recently") to see a real log of what Mochi has actually created or
   changed for you - reminders, timers, calendar events - newest first.
   This is a separate thing from the facts above: it's a log of Mochi's
   own actions, not things you've told it about yourself.
+- If a calendar or Google Tasks action fails because your sign-in
+  expired or was never connected, Mochi remembers that this kind of
+  thing has happened for that connection, and mentions it if the same
+  problem happens again rather than treating each occurrence as a
+  surprise.
 
 **Jokes (on by default):**
 - Once in a while, if Mochi's been idle long enough to get bored, it

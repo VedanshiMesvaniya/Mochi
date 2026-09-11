@@ -190,6 +190,25 @@ _USER_FACTS_TEMPLATE = (
     "what's listed here.\n"
 )
 
+# LLM-based fact-candidate extraction (Cognitive Upgrade phase 2,
+# settings.llm_fact_extraction_enabled, opt-in and off by default - see
+# that setting's own docstring in app/core/config.py for why this is
+# separate from memory_enabled). Appended to the SAME prompt/JSON schema
+# an "unknown"-intent chat reply already uses (see ask()'s
+# `request_fact_extraction` param) rather than issuing a second model
+# call - app/ai/chat_engine.py only ever asks for this alongside a reply
+# it was already generating anyway.
+_FACT_EXTRACTION_INSTRUCTION = (
+    "\nAlso: if this specific message reveals a genuinely new, concrete "
+    "fact about the user (where they live, their job, a preference, an "
+    "allergy, something they use or are considering), add a "
+    '"notable_fact" field to your JSON with that fact stated plainly in '
+    'third person, e.g. "User works at a bakery." If nothing new and '
+    "concrete was revealed, omit the field or set it to null - never "
+    "invent one just to fill it in, and never restate a fact you were "
+    "already told about above.\n"
+)
+
 
 class LLMUnavailable(Exception):
     """Raised whenever the local LLM can't be reached or didn't return a
@@ -204,6 +223,7 @@ def ask(
     meme_premise: Optional[str] = None,
     web_context: Optional[str] = None,
     user_facts: Optional[str] = None,
+    request_fact_extraction: bool = False,
     now: Optional[datetime] = None,
 ) -> dict:
     """Ask the local Ollama model for a structured {response, emotion}
@@ -261,6 +281,18 @@ def ask(
     late" have no ground truth to answer from, and relative phrasing
     ("remind me tonight", "call me back in a bit") has nothing to anchor
     to either.
+
+    `request_fact_extraction` (Cognitive Upgrade phase 2, opt-in via
+    settings.llm_fact_extraction_enabled - see that setting's own
+    docstring) asks the model to ALSO include an optional "notable_fact"
+    field in its JSON reply if this message reveals something concrete
+    and new about the user. This is the SAME call already being made for
+    the chat reply, not a second one - the returned dict's "notable_fact"
+    key is None unless this was True and the model actually populated it.
+    The caller (app/ai/chat_engine.py) is responsible for actually
+    storing it and for skipping this when the deterministic extractor
+    (app/ai/fact_extraction.py) already caught something in the same
+    message, to avoid a duplicate/conflicting save.
     """
 
     now = now or datetime.now()
@@ -274,6 +306,7 @@ def ask(
 
     web_context_block = _WEB_CONTEXT_TEMPLATE.format(evidence=web_context) if web_context else ""
     user_facts_block = _USER_FACTS_TEMPLATE.format(facts=user_facts) if user_facts else ""
+    fact_extraction_block = _FACT_EXTRACTION_INSTRUCTION if request_fact_extraction else ""
 
     conversation_block = ""
     if history:
@@ -289,7 +322,8 @@ def ask(
     )
 
     prompt = (
-        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{web_context_block}{user_facts_block}{time_block}{conversation_block}"
+        f"{SYSTEM_PROMPT}\n{hint}{flavor_context}{web_context_block}{user_facts_block}"
+        f"{fact_extraction_block}{time_block}{conversation_block}"
         f"\nUser message: {user_text}\nMochi (JSON only):"
     )
     payload = {
@@ -329,10 +363,17 @@ def ask(
     if not response_text:
         raise LLMUnavailable("Model reply had no usable 'response' text")
 
-    return {
+    result = {
         "response": response_text[:400],
         "emotion": str(parsed.get("emotion", "neutral")).strip().lower(),
     }
+    if request_fact_extraction:
+        raw_fact = parsed.get("notable_fact")
+        notable_fact = str(raw_fact).strip() if raw_fact else ""
+        result["notable_fact"] = notable_fact[:200] if notable_fact else None
+    else:
+        result["notable_fact"] = None
+    return result
 
 
 def _extract_json_object(raw_text: str) -> dict:

@@ -100,7 +100,7 @@ def fake_ollama(monkeypatch):
 
 def test_ask_returns_structured_reply(fake_ollama):
     result = ask("give me a real answer")
-    assert result == {"response": "a real answer", "emotion": "curious"}
+    assert result == {"response": "a real answer", "emotion": "curious", "notable_fact": None}
 
 
 def test_ask_extracts_json_from_code_fence(fake_ollama):
@@ -364,6 +364,109 @@ def test_chat_engine_feeds_relevant_stored_facts_to_the_llm(temp_db, monkeypatch
     try:
         handle_message("do you know anything about austin")
         assert "User lives in Austin." in captured["prompt"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_request_fact_extraction_adds_instruction_to_prompt(monkeypatch):
+    captured = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            captured["prompt"] = body.get("prompt", "")
+            payload = json.dumps(
+                {
+                    "response": json.dumps(
+                        {"response": "ok", "emotion": "neutral", "notable_fact": "User likes tea."}
+                    ),
+                    "done": True,
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = ask("I love tea", request_fact_extraction=True)
+        assert "notable_fact" in captured["prompt"]
+        assert result["notable_fact"] == "User likes tea."
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_fact_extraction_not_requested_by_default(monkeypatch):
+    captured = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            captured["prompt"] = body.get("prompt", "")
+            payload = json.dumps(
+                {"response": '{"response": "ok", "emotion": "neutral"}', "done": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = ask("hello")
+        assert "notable_fact" not in captured["prompt"]
+        assert result["notable_fact"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_notable_fact_omitted_by_model_is_none(monkeypatch):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            payload = json.dumps(
+                {"response": '{"response": "ok", "emotion": "neutral"}', "done": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("localhost", 0), Handler)
+    port = server.server_address[1]
+    monkeypatch.setattr(llm, "OLLAMA_GENERATE_URL", f"http://localhost:{port}/api/generate")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = ask("hello", request_fact_extraction=True)
+        assert result["notable_fact"] is None
     finally:
         server.shutdown()
         server.server_close()

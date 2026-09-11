@@ -127,6 +127,23 @@ class Settings:
     memory_enabled: bool = True
     conversation_history_length: int = 20
 
+    # LLM-based fact-candidate extraction (Cognitive Upgrade phase 2,
+    # spec section 5's fuller vision, deferred from the initial pass -
+    # see docs/ROADMAP_COGNITIVE_UPGRADE.md and app/ai/fact_extraction
+    # .py's own docstring on why extraction is deterministic-only by
+    # default). Off by default, and requires memory_enabled=True as
+    # well: this asks the MODEL to judge whether a message reveals a
+    # fact, which is strictly less predictable than a fixed regex - a
+    # deliberately separate, higher-risk opt-in rather than folded into
+    # memory_enabled itself. When on, this adds NO extra model call:
+    # app/ai/chat_engine.py piggybacks the request onto the SAME
+    # already-happening LLM call for an "unknown"-intent chat reply
+    # (see app/ai/llm.ask's request_fact_extraction param), rather than
+    # calling the model a second time just to check for a fact - keeping
+    # the project's "no extra synchronous model call" bar intact even
+    # with this enabled.
+    llm_fact_extraction_enabled: bool = False
+
     # Calendar (spec section 22/23 - Mode B, optional Google Calendar
     # integration; Mode A, the fully-local calendar, doesn't need any of
     # this). Off by default - Mochi never talks to Google unless this is
@@ -274,6 +291,9 @@ class Settings:
             tts_enabled=_bool(os.getenv("MOCHI_TTS_ENABLED"), True),
             stt_enabled=_bool(os.getenv("MOCHI_STT_ENABLED"), True),
             memory_enabled=_bool(os.getenv("MOCHI_MEMORY_ENABLED"), True),
+            llm_fact_extraction_enabled=_bool(
+                os.getenv("MOCHI_LLM_FACT_EXTRACTION_ENABLED"), False
+            ),
             conversation_history_length=_int(
                 os.getenv("MOCHI_CONVERSATION_HISTORY_LENGTH"), 20
             ),

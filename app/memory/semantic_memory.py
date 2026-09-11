@@ -17,6 +17,15 @@ Two ways a fact gets stored:
     (spec/project value: "best-effort, never-raise" - see that module's
     docstring for where the try/except actually lives).
 
+A third, opt-in path also exists: LLM-based extraction
+(settings.llm_fact_extraction_enabled, off by default - see that
+setting's own docstring in app/core/config.py), source="inferred_llm",
+used only when the deterministic patterns above found nothing for the
+same message. Always stored with subject=None (its own open-ended note,
+never superseding an existing fact) and a lower confidence than the
+deterministic paths, since a model's judgment call is less predictable
+than a fixed pattern match.
+
 Contradiction handling (spec section 9) is keyed by `subject`: passing a
 `subject` that matches an existing ACTIVE fact supersedes it (the old
 row's status flips to 'superseded', pointing at the new row via
@@ -55,6 +64,7 @@ STATUS_SUPERSEDED = "superseded"
 
 SOURCE_STATED = "stated"
 SOURCE_INFERRED = "inferred"
+SOURCE_INFERRED_LLM = "inferred_llm"
 
 
 @dataclass

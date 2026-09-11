@@ -1302,6 +1302,114 @@ See `tests/test_episodic_memory.py` (the module in isolation) and
 calendar-event creation and calendar-event cancellation, ordering,
 and `memory_enabled=False` degradation).
 
+**Procedural memory (`app/memory/procedural_memory.py`).** The third of
+the four memory layers: behavioral rules and lessons learned from real
+tool failures (spec section 24, "Learning From Failure"). A `Rule` is
+`(rule, scope, confidence, source, trigger_count)`; `learn_rule(rule,
+scope)` deduplicates by `(rule, scope)` - a repeat failure bumps
+`trigger_count`/`last_triggered_at` on the existing row rather than
+inserting a new one, so ten identical calendar-auth failures produce one
+rule Mochi has "noticed ten times", not ten rows.
+
+`app/ai/chat_engine.py`'s `_FAILURE_LESSONS` is a small, fixed lookup
+from KNOWN, generalizable exception types (`GoogleCalendarNotConnected`,
+`GoogleCalendarNotConfigured`, `GoogleTasksNotConnected`,
+`GoogleTasksNotConfigured`, `TaskSyncError`) to a lesson worth
+remembering - deliberately narrow, since a one-off input problem (a bad
+title, a malformed date) never generalizes into a rule the way an
+auth/connection failure does (same "a missed lesson is safe, a wrong one
+isn't" philosophy as `app/ai/fact_extraction.py`). `_learn_from_failure`
+and the shared `_failure_reaction` helper are used by all five of
+`_resolve_pending_action`'s write-confirmation branches (calendar
+create/delete, Google Tasks create/complete/delete) - the one place
+confirmed external writes actually execute, matching spec section 24's
+own worked example (a Google Calendar OAuth failure) closely. Once a
+scope's lesson has recurred more than once (`has_recurring_issue`), the
+next failure's message appends a one-line "this has come up before"
+hint using the rule's own wording, rather than reporting each occurrence
+as a first-time surprise:
+
+```text
+_resolve_pending_action("calendar_create")
+        │
+        ▼
+calendar_tools.create_event() raises GoogleCalendarNotConnected
+        │
+        ▼
+_failure_reaction("calendar", "Hmm, I couldn't add that", exc)
+        │
+        ├─ _learn_from_failure("calendar", exc) - known type, so
+        │   procedural_memory.learn_rule(...) stores/bumps the rule
+        │
+        └─ procedural_memory.has_recurring_issue("calendar")
+                │
+                ├─ trigger_count >= 2 -> append "(This has come up
+                │   before: <rule text>)" to the error message
+                └─ first occurrence -> plain error message, no hint
+```
+
+`learn_rule`/`has_recurring_issue` are deliberately best-effort and
+NEVER raise (unlike semantic memory's `remember_fact`) - every call site
+here sits inside a failure path that's already reporting a real error to
+the user, and a logging problem must never compound that into a second,
+unrelated failure.
+
+See `tests/test_procedural_memory.py` (the module in isolation) and
+`tests/test_chat_engine.py` (a known failure type being learned, a
+recurring one being mentioned to the user, and a one-off input error
+correctly NOT becoming a rule).
+
+**Working memory (`app/ai/working_memory.py`).** The spec describes
+working memory as a bundle of several pieces (current conversation,
+active goal, unresolved questions, recent tool results, current state)
+rather than a single algorithm - `WorkingMemory` is that bundle: a
+frozen dataclass holding `pending_action`, `reference`
+(`app/ai/conversation_state.py`'s state), and `goal`
+(`app/ai/goal_state.py`'s state), with `from_reaction(reaction)` to
+build one from whatever `handle_message()` just returned and
+`as_kwargs()` to unpack it back into the next call's keyword arguments.
+The underlying reference-resolution and goal-completion LOGIC
+deliberately still lives in its original modules rather than being
+merged into this one - see this module's own docstring for why a
+pure rename/merge of already-tested code wasn't worth the risk for a
+purely organizational win. `app/ui/chat_window.py` uses it in both
+directions (`ChatWorker` now takes one `working_memory` param instead
+of three separate ones; `_on_reaction_ready` unpacks a `ChatReaction`
+through it) while keeping its own three `_pending_action`/
+`_conversation_state`/`_active_goal` attributes as the source of truth,
+since existing tests already assert against those names directly.
+
+See `tests/test_working_memory.py` (the container in isolation - bundling,
+unpacking, immutability) and `tests/test_chat_window.py` (unchanged
+tests continuing to pass against the same three attribute names, proving
+the refactor didn't change any externally observable behavior).
+
+**LLM-based fact extraction (`app/ai/llm.py`, opt-in).** Deferred
+originally because extracting facts via the model would otherwise mean
+a second, separate LLM call on top of the one already generating the
+chat reply - a real latency/complexity cost this project avoids by
+default (see `app/ai/fact_extraction.py`'s docstring). The actual fix
+needed no new call at all: `ask()`'s `request_fact_extraction` param
+appends one extra instruction to the SAME prompt already being sent for
+an "unknown"-intent reply, asking the model to optionally add a
+`"notable_fact"` field to the JSON it was already returning.
+`app/ai/chat_engine.py` only sets that param when both
+`settings.memory_enabled` and the opt-in
+`settings.llm_fact_extraction_enabled` are true AND
+`fact_extraction.extract(text)` found nothing for the same message - so
+the deterministic and LLM-based paths never both try to save the same
+fact. A model-supplied fact is stored via `semantic_memory.remember_fact`
+with `subject=None` (never silently superseding an existing, more
+reliably-sourced fact) and a fixed, lower confidence
+(`source="inferred_llm"`), since a model's judgment call is inherently
+less predictable than a fixed pattern match.
+
+See `tests/test_llm.py` (the instruction actually reaching the prompt,
+omitted by default, and the model choosing not to populate the field)
+and `tests/test_chat_engine.py` (off by default, stored when enabled,
+skipped when the deterministic extractor already matched, and correctly
+inert when `memory_enabled=False`).
+
 ---
 
 ## 7. Error handling philosophy

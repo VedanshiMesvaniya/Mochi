@@ -266,6 +266,28 @@ SCHEMA_STATEMENTS: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_episodic_events_occurred ON episodic_events(occurred_at);",
     "CREATE INDEX IF NOT EXISTS idx_episodic_events_importance ON episodic_events(importance);",
+    """
+    -- Cognitive Upgrade phase 2 (procedural memory, spec section 7/24) -
+    -- same settings.memory_enabled gate as user_facts/episodic_events
+    -- above - see app/memory/procedural_memory.py. A rule identified by
+    -- (rule, scope) is deduplicated: a repeat failure bumps
+    -- trigger_count/last_triggered_at on the existing row instead of
+    -- inserting a new one, so ten identical calendar-auth failures
+    -- produce one rule Mochi has "noticed ten times", not ten rows.
+    CREATE TABLE IF NOT EXISTS procedural_rules (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule               TEXT NOT NULL,
+        scope              TEXT NOT NULL,
+        confidence         REAL NOT NULL DEFAULT 0.7,
+        source             TEXT NOT NULL,
+        trigger_count      INTEGER NOT NULL DEFAULT 1,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL,
+        last_triggered_at  TEXT NOT NULL
+    );
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_procedural_rules_rule_scope ON procedural_rules(rule, scope);",
+    "CREATE INDEX IF NOT EXISTS idx_procedural_rules_scope ON procedural_rules(scope);",
 ]
 
 
