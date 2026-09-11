@@ -711,6 +711,38 @@ def _parse_bare_time(text: str, now: datetime) -> Optional[datetime]:
     return _resolve_time_from_parts(hour, minute, meridiem, text, now)
 
 
+# --- Confidence-aware clarification wording (Cognitive Upgrade spec
+# section 13, "Confidence System") -----------------------------------
+# Narrow, first slice of the spec's confidence concept - not a general
+# scored HIGH/MEDIUM/LOW gate (that's still deferred, see
+# docs/ROADMAP_COGNITIVE_UPGRADE.md), just this one concrete case the
+# spec itself worked through: "Schedule Devika tomorrow evening" has no
+# exact time (still has to ask - never invent 5pm out of "evening"), but
+# it isn't the same as knowing NOTHING either. A generic "but when?" is
+# right when the message said nothing about time at all (LOW
+# confidence); once the user names a time-of-day word, the question
+# should echo it back ("what time tomorrow evening?") instead of
+# silently discarding what they already said (MEDIUM confidence).
+_VAGUE_PERIOD_RE = re.compile(
+    r"\b(morning|afternoon|evening|tonight|night|noon|midnight)\b",
+    re.IGNORECASE,
+)
+_TIME_DATE_WORD_RE = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
+
+
+def _describe_missing_time(text: str) -> Optional[str]:
+    """"tomorrow evening" / "evening" / None - whatever date + time-of-day
+    words the message already contains, for use in a targeted clarifying
+    question. Returns None when the text names no time-of-day at all, so
+    callers fall back to the existing generic "but when?" question."""
+    period_match = _VAGUE_PERIOD_RE.search(text)
+    if not period_match:
+        return None
+    period = period_match.group(1).lower()
+    date_match = _TIME_DATE_WORD_RE.search(text)
+    return f"{date_match.group(1).lower()} {period}" if date_match else period
+
+
 def _parse_relative_minutes(text: str) -> Optional[int]:
     match = TIME_IN.search(_normalize_word_numbers(text))
     if not match:
@@ -976,11 +1008,13 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         if due is None and minutes is not None:
             due = now + timedelta(minutes=minutes)
         if due is None:
+            time_hint = _describe_missing_time(body)
+            question = f"Change it to what time {time_hint}" if time_hint else "Change it to when"
             return DetectedIntent(
                 name="reschedule_reference_needs_time",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
-                response='Change it to when? Try a time like "8pm" or "in 20 minutes".',
+                response=f'{question}? Try a time like "8pm" or "in 20 minutes".',
             )
         return DetectedIntent(
             name="reschedule_reference",
@@ -1058,12 +1092,14 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         title = title[:1].upper() + title[1:]
 
         if due is None:
+            time_hint = _describe_missing_time(body)
+            question = f"what time {time_hint}" if time_hint else "when"
             return DetectedIntent(
                 name="calendar_create_needs_time",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
                 response=(
-                    f"Got it - \"{title}\" - but when? Try "
+                    f"Got it - \"{title}\" - but {question}? Try "
                     "\"tomorrow at 5pm\" or \"in 2 hours\"."
                 ),
                 # Cognitive Upgrade spec sections 3-4/16: the title already
@@ -1181,12 +1217,14 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
         if due is None and minutes is not None:
             due = now + timedelta(minutes=minutes)
         if due is None:
+            time_hint = _describe_missing_time(body)
+            question = f"what time {time_hint}" if time_hint else "when"
             return DetectedIntent(
                 name="create_reminder_needs_time",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
                 response=(
-                    f"Got it - \"{title}\" - but when? Try "
+                    f"Got it - \"{title}\" - but {question}? Try "
                     "\"at 7pm\" or \"in 30 minutes\"."
                 ),
                 # See the matching comment on calendar_create_needs_time
@@ -1563,12 +1601,14 @@ def build_semantic_intent(name: str, raw_text: str, now: Optional[datetime] = No
             due = now + timedelta(minutes=minutes)
         title = _title_from(text)
         if due is None:
+            time_hint = _describe_missing_time(text)
+            question = f"what time {time_hint}" if time_hint else "when"
             return DetectedIntent(
                 name="create_reminder_needs_time",
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
                 response=(
-                    f"Sounds like you want a reminder for \"{title}\" - but when? "
+                    f"Sounds like you want a reminder for \"{title}\" - but {question}? "
                     "Try \"at 7pm\" or \"in 30 minutes\"."
                 ),
                 # See the matching comment on the keyword-path
