@@ -5,9 +5,11 @@ memory as a container module, procedural-memory learning from tool
 failures, and an opt-in LLM-based extraction path are all implemented -
 see "Implementation status" below; memory consolidation stays folded
 into fact_extraction.py/remember_fact rather than a separate pipeline
-stage, a deliberate scoping choice explained below). Phase 3 onward
-(confidence system, reasoning budget, model benchmarking, mood/
-initiative, voice) is not started.
+stage, a deliberate scoping choice explained below). Phase 3 started:
+confidence-aware clarification wording (section 13's own worked
+example) is implemented; the rest of Phase 3 (a general confidence
+gate, reasoning budget, model benchmarking, mood/initiative, voice) is
+not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -140,8 +142,31 @@ section 5j for the actual code pointers and data flow.
   deterministic paths, since a model's judgment call is inherently less
   predictable than a fixed pattern match.
 
+**Implemented (Phase 3, partial):**
+
+- **Confidence-aware clarification wording** (spec section 13's own
+  worked example: "Schedule Devika tomorrow evening" -> "what time
+  tomorrow evening?", never inventing a specific time) -
+  `app/ai/intent.py`'s `_describe_missing_time()`. When a
+  "*_needs_time" question is about to be asked (calendar create,
+  reminder create - both the keyword and semantic-classification paths
+  - and reschedule-reference), the message is checked for a
+  time-of-day word ("morning"/"afternoon"/"evening"/"tonight"/"night"/
+  "noon"/"midnight") plus an optional "today"/"tomorrow". If one is
+  found, the clarifying question echoes it back ("what time tomorrow
+  evening?") instead of the generic "but when?" - the same distinction
+  the spec draws between MEDIUM confidence (something is known, ask a
+  targeted question) and LOW confidence (nothing is known, ask
+  generically). Deliberately narrow: this is one concrete instantiation
+  of the confidence idea for the one case the spec itself worked
+  through, not the general scored HIGH/MEDIUM/LOW gate applied to every
+  decision described below under Deferred - no other current Mochi
+  decision point has a comparable "partially known, ask a better
+  question" gap to close, so building a general mechanism now would be
+  speculative.
+
 **Deferred** (not yet built - noted here so it isn't rediscovered as a
-gap by accident; roughly spec sections 6, 8-9 (partially), 13-15,
+gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
 18-19, 21-29's remaining scope):
 
 - **Multi-slot goals.** `goal_state.py` is deliberately scoped to
@@ -167,10 +192,15 @@ gap by accident; roughly spec sections 6, 8-9 (partially), 13-15,
   extraction paths, so pulling it into its own pipeline stage has been
   deferred until a concrete need for one actually shows up (e.g. an
   importance-filtering step that isn't just "did a pattern match").
-- **Confidence system and clarification policy as a general mechanism**
-  (sections 13-14) - today's clarification is per-intent and rule-based
-  (ask when a slot is missing), not a scored HIGH/MEDIUM/LOW confidence
-  gate applied uniformly across every decision.
+- **General confidence system** (section 13) - a scored HIGH/MEDIUM/LOW
+  confidence gate applied uniformly across every decision Mochi makes,
+  not just the one clarification-wording case implemented above under
+  Phase 3.
+- **Clarification policy for other slots** (section 14) - event
+  duration, timezone, and default-calendar selection already use
+  sensible defaults without asking (see `app/calendar/google_calendar.py`'s
+  one-hour default), so the remaining gap is narrower than the spec's
+  full list; nothing further has needed it yet.
 - **Reasoning budget / hybrid thinking mode selection** (section 18) -
   Mochi's local LLM is invoked the same way regardless of message
   complexity; there's no LEVEL 0-4 routing.

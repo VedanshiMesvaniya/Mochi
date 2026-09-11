@@ -1412,6 +1412,49 @@ inert when `memory_enabled=False`).
 
 ---
 
+## 5l. Confidence-aware clarification wording (Cognitive Upgrade, phase 3)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md` for the full spec and what's
+implemented vs deferred. This is the first slice of phase 3: spec
+section 13's own worked example, "Schedule Devika tomorrow evening"
+should ask "what time tomorrow evening?" rather than a generic "but
+when?" - and must never invent a specific time out of a vague
+time-of-day word.
+
+`app/ai/intent.py`'s `_describe_missing_time(text)` looks for a
+time-of-day word (morning/afternoon/evening/tonight/night/noon/
+midnight) plus an optional today/tomorrow, and returns a phrase like
+`"tomorrow evening"` - or `None` when the text names no time-of-day at
+all. Every place that builds a `"*_needs_time"` clarifying question
+calls it first:
+
+- `calendar_create_needs_time` and `create_reminder_needs_time` in the
+  keyword path (`detect_intent()`)
+- `create_reminder_needs_time` in the semantic-classification path
+  (`build_semantic_intent()`)
+- `reschedule_reference_needs_time`
+
+When `_describe_missing_time()` returns a phrase, the question echoes
+it back (`"what time tomorrow evening?"`); when it returns `None` (the
+message said nothing about time at all), the original generic question
+is unchanged. The due-time parsing itself (`_parse_absolute_time` /
+`_parse_relative_minutes` / `_parse_bare_time`) is untouched - this only
+changes the wording of the question asked when parsing comes back
+empty, never what counts as a successfully parsed time.
+
+Deliberately narrow: this is one concrete case, not a general scored
+HIGH/MEDIUM/LOW confidence gate applied to every Mochi decision (that
+remains deferred - see the roadmap doc). Event duration, timezone, and
+default-calendar selection already use sensible defaults without asking
+(`app/calendar/google_calendar.py`), so this closes the one clarification
+gap the spec's own example calls out.
+
+See `tests/test_intent.py` for the vague-time-echoes and
+no-time-context-keeps-generic-question cases across all four call
+sites.
+
+---
+
 ## 7. Error handling philosophy
 
 Each subsystem raises a specific exception from `app/core/exceptions.py`.

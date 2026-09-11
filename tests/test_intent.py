@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from app.character.state_machine import CharacterState, Emotion
-from app.ai.intent import detect_intent, resolve_pending_goal
+from app.ai.intent import build_semantic_intent, detect_intent, resolve_pending_goal
 
 NOW = datetime(2026, 8, 14, 15, 0, 0)  # 3:00 PM, for deterministic time math
 
@@ -92,6 +92,34 @@ def test_reminder_without_time_asks_for_one():
     result = detect_intent("remind me to push code", now=NOW)
     assert result.name == "create_reminder_needs_time"
     assert result.tool is None
+
+
+# --- Confidence-aware clarification wording (Cognitive Upgrade spec
+# section 13) - a vague time-of-day word ("evening") isn't a usable
+# clock time, so this still has to ask, but the question should echo
+# back what's already known instead of a generic "but when?".
+
+
+def test_reminder_with_vague_evening_echoes_it_in_the_question():
+    result = detect_intent("remind me to call mom this evening", now=NOW)
+    assert result.name == "create_reminder_needs_time"
+    assert "evening" in result.response
+
+
+def test_reminder_with_no_time_context_keeps_generic_question():
+    result = detect_intent("remind me to push code", now=NOW)
+    assert "when?" in result.response
+    assert "evening" not in result.response
+    assert "morning" not in result.response
+
+
+def test_semantic_reminder_with_vague_time_echoes_it_in_the_question():
+    """Same confidence-aware wording, but via the semantic-intent path
+    (app/ai/intent.build_semantic_intent) rather than the keyword path -
+    both must produce the same targeted question."""
+    result = build_semantic_intent("create_reminder", "check the oven tonight", now=NOW)
+    assert result.name == "create_reminder_needs_time"
+    assert "tonight" in result.response
 
 
 # --- Spelled-out ("word") numbers in relative time/duration -------------
@@ -499,6 +527,17 @@ def test_calendar_create_without_time_asks_for_one():
     assert result.tool is None
 
 
+def test_calendar_create_with_vague_evening_echoes_date_and_period():
+    """The spec's own worked example (section 13): "Schedule Devika
+    tomorrow evening" is MEDIUM confidence, not LOW - it must ask "what
+    time tomorrow evening?", not throw away "tomorrow evening" and ask
+    a generic question, and it must never invent a specific time."""
+    result = detect_intent("schedule a meeting with Devika tomorrow evening", now=NOW)
+    assert result.name == "calendar_create_needs_time"
+    assert "tomorrow evening" in result.response
+    assert result.tool is None
+
+
 def test_calendar_create_book_an_appointment():
     result = detect_intent("book an appointment at 3pm", now=NOW)
     assert result.name == "calendar_create_event"
@@ -655,6 +694,12 @@ def test_reschedule_reference_without_a_time_asks_for_one():
     result = detect_intent("make it better", now=NOW)
     assert result.name == "reschedule_reference_needs_time"
     assert result.response
+
+
+def test_reschedule_reference_with_vague_morning_echoes_it_in_the_question():
+    result = detect_intent("move it to tomorrow morning", now=NOW)
+    assert result.name == "reschedule_reference_needs_time"
+    assert "tomorrow morning" in result.response
 
 
 # ---------------------------------------------------------------------------
