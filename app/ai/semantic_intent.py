@@ -50,16 +50,14 @@ OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 # than app/ai/llm.py's 30s budget for open-ended generation.
 REQUEST_TIMEOUT_SECONDS = 8
 
-# Confidence bands, from MOCHI_VERSIONED_ROADMAP.md section 6 ("Confidence
-# controls autonomy"): 0-50% observe only, 50-75% soft suggestion/ask,
-# 75%+ act. There's no 90%+ "fully automatic, no safety net" tier here -
-# every action this produces, even at high confidence, still goes through
-# the exact same tool validation (ToolValidationError etc.) a keyword
-# match would, so a wrong guess can still be rejected safely.
-CONFIDENCE_LOW = 0.50   # below this: treat exactly like a keyword miss (unknown)
-CONFIDENCE_ACT = 0.75   # at/above this: safe to build + run the intent
-# Between CONFIDENCE_LOW and CONFIDENCE_ACT: ask a clarifying question
-# instead of guessing (see chat_engine.py's _semantic_clarify_intent).
+# Confidence bands, from app/ai/confidence.py (Cognitive Upgrade spec
+# section 13, "Confidence System") - re-exported here rather than
+# redefined, so existing callers (app/ai/chat_engine.py,
+# tests/test_semantic_intent.py) that reach for
+# semantic_intent.CONFIDENCE_LOW/CONFIDENCE_ACT keep working unchanged,
+# while app/ai/confidence.py is the one place the actual numbers and
+# the resulting HIGH/MEDIUM/LOW rule live.
+from app.ai.confidence import CONFIDENCE_ACT, CONFIDENCE_LOW  # noqa: E402,F401
 
 # Fixed taxonomy the model may choose from. Every value here has a
 # matching branch in app/ai/intent.py's build_semantic_intent() and is a

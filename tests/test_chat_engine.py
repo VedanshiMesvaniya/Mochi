@@ -148,7 +148,7 @@ def test_mark_reminder_done_actually_completes_it(temp_db):
 
 def test_cancel_reminder_actually_cancels_it(temp_db):
     handle_message("remind me to call mom at 7pm")
-    reaction = handle_message("cancel my reminder to call mom")
+    handle_message("cancel my reminder to call mom")
     # Cancelled reminders are archived out of `reminders` - see
     # app/reminders/manager.py's cancel_reminder().
     assert reminder_manager.list_reminders() == []
@@ -1347,3 +1347,71 @@ def test_llm_fact_extraction_disabled_when_memory_itself_is_off(temp_db, monkeyp
 
     handle_message("just chatting about my weekend")  # must not raise
     assert captured_kwargs.get("request_fact_extraction") is False
+
+
+# ---------------------------------------------------------------------------
+# Reasoning budget (Cognitive Upgrade phase 3, app/ai/reasoning_budget.py) -
+# a trivial acknowledgment skips memory/web-context retrieval and the
+# LLM-based fact-extraction request entirely; anything else still gets
+# the full context-gathering it always did.
+# ---------------------------------------------------------------------------
+
+
+def test_trivial_chat_skips_context_retrieval(temp_db, monkeypatch):
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "np!", "emotion": "happy"}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+    monkeypatch.setattr(
+        "app.ai.chat_engine.get_web_context",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("web context should be skipped")),
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine._relevant_user_facts_context",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("user facts should be skipped")),
+    )
+
+    handle_message("thanks")
+
+    assert captured_kwargs.get("web_context") is None
+    assert captured_kwargs.get("user_facts") is None
+
+
+def test_trivial_chat_skips_llm_fact_extraction_even_when_enabled(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "llm_fact_extraction_enabled", True)
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "np!", "emotion": "happy", "notable_fact": "User owns a boat."}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("lol")
+
+    assert captured_kwargs.get("request_fact_extraction") is False
+
+
+def test_non_trivial_chat_still_gathers_context(temp_db, monkeypatch):
+    """Regression guard: the reasoning-budget skip must only ever apply
+    to the fixed trivial-phrase list, never to an ordinary message."""
+    calls = []
+
+    def _fake_get_web_context(text):
+        calls.append(text)
+        return None
+
+    monkeypatch.setattr("app.ai.chat_engine.get_web_context", _fake_get_web_context)
+    monkeypatch.setattr(
+        "app.ai.chat_engine.ask_llm",
+        lambda text, **kwargs: {"response": "hi", "emotion": "happy"},
+    )
+
+    handle_message("what's a good recipe for banana bread")
+
+    assert calls == ["what's a good recipe for banana bread"]

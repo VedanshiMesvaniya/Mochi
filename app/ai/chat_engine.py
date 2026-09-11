@@ -24,8 +24,10 @@ from typing import Optional
 
 from app.ai import semantic_intent
 from app.ai import conversation_state as convo
+from app.ai.confidence import Confidence, band as confidence_band
 from app.ai import fact_extraction
 from app.ai import goal_state
+from app.ai import reasoning_budget
 from app.ai.db_glossary import QueryPlan, build_plan
 from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent, resolve_pending_goal
 from app.ai.llm import LLMUnavailable, ask as ask_llm, phrase_data_answer
@@ -1914,7 +1916,14 @@ def handle_message(
             guess = None
 
         if guess is not None and guess.intent != "small_talk":
-            if guess.confidence >= semantic_intent.CONFIDENCE_ACT:
+            # Cognitive Upgrade spec section 13's general rule (see
+            # app/ai/confidence.py): HIGH -> act, MEDIUM -> ask, LOW ->
+            # stays "unknown". semantic_intent.CONFIDENCE_LOW/ACT are the
+            # same two numbers confidence.band() uses under the hood -
+            # kept as attributes on that module too since this is also
+            # where the score itself comes from.
+            guess_band = confidence_band(guess.confidence)
+            if guess_band is Confidence.HIGH:
                 built = build_semantic_intent(guess.intent, text)
                 if built is not None:
                     # No raw message text here (security review S1) - the
@@ -1927,14 +1936,14 @@ def handle_message(
                         guess.intent, guess.confidence,
                     )
                     intent = built
-            elif guess.confidence >= semantic_intent.CONFIDENCE_LOW:
+            elif guess_band is Confidence.MEDIUM:
                 logger.info(
                     "Semantic intent=%s confidence=%.2f (asking, not acting)",
                     guess.intent, guess.confidence,
                 )
                 intent = _semantic_clarify_intent(guess.intent)
-            # else: below CONFIDENCE_LOW - stays "unknown", falls through
-            # to the open-ended LLM chat reply exactly as before.
+            # else LOW: stays "unknown", falls through to the open-ended
+            # LLM chat reply exactly as before.
 
     # Observability (bug report: reminders/timers/tasks "not getting set"
     # with nothing in the logs to say why): log what every message was
@@ -2088,8 +2097,18 @@ def handle_message(
             # (app/ai/fact_extraction.py) found nothing for this exact
             # message, so the two paths never both try to save the same
             # thing.
+            #
+            # Reasoning budget (Cognitive Upgrade spec section 18, see
+            # app/ai/reasoning_budget.py) - a bare "lol"/"thanks"/"ok"
+            # has nothing for web_context/user_facts retrieval to find,
+            # so that work (and the fact-extraction request, which is
+            # equally pointless on a message with no content to extract
+            # from) is skipped entirely for it, rather than run and come
+            # back empty every time.
+            trivial = reasoning_budget.is_trivial_chat(text)
             want_llm_extraction = (
-                settings.memory_enabled
+                not trivial
+                and settings.memory_enabled
                 and settings.llm_fact_extraction_enabled
                 and fact_extraction.extract(text) is None
             )
@@ -2099,8 +2118,8 @@ def handle_message(
                 history=history,
                 trend_topic=pick_one_trend(),
                 meme_premise=pick_one_meme(),
-                web_context=get_web_context(text),
-                user_facts=_relevant_user_facts_context(text),
+                web_context=None if trivial else get_web_context(text),
+                user_facts=None if trivial else _relevant_user_facts_context(text),
                 request_fact_extraction=want_llm_extraction,
             )
             response = llm_reply["response"]

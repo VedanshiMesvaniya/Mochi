@@ -5,11 +5,11 @@ memory as a container module, procedural-memory learning from tool
 failures, and an opt-in LLM-based extraction path are all implemented -
 see "Implementation status" below; memory consolidation stays folded
 into fact_extraction.py/remember_fact rather than a separate pipeline
-stage, a deliberate scoping choice explained below). Phase 3 started:
-confidence-aware clarification wording (section 13's own worked
-example) is implemented; the rest of Phase 3 (a general confidence
-gate, reasoning budget, model benchmarking, mood/initiative, voice) is
-not started.
+stage, a deliberate scoping choice explained below). Phase 3 in
+progress: confidence-aware clarification wording, a general named
+confidence-band mechanism, and a reasoning budget for the open-ended
+chat fallback are implemented; model benchmarking, mood/initiative, and
+voice are not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -154,20 +154,65 @@ section 5j for the actual code pointers and data flow.
   time-of-day word ("morning"/"afternoon"/"evening"/"tonight"/"night"/
   "noon"/"midnight") plus an optional "today"/"tomorrow". If one is
   found, the clarifying question echoes it back ("what time tomorrow
-  evening?") instead of the generic "but when?" - the same distinction
-  the spec draws between MEDIUM confidence (something is known, ask a
-  targeted question) and LOW confidence (nothing is known, ask
-  generically). Deliberately narrow: this is one concrete instantiation
-  of the confidence idea for the one case the spec itself worked
-  through, not the general scored HIGH/MEDIUM/LOW gate applied to every
-  decision described below under Deferred - no other current Mochi
-  decision point has a comparable "partially known, ask a better
-  question" gap to close, so building a general mechanism now would be
-  speculative.
+  evening?") instead of the generic "but when?".
+- **General confidence system** (section 13's HIGH/MEDIUM/LOW rule,
+  named and reusable rather than inline) - `app/ai/confidence.py`.
+  Before this, the exact same act/ask/ignore rule already existed, but
+  only as two bare threshold constants
+  (`app/ai/semantic_intent.CONFIDENCE_LOW`/`CONFIDENCE_ACT`) compared
+  by hand in `app/ai/chat_engine.py`'s semantic-intent handling. This
+  module pulls the thresholds and the resulting band into one small,
+  independently-tested piece: a `Confidence` enum
+  (`LOW`/`MEDIUM`/`HIGH`) and a `band(score)` classifier, using the
+  exact same two numbers as before (still re-exported as
+  `semantic_intent.CONFIDENCE_LOW`/`CONFIDENCE_ACT` for backward
+  compatibility - `semantic_intent.py` now imports them from
+  `confidence.py` rather than defining them itself, so there is one
+  source of truth). `chat_engine.py`'s act/ask/ignore branch now reads
+  `confidence.band(guess.confidence)` and switches on
+  `Confidence.HIGH`/`MEDIUM`/`LOW` by name instead of raw `>=`
+  comparisons - same behavior, now an explicit named rule any future
+  decision point with a numeric confidence score can reuse. Today's one
+  real caller is still `app/ai/semantic_intent.py`'s model-produced
+  score; semantic memory's fact-confidence numbers are deliberately
+  NOT run through this (see that module's docstring and sections 8-9
+  above - a stored fact isn't an action to gate, it already has its own
+  hedged-wording/ranking treatment).
+- **Reasoning budget** (section 18, "Do not spend expensive reasoning
+  on simple messages") - `app/ai/reasoning_budget.py`. Mochi already
+  gets most of the spec's LEVEL 0-4 idea for free from the intent
+  router itself (a deterministic keyword match never touches a model;
+  a keyword miss costs one small, bounded semantic-classification
+  call; only a genuine miss on both reaches open-ended generation) - see
+  that module's docstring for the full breakdown. The one gap: every
+  message reaching the open-ended chat fallback got the same
+  context-gathering work (`get_web_context()`, the semantic-memory
+  facts lookup) even for a bare "lol"/"thanks"/"ok" that plainly has
+  nothing for either to find. `is_trivial_chat()` checks a message
+  against a fixed, deliberately small list of acknowledgments/reactions
+  (never a length-only heuristic, so a short-but-substantive message
+  like "i'm sad" is never mistaken for trivial); when it matches,
+  `app/ai/chat_engine.py`'s unknown-intent branch passes `None` for
+  both `web_context` and `user_facts` instead of calling
+  `get_web_context()`/`_relevant_user_facts_context()`, and skips
+  requesting LLM-based fact extraction for that message too (nothing to
+  extract from a bare "thanks").
+
+  Deliberately narrow, same reasoning as the rest of this phase: this
+  is one concrete, testable slice of each spec idea, not the spec's
+  fuller vision (a general confidence-scored gate applied to literally
+  every decision Mochi makes, and a model-tier router switching between
+  a smaller/larger reasoning model or a model's own thinking-mode
+  toggle) - no other current decision point has a numeric confidence
+  score to gate on, and Mochi's local model (qwen2.5:1.5b via Ollama)
+  has no thinking-mode switch and no second, larger reasoning model
+  installed to route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19,
+  still unactioned) - building either fuller version now would be
+  speculative and untested.
 
 **Deferred** (not yet built - noted here so it isn't rediscovered as a
 gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
-18-19, 21-29's remaining scope):
+19, 21-29's remaining scope):
 
 - **Multi-slot goals.** `goal_state.py` is deliberately scoped to
   exactly one missing slot per goal. A goal needing two or more
@@ -192,18 +237,18 @@ gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
   extraction paths, so pulling it into its own pipeline stage has been
   deferred until a concrete need for one actually shows up (e.g. an
   importance-filtering step that isn't just "did a pattern match").
-- **General confidence system** (section 13) - a scored HIGH/MEDIUM/LOW
-  confidence gate applied uniformly across every decision Mochi makes,
-  not just the one clarification-wording case implemented above under
-  Phase 3.
 - **Clarification policy for other slots** (section 14) - event
   duration, timezone, and default-calendar selection already use
   sensible defaults without asking (see `app/calendar/google_calendar.py`'s
   one-hour default), so the remaining gap is narrower than the spec's
   full list; nothing further has needed it yet.
-- **Reasoning budget / hybrid thinking mode selection** (section 18) -
-  Mochi's local LLM is invoked the same way regardless of message
-  complexity; there's no LEVEL 0-4 routing.
+- **Model-tier reasoning router and hybrid thinking mode** (section
+  18's fuller vision beyond the reasoning-budget slice implemented
+  above) - switching between a smaller and a larger local reasoning
+  model, or toggling a model's own thinking-mode switch, depending on
+  message complexity. Not applicable to Mochi's current single fixed
+  model, and there's no second model installed to route into yet - see
+  the Implemented entry above and section 19 below.
 - **Model benchmark suite and Qwen3-4B/8B/Phi-4-mini comparison**
   (section 19) - no formal Mochi-specific benchmark dataset exists yet.
 - **Mood/expression driven by cognitive state, initiative/proactive

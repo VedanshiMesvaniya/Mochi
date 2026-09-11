@@ -1455,6 +1455,95 @@ sites.
 
 ---
 
+## 5m. General confidence system and reasoning budget (Cognitive Upgrade, phase 3)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md` for the full spec and what's
+implemented vs deferred. Two more phase 3 slices, both narrow and both
+extracted from/added alongside code that already existed:
+
+**General confidence system (`app/ai/confidence.py`, spec section
+13).** The HIGH -> act / MEDIUM -> ask / LOW -> stay uncertain rule
+already existed, but only as two bare numbers
+(`CONFIDENCE_LOW = 0.50`, `CONFIDENCE_ACT = 0.75`) compared by hand
+inside `app/ai/chat_engine.py`'s semantic-intent handling. This module
+is those same two numbers plus a `Confidence` enum
+(`LOW`/`MEDIUM`/`HIGH`) and a `band(score) -> Confidence` classifier -
+nothing about the actual thresholds or behavior changed, only that the
+rule now has one name and one place it lives. `app/ai/semantic_intent.py`
+imports `CONFIDENCE_LOW`/`CONFIDENCE_ACT` from `confidence.py` and
+re-exports them (so `semantic_intent.CONFIDENCE_LOW` still works
+unchanged for every existing caller/test), and `chat_engine.py`'s
+act/ask/ignore branch now reads:
+
+```text
+guess_band = confidence.band(guess.confidence)
+if guess_band is Confidence.HIGH:    build + run the intent
+elif guess_band is Confidence.MEDIUM: ask a clarifying question
+else:                                 stays "unknown"
+```
+
+instead of the previous raw `if guess.confidence >= ...` chain - same
+outcome, now the named rule any future numeric-confidence decision
+point can import and reuse. Today's only real caller is still
+`app/ai/semantic_intent.py`'s model-produced classification score.
+Semantic memory's per-fact confidence numbers deliberately do NOT run
+through this module - see `app/memory/semantic_memory.py`'s own
+docstring: a stored fact isn't an action to gate, it already has a
+differently-shaped treatment (hedged wording for an uncertain
+statement, confidence used for retrieval ranking, not for an
+act/ask/ignore decision).
+
+**Reasoning budget (`app/ai/reasoning_budget.py`, spec section 18).**
+Mochi already gets most of the spec's LEVEL 0-4 idea for free from the
+intent router itself - a deterministic keyword/regex match never
+touches a model (LEVEL 0), a keyword miss costs one small, ~60-token-
+capped semantic-classification call (LEVEL 1, `app/ai/semantic_intent.py`),
+and only a genuine miss on both reaches the open-ended chat fallback
+(LEVEL 2+). The one place level wasn't actually distinguished was
+inside that LEVEL 2+ fallback itself
+(`app/ai/chat_engine.py`'s `handle_message()`, the `intent.name ==
+"unknown"` branch): every such message triggered the same
+context-gathering work - `get_web_context(text)` and
+`_relevant_user_facts_context(text)` - even for a bare "lol"/"thanks"/
+"ok" that has nothing for either lookup to find.
+
+`is_trivial_chat(text)` checks the message (lowercased, punctuation
+stripped) against a fixed, deliberately small set of acknowledgments/
+reactions/filler. It is never a length-only heuristic - a short but
+substantive reply like "i'm sad" or "it broke again" is not on the
+list and is never treated as trivial. When it matches:
+
+```text
+web_context = None if trivial else get_web_context(text)
+user_facts  = None if trivial else _relevant_user_facts_context(text)
+want_llm_extraction = not trivial and <existing conditions>
+```
+
+`llm.ask()` already treats `None` for `web_context`/`user_facts` as
+"no extra context" (the same convention `trend_topic`/`meme_premise`
+already used), so this is a pure skip, not a new code path through the
+model call itself. The LLM-based fact-extraction request
+(`settings.llm_fact_extraction_enabled`, phase 2) is skipped for the
+same trivial messages too - there is nothing to extract a fact from in
+"thanks".
+
+Deliberately narrow, same reasoning as every other phase 3 slice: this
+is not the spec's fuller LEVEL 0-4 vision of routing between a smaller
+and a larger reasoning model, or toggling a model's own thinking-mode
+switch - Mochi's current local model (qwen2.5:1.5b via Ollama) exposes
+neither, and there's no second, larger reasoning model installed to
+route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19, still
+unactioned). Building a model-tier router with only one real model
+to route into would be speculative and untested.
+
+See `tests/test_confidence.py` (the band classifier in isolation),
+`tests/test_reasoning_budget.py` (the trivial-phrase check in
+isolation), and `tests/test_chat_engine.py` (a trivial message skips
+`get_web_context`/`_relevant_user_facts_context`/fact-extraction, and
+an ordinary message still gets all three, unchanged).
+
+---
+
 ## 7. Error handling philosophy
 
 Each subsystem raises a specific exception from `app/core/exceptions.py`.
