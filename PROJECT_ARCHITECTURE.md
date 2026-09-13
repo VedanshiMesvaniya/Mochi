@@ -1453,6 +1453,33 @@ See `tests/test_intent.py` for the vague-time-echoes and
 no-time-context-keeps-generic-question cases across all four call
 sites.
 
+**Follow-up: weekday-name date resolution.** Closing out phase 3's
+"correction handling" item (spec section 17, "Actually Thursday")
+surfaced that there was no weekday-name parsing anywhere in Mochi at
+all - only "today"/"tomorrow". `_resolve_explicit_date()` in
+`app/ai/intent.py` fills that gap: "Thursday"/"next Thursday" resolves
+to the next actual occurrence of that weekday (plain day-of-week
+arithmetic against `now.weekday()`, always the *next* occurrence even
+if today already is that weekday - "schedule something Thursday" said
+on a Thursday means next week). It plugs into `_resolve_time_from_parts()`
+the same way "tomorrow" already did: an explicit date word pins the
+date and is never re-rolled by the "time already passed today" check
+below it. This benefits every caller of `_parse_absolute_time()`/
+`_parse_bare_time()` - calendar creation, reminders, and
+reschedule-reference all gained weekday support from the one change.
+See `tests/test_intent.py`'s weekday-name tests (calendar create,
+reschedule, and the vague-time echo combined with a weekday).
+
+One honest caveat on the "correction handling" item itself: the fix
+above makes "change it to Thursday" work, but the spec's literal
+transcript - a bare "Actually Thursday" with no verb - is still not
+recognized. Extending `RESCHEDULE_TRIGGER` to catch a bare "actually
+<value>" was deliberately not done: "actually" appears constantly in
+ordinary conversation ("I actually love this"), and a loose match on it
+risks misreading an unrelated sentence as a reschedule attempt - the
+exact false-positive risk that trigger's own comment already warns
+about for other phrasings. Known, intentional, narrow gap.
+
 ---
 
 ## 5m. General confidence system and reasoning budget (Cognitive Upgrade, phase 3)
@@ -1541,6 +1568,72 @@ See `tests/test_confidence.py` (the band classifier in isolation),
 isolation), and `tests/test_chat_engine.py` (a trivial message skips
 `get_web_context`/`_relevant_user_facts_context`/fact-extraction, and
 an ordinary message still gets all three, unchanged).
+
+That closes out every phase 3 item from the spec's own section 28 list
+(confidence system, clarification policy, reference resolution,
+correction handling, reasoning budget) - see
+`docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 3 - COMPLETE" section for
+the full rundown, including the two narrow, intentional caveats (bare
+"actually" phrasing, model-tier routing) that stay open on purpose
+rather than being silently dropped.
+
+---
+
+## 5n. Initiative scoring, and mood/expression documented (Cognitive Upgrade, phase 5)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 5 - PARTIALLY DONE"
+section for the full picture, including what's deliberately still
+open. Two things landed here:
+
+**Mood/expression (spec section 22) - no new code, a documentation
+catch-up.** This was already satisfied by architecture that predates
+this spec entirely, just never explicitly connected to this section
+before. `app/ai/llm.py`'s replies already carry a model-suggested
+`emotion` field; `app/ai/chat_engine.py`'s `_emotion_and_animation()`
+validates it (anything not a real `Emotion` value falls back to
+`NEUTRAL`) and maps it through `EMOTION_PROFILE` to the actual
+`CharacterState` - the model suggests, the app decides, exactly the
+split the spec asks for. Deterministic events drive expression
+directly the rest of the time, with no model involved at all: see
+`app/reminders/notifications.py` (due -> `ALERT`, ignored -> `ANGRY`)
+and the `animation=` argument on `DetectedIntent` throughout
+`app/ai/intent.py` (a "*_needs_time" clarifying question ->
+`CONFUSED`, and so on).
+
+**Initiative scoring (spec section 23) - new module,
+`app/ai/initiative.py`.** A pure, dependency-free scoring function
+implementing the spec's own formula: an `InitiativeSignal`
+(`importance`/`timeliness`/`user_benefit`, each 0.0-1.0, plus a
+`recent_interruptions` count and a `focus_mode` flag) and
+`should_initiate()`, built on `score()`, which averages the three main
+factors and then subtracts a per-interruption fatigue penalty and a
+larger flat penalty when focus mode is on - defaulting to staying quiet
+on anything that doesn't clearly clear `INITIATIVE_THRESHOLD` (0.6).
+
+This module is deliberately NOT wired to any real proactive channel
+yet:
+
+- `app/reminders/notifications.py`'s `ReminderNotifier` (a due
+  reminder always fires - sound, speech bubble, desktop notification)
+  was left completely untouched. It predates this spec, and a reminder
+  is something the user explicitly asked for at creation time -
+  running it through a fuzziness score and possibly staying quiet would
+  be a reliability regression (spec section 27: never let a heuristic
+  override correctness), not the improvement this module is meant to
+  be.
+- A genuinely new channel the spec itself names as an example -
+  "an important calendar event is approaching" - does not exist in
+  Mochi at all. Nothing currently polls the calendar for what's coming
+  up. Building it well needs real product decisions (how much lead
+  time counts as "approaching", what counts as "important" enough to
+  interrupt for, how it interacts with focus mode) that this spec
+  doesn't answer on its own, so it was left as an open item rather than
+  guessed at silently. `initiative.py` is the piece such a feature
+  would call once those questions have real answers.
+
+See `tests/test_initiative.py` for the scoring function on its own
+(strong signal initiates, weak signal stays quiet, fatigue and focus
+mode can flip a decision, output is always clamped to 0.0-1.0).
 
 ---
 

@@ -647,6 +647,44 @@ def _strip_trigger(text: str, trigger: re.Pattern) -> str:
     return trigger.sub("", text, count=1).strip(" ,.!")
 
 
+# Weekday names ("Thursday" / "next Thursday") - a real, general date-
+# parsing gap this surfaced: without it, spec section 17's own correction
+# example ("Actually Thursday") can't work at all, since there was
+# nothing to resolve "Thursday" into a date in the first place - not a
+# correction-handling problem, a date-parsing one. Deterministic app
+# code, per spec section 15 ("do not rely on the LLM to calculate
+# calendar dates") - never guessed at by a model.
+_WEEKDAY_NAMES = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+_WEEKDAY_RE = re.compile(
+    r"\b(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_explicit_date(text: str, now: datetime):
+    """The pinned calendar date if `text` names one explicitly
+    ("tomorrow", or a weekday name like "Thursday"/"next Thursday") -
+    None when it names no explicit date, so the caller falls back to
+    "today, rolling to tomorrow only if the clock time already passed"
+    exactly as before this existed. A bare weekday name always means the
+    NEXT occurrence of that day, even if today already is that weekday -
+    "schedule something Thursday" said on a Thursday means next week,
+    not "in the next few hours"; that's what an explicit "today" (not
+    handled here - unchanged pre-existing behavior) would be for."""
+    lowered = text.lower()
+    if "tomorrow" in lowered:
+        return (now + timedelta(days=1)).date()
+    weekday_match = _WEEKDAY_RE.search(lowered)
+    if weekday_match:
+        target_weekday = _WEEKDAY_NAMES[weekday_match.group(1).lower()]
+        days_ahead = (target_weekday - now.weekday()) % 7 or 7
+        return (now + timedelta(days=days_ahead)).date()
+    return None
+
+
 def _resolve_time_from_parts(hour: int, minute: int, meridiem: str, text: str, now: datetime) -> datetime:
     if meridiem == "pm" and hour != 12:
         hour += 12
@@ -664,17 +702,17 @@ def _resolve_time_from_parts(hour: int, minute: int, meridiem: str, text: str, n
     # today, and THEN separately added another day for "tomorrow" - so
     # "tomorrow at 5pm" typed after 5pm today ("5pm today already passed"
     # -> +1 day, PLUS "contains tomorrow" -> +1 day again) landed on the
-    # day after tomorrow instead of tomorrow. An explicit "tomorrow"
-    # always means "the next calendar day", full stop, regardless of what
-    # time it is right now.
-    explicit_tomorrow = "tomorrow" in text.lower()
-    target_date = (now + timedelta(days=1)).date() if explicit_tomorrow else now.date()
+    # day after tomorrow instead of tomorrow. An explicit date word
+    # (today/tomorrow/a weekday name) always pins the date, full stop,
+    # regardless of what time it is right now.
+    explicit_date = _resolve_explicit_date(text, now)
+    target_date = explicit_date if explicit_date is not None else now.date()
     due = datetime.combine(target_date, time_of_day(hour=hour % 24, minute=minute))
     # Only roll forward to the next day when no explicit date word was
     # given and the clock time has already passed today - "at 7" said at
-    # 9pm should mean tomorrow morning, but "tomorrow at 5pm" already has
+    # 9pm should mean tomorrow morning, but an explicit date already has
     # its date pinned down above and must never roll again here.
-    if not explicit_tomorrow and due <= now:
+    if explicit_date is None and due <= now:
         due += timedelta(days=1)
     return due
 
@@ -727,7 +765,10 @@ _VAGUE_PERIOD_RE = re.compile(
     r"\b(morning|afternoon|evening|tonight|night|noon|midnight)\b",
     re.IGNORECASE,
 )
-_TIME_DATE_WORD_RE = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
+_TIME_DATE_WORD_RE = re.compile(
+    r"\b(today|tomorrow|(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b",
+    re.IGNORECASE,
+)
 
 
 def _describe_missing_time(text: str) -> Optional[str]:

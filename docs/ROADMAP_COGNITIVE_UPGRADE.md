@@ -5,11 +5,32 @@ memory as a container module, procedural-memory learning from tool
 failures, and an opt-in LLM-based extraction path are all implemented -
 see "Implementation status" below; memory consolidation stays folded
 into fact_extraction.py/remember_fact rather than a separate pipeline
-stage, a deliberate scoping choice explained below). Phase 3 in
-progress: confidence-aware clarification wording, a general named
-confidence-band mechanism, and a reasoning budget for the open-ended
-chat fallback are implemented; model benchmarking, mood/initiative, and
-voice are not started.
+stage, a deliberate scoping choice explained below).
+
+Phase 3 - as the spec's own section 28 defines it (confidence system,
+clarification policy, reference resolution, correction handling,
+reasoning budget) - is DONE; see "Implementation status" below for
+each of the five pieces and where it lives. Note: an earlier version of
+this status line lumped "model benchmarking" and "mood/initiative"
+into "the rest of Phase 3" - that was imprecise. Per the spec's own
+section 28, those are Phase 4 and Phase 5 respectively, not Phase 3.
+Correcting that here rather than leaving it wrong.
+
+Phase 4 (model benchmark) is NOT done and cannot be finished in this
+project's current working environment - see "Implementation status"
+for why this is an infrastructure limitation, not a scoping choice.
+
+Phase 5 (mood, expression state, initiative, proactive reminders,
+presence behavior) is partially done: mood/expression state was
+already substantially satisfied by pre-existing architecture (the LLM
+suggests an emotion, the app owns the final state - see below) and is
+now documented as such; an initiative-scoring mechanism is implemented;
+proactive reminders already existed before this spec (reminder-due
+notifications); a NEW proactive channel (e.g. "an important calendar
+event is approaching") does not exist and is left as an open,
+deliberately-not-guessed-at product decision - see below.
+
+Phase 6 (voice) is not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -142,7 +163,11 @@ section 5j for the actual code pointers and data flow.
   deterministic paths, since a model's judgment call is inherently less
   predictable than a fixed pattern match.
 
-**Implemented (Phase 3, partial):**
+## Phase 3 - COMPLETE
+
+Per spec section 28's own definition, Phase 3 is: confidence system,
+clarification policy, reference resolution, correction handling,
+reasoning budget. All five:
 
 - **Confidence-aware clarification wording** (spec section 13's own
   worked example: "Schedule Devika tomorrow evening" -> "what time
@@ -152,9 +177,43 @@ section 5j for the actual code pointers and data flow.
   reminder create - both the keyword and semantic-classification paths
   - and reschedule-reference), the message is checked for a
   time-of-day word ("morning"/"afternoon"/"evening"/"tonight"/"night"/
-  "noon"/"midnight") plus an optional "today"/"tomorrow". If one is
-  found, the clarifying question echoes it back ("what time tomorrow
-  evening?") instead of the generic "but when?".
+  "noon"/"midnight") plus an optional "today"/"tomorrow"/weekday name.
+  If one is found, the clarifying question echoes it back ("what time
+  tomorrow evening?") instead of the generic "but when?".
+- **Weekday-name date resolution** (spec section 15's "do not rely on
+  the LLM to calculate calendar dates" - a general date-parsing gap
+  this phase surfaced, not a scoping choice). `_resolve_explicit_date()`
+  in `app/ai/intent.py` now resolves "Thursday"/"next Thursday" to the
+  next actual occurrence of that weekday (deterministic day-of-week
+  arithmetic, same "pin the date, never re-roll it" pattern already
+  used for "tomorrow"), for calendar creation, reminders, and
+  reschedule-reference alike. Before this fix there was no weekday
+  parsing AT ALL - only "today"/"tomorrow" - so a phrase like "schedule
+  a meeting Thursday at 5pm" would have silently landed on the wrong
+  day. This was a prerequisite for the next item, not just a nice-to-
+  have.
+- **Reference resolution** (section 16) - already existed before this
+  spec (`app/ai/conversation_state.py`, built for an earlier security
+  review; see section 5c in `PROJECT_ARCHITECTURE.md`), and already
+  satisfies the spec's own example: "make it 7" / "reschedule it" /
+  "cancel that" resolve deterministically against the single most
+  recent thing created, resolved, or listed - never guessed at by the
+  model.
+- **Correction handling** (section 17) - the mechanism already existed
+  before this spec too: `app/ai/intent.py`'s `RESCHEDULE_TRIGGER`
+  ("make it"/"change it to"/"move it"/"set it"/"reschedule it") already
+  modifies the same active/most-recent item rather than creating a
+  second one, satisfying the spec's actual point ("a correction should
+  update existing state, not spawn an unrelated new task"). One
+  honest caveat: the spec's literal transcript, a bare "Actually
+  Thursday" with no verb at all, is not specially recognized - only the
+  equivalent "change it to Thursday" phrasing is. Extending the trigger
+  to catch a bare "actually <value>" was deliberately not done: "actually"
+  is common in ordinary conversation ("I actually love this"), and a
+  loose match risks misreading an unrelated sentence as a reschedule
+  attempt - the exact false-positive risk `RESCHEDULE_TRIGGER`'s own
+  comment already warns about for other phrasings. This is a narrow,
+  known, intentional gap, not a silently-dropped item.
 - **General confidence system** (section 13's HIGH/MEDIUM/LOW rule,
   named and reusable rather than inline) - `app/ai/confidence.py`.
   Before this, the exact same act/ask/ignore rule already existed, but
@@ -178,6 +237,11 @@ section 5j for the actual code pointers and data flow.
   NOT run through this (see that module's docstring and sections 8-9
   above - a stored fact isn't an action to gate, it already has its own
   hedged-wording/ranking treatment).
+- **Clarification policy** (section 14) - "use sensible defaults, ask
+  only when necessary". Event duration (one hour), timezone (system
+  local), and default-calendar selection already use sensible defaults
+  without asking (`app/calendar/google_calendar.py`), so there was no
+  further gap here beyond the confidence-aware wording above.
 - **Reasoning budget** (section 18, "Do not spend expensive reasoning
   on simple messages") - `app/ai/reasoning_budget.py`. Mochi already
   gets most of the spec's LEVEL 0-4 idea for free from the intent
@@ -196,35 +260,114 @@ section 5j for the actual code pointers and data flow.
   both `web_context` and `user_facts` instead of calling
   `get_web_context()`/`_relevant_user_facts_context()`, and skips
   requesting LLM-based fact extraction for that message too (nothing to
-  extract from a bare "thanks").
+  extract from a bare "thanks"). Deliberately narrow: not the spec's
+  fuller vision of a model-tier router switching between a smaller/
+  larger reasoning model or a model's own thinking-mode toggle - not
+  applicable to Mochi's current single fixed model (qwen2.5:1.5b via
+  Ollama), which has neither, and there's no second model installed to
+  route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19).
 
-  Deliberately narrow, same reasoning as the rest of this phase: this
-  is one concrete, testable slice of each spec idea, not the spec's
-  fuller vision (a general confidence-scored gate applied to literally
-  every decision Mochi makes, and a model-tier router switching between
-  a smaller/larger reasoning model or a model's own thinking-mode
-  toggle) - no other current decision point has a numeric confidence
-  score to gate on, and Mochi's local model (qwen2.5:1.5b via Ollama)
-  has no thinking-mode switch and no second, larger reasoning model
-  installed to route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19,
-  still unactioned) - building either fuller version now would be
-  speculative and untested.
+That closes every Phase 3 item from the spec's own section 28 list.
+The two caveats above (bare "actually" phrasing, model-tier routing)
+are intentional, explained scope boundaries, not gaps that were missed.
 
-**Deferred** (not yet built - noted here so it isn't rediscovered as a
-gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
-19, 21-29's remaining scope):
+## Phase 4 - NOT DONE (infrastructure-blocked, not a scoping choice)
 
-- **Multi-slot goals.** `goal_state.py` is deliberately scoped to
-  exactly one missing slot per goal. A goal needing two or more
-  clarifying questions in a row (spec section 4's fuller multi-slot
-  example) isn't implemented - no current intent actually needs it, and
-  building the machinery without a real caller would be speculative and
-  untested. The natural extension point if/when a multi-slot flow is
-  added is `known_slots`/`awaiting` becoming a list rather than a single
-  string.
+Spec section 19: benchmark Qwen3-4B, Qwen3-8B, Phi-4-mini, and the
+current model against each other on Mochi-specific tests (context
+continuity, calendar/reminder understanding, ambiguity, corrections,
+tool selection, latency, RAM, VRAM).
+
+This cannot be done in this project's current development environment:
+running it for real means downloading and serving multiple multi-
+gigabyte model weights through Ollama and measuring their actual
+behavior, and this environment has no route to ollama.com or
+huggingface.co (network access here is limited to package registries -
+pypi, npm, github - not model hosts), no GPU, and no Ollama instance to
+query. Writing a benchmark *script* that calls Ollama without ever
+being able to run it here would mean shipping integration code that
+was never actually exercised against a live model - exactly the kind
+of untested-before-commit work this project's own conventions rule
+out. So nothing was built for this phase rather than something
+unverifiable. What Mochi already has, independent of this phase, is
+extensive coverage of the *deterministic* side of the spec's section 26
+evaluation categories (intent accuracy, tool correctness, hallucination
+resistance, memory recall, reference resolution, corrections - all
+covered by the existing 800+ pytest suite) - what's missing is
+specifically the cross-model comparison piece, which needs a real
+model-serving environment to mean anything. This is a genuinely open
+item, to be picked up when Ollama/model access is available.
+
+## Phase 5 - PARTIALLY DONE
+
+Spec section 28: mood, expression state, initiative, proactive
+reminders, presence behavior.
+
+- **Mood and expression** (section 22: "the LLM may suggest emotional
+  context, but the application owns the final expression state") - was
+  already substantially satisfied by pre-existing architecture, just
+  never previously connected back to this spec section in the docs.
+  `app/ai/llm.py`'s replies already include an `emotion` field the
+  model suggests; `app/ai/chat_engine.py`'s `_emotion_and_animation()`
+  validates it (falling back to `Emotion.NEUTRAL` on anything not a
+  real `Emotion` value) and maps it through `EMOTION_PROFILE` to decide
+  the actual `CharacterState` - the model suggests, the app decides,
+  exactly as the spec asks. Separately, deterministic application
+  events already drive expression directly throughout the codebase
+  without going through the model at all (a due reminder ->
+  `CharacterState.ALERT`, an ignored reminder -> `ANGRY`, a "*_needs_time"
+  clarifying question -> `CONFUSED` - see `app/reminders/notifications.py`
+  and the many `DetectedIntent(..., animation=...)` sites in
+  `app/ai/intent.py`), matching the spec's own success/failure/waiting
+  examples. No new code needed here - this entry exists so the
+  connection to this spec section is documented rather than looking
+  unaddressed.
+- **Initiative scoring** (section 23) - `app/ai/initiative.py`, new
+  this phase. Implements the spec's own formula: an `InitiativeSignal`
+  (importance/timeliness/user_benefit, each 0.0-1.0, plus
+  recent-interruption count and a focus-mode flag) and a
+  `should_initiate()` decision built on `score()`, discounted by
+  interruption fatigue and a hard focus-mode penalty, defaulting to
+  staying quiet on anything borderline. Deliberately NOT wired to any
+  actual proactive channel yet - see the next two bullets for why, and
+  that module's own docstring for the full reasoning.
+- **Proactive reminders** (existing behavior, unaffected) -
+  `app/reminders/notifications.py`'s `ReminderNotifier` already does
+  this and predates this spec entirely: a due reminder always
+  perks Mochi up, plays a sound, shows a speech bubble, and raises a
+  desktop notification. It was deliberately left untouched rather than
+  gated behind the new initiative score above - a reminder is something
+  the user explicitly asked for at creation time, so silently
+  suppressing it for "notification fatigue" would break a reliability
+  promise (spec section 27), not improve one.
+- **A new proactive channel (e.g. "an important calendar event is
+  approaching")** - does not exist in Mochi at all, and was
+  deliberately NOT built this session. Nothing currently polls the
+  calendar for what's coming up. Building this well means answering
+  product questions this spec doesn't answer on its own - how many
+  minutes of lead time counts as "approaching", what counts as
+  "important" enough to interrupt for, whether/how it respects focus
+  mode - and guessing at those silently while "closing out a phase"
+  felt like the wrong tradeoff versus building a real feature blind.
+  `app/ai/initiative.py` is the scoring piece such a feature would call
+  once those questions have real answers. This is a genuinely open
+  item, not a technical blocker like Phase 4 - just one that needs a
+  product conversation first.
+- **Presence behavior** - not addressed; no further gap identified
+  beyond what's covered above.
+
+## Other known open items (outside phases 3-5, kept from before this session)
+
+- **Multi-slot goals** (spec section 4's fuller multi-slot example).
+  `goal_state.py` is deliberately scoped to exactly one missing slot per
+  goal. A goal needing two or more clarifying questions in a row isn't
+  implemented - no current intent actually needs it, and building the
+  machinery without a real caller would be speculative and untested.
+  The natural extension point if/when a multi-slot flow is added is
+  `known_slots`/`awaiting` becoming a list rather than a single string.
 - **Memory consolidation as its own distinct pipeline stage, and
-  temporal-window contradiction metadata** (sections 8, 9). Semantic
-  memory's contradiction handling (see above) uses a straight
+  temporal-window contradiction metadata** (spec sections 8, 9).
+  Semantic memory's contradiction handling uses a straight
   `status`/`superseded_by` chain rather than the spec's suggested
   `valid_from`/`valid_until` range metadata - sufficient for "what's
   true now" and "what did I used to think", without needing range
@@ -232,31 +375,9 @@ gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
   duplicate/contradiction detection -> storage) stays collapsed into
   `app/ai/fact_extraction.py` + `semantic_memory.remember_fact`'s
   supersede-by-subject logic rather than being pulled out into a
-  separate multi-stage process - this was sufficient for both the
-  deterministic and the (now implemented, see above) LLM-based
-  extraction paths, so pulling it into its own pipeline stage has been
-  deferred until a concrete need for one actually shows up (e.g. an
-  importance-filtering step that isn't just "did a pattern match").
-- **Clarification policy for other slots** (section 14) - event
-  duration, timezone, and default-calendar selection already use
-  sensible defaults without asking (see `app/calendar/google_calendar.py`'s
-  one-hour default), so the remaining gap is narrower than the spec's
-  full list; nothing further has needed it yet.
-- **Model-tier reasoning router and hybrid thinking mode** (section
-  18's fuller vision beyond the reasoning-budget slice implemented
-  above) - switching between a smaller and a larger local reasoning
-  model, or toggling a model's own thinking-mode switch, depending on
-  message complexity. Not applicable to Mochi's current single fixed
-  model, and there's no second model installed to route into yet - see
-  the Implemented entry above and section 19 below.
-- **Model benchmark suite and Qwen3-4B/8B/Phi-4-mini comparison**
-  (section 19) - no formal Mochi-specific benchmark dataset exists yet.
-- **Mood/expression driven by cognitive state, initiative/proactive
-  communication, learning-from-failure as stored procedural memory**
-  (sections 22-24) - expression state is driven by existing
-  success/failure/waiting events (see `PROJECT_ARCHITECTURE.md`'s
-  expression system docs), not by a dedicated cognitive-loop layer; there
-  is no initiative-scoring mechanism.
+  separate multi-stage process - sufficient for both the deterministic
+  and LLM-based extraction paths so far, deferred until a concrete need
+  for a separate stage actually shows up.
 - **Voice interface** (Phase 6) - out of scope for this spec entirely;
   tracked separately in `docs/ROADMAP.md`'s V1.2.
 - **Fine-tuning** (section 25) - explicitly, deliberately not started,
