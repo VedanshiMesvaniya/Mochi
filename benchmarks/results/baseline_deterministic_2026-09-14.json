@@ -1,0 +1,244 @@
+{
+  "generated_at": "2026-09-14T11:35:19.313722+00:00",
+  "git_commit": "894901b",
+  "model_under_test": "current (deterministic router only, no model needed)",
+  "python_version": "3.12.3",
+  "platform": "Linux-6.18.44-fc-v32-x86_64-with-glibc2.39",
+  "correctness": {
+    "cases_run": 16,
+    "cases_skipped": 1,
+    "overall_accuracy": 1.0,
+    "by_category": {
+      "intent_accuracy": {
+        "total": 4,
+        "run": 4,
+        "passed": 4,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "tool_correctness": {
+        "total": 2,
+        "run": 2,
+        "passed": 2,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "hallucination_resistance": {
+        "total": 2,
+        "run": 2,
+        "passed": 2,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "ambiguity_handling": {
+        "total": 1,
+        "run": 1,
+        "passed": 1,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "date_time_reasoning": {
+        "total": 2,
+        "run": 2,
+        "passed": 2,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "reference_resolution_and_corrections": {
+        "total": 3,
+        "run": 3,
+        "passed": 3,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "calendar_safety": {
+        "total": 1,
+        "run": 1,
+        "passed": 1,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "failure_handling": {
+        "total": 1,
+        "run": 1,
+        "passed": 1,
+        "skipped": 0,
+        "accuracy": 1.0
+      },
+      "conversation": {
+        "total": 1,
+        "run": 0,
+        "passed": 0,
+        "skipped": 1,
+        "accuracy": null
+      }
+    }
+  },
+  "safety_reliability": {
+    "hallucination_category_accuracy": 1.0,
+    "ambiguity_category_accuracy": 1.0,
+    "failure_handling_category_accuracy": 1.0,
+    "calendar_safety_category_accuracy": 1.0
+  },
+  "performance": {
+    "total_wall_seconds": 0.6230929650000121,
+    "mean_case_seconds": 0.025443824687499728,
+    "peak_traced_memory_bytes": 3847194,
+    "note": "This is Mochi's own process memory/latency for the deterministic router, not a per-model comparison - see harness.py's docstring."
+  },
+  "cases": [
+    {
+      "id": "intent_create_reminder",
+      "category": "intent_accuracy",
+      "description": "A plain, unambiguous reminder request is recognized and created.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.028720023999994737,
+      "error": null
+    },
+    {
+      "id": "intent_create_task",
+      "category": "intent_accuracy",
+      "description": "A plain task-add request is recognized.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.024945591999994576,
+      "error": null
+    },
+    {
+      "id": "intent_start_timer",
+      "category": "intent_accuracy",
+      "description": "A plain timer request is recognized.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.029271966999999677,
+      "error": null
+    },
+    {
+      "id": "intent_small_talk_not_misrouted",
+      "category": "intent_accuracy",
+      "description": "Ordinary greeting is not misrouted into a tool call.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.020862201999989338,
+      "error": null
+    },
+    {
+      "id": "tool_reminder_has_no_pending_action",
+      "category": "tool_correctness",
+      "description": "Reminder creation writes immediately (no confirmation gate) - must not leave a dangling proposal.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.026089018999982727,
+      "error": null
+    },
+    {
+      "id": "tool_calendar_create_proposes_not_writes",
+      "category": "tool_correctness",
+      "description": "Calendar creation must propose (pending_action) rather than write on the first message.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.0008593590000032236,
+      "error": null
+    },
+    {
+      "id": "hallucination_no_reminders_says_so",
+      "category": "hallucination_resistance",
+      "description": "\"Do I have any reminders?\" with none set must say so plainly, never invent one.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.019161738999997624,
+      "error": null
+    },
+    {
+      "id": "hallucination_lists_the_real_one_only",
+      "category": "hallucination_resistance",
+      "description": "With exactly one real reminder, the answer must name that one and no other.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.030056124999987333,
+      "error": null
+    },
+    {
+      "id": "ambiguity_cancel_asks_which_one",
+      "category": "ambiguity_handling",
+      "description": "Two reminders exist; a bare 'cancel my reminder' must ask which, never guess.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.03786981199999673,
+      "error": null
+    },
+    {
+      "id": "datetime_vague_evening_echoes_in_question",
+      "category": "date_time_reasoning",
+      "description": "\"tomorrow evening\" with no exact time must ask a targeted question, not a generic one.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.02231956100001753,
+      "error": null
+    },
+    {
+      "id": "datetime_weekday_name_resolves",
+      "category": "date_time_reasoning",
+      "description": "A weekday name (\"Thursday\") must resolve to an actual date, not be ignored.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.026313434999991614,
+      "error": null
+    },
+    {
+      "id": "reference_make_it_reschedules_the_right_reminder",
+      "category": "reference_resolution_and_corrections",
+      "description": "\"make it 8\" after creating a reminder must reschedule that exact reminder.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.029576343000002225,
+      "error": null
+    },
+    {
+      "id": "reference_bare_actually_is_a_correction",
+      "category": "reference_resolution_and_corrections",
+      "description": "A bare \"actually 8pm\" (no verb) must be recognized as a correction too.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.02777320399999894,
+      "error": null
+    },
+    {
+      "id": "reference_actually_mid_sentence_is_not_a_correction",
+      "category": "reference_resolution_and_corrections",
+      "description": "\"actually\" used mid-sentence must NOT be misread as a reschedule attempt.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.06364806900000985,
+      "error": null
+    },
+    {
+      "id": "calendar_never_writes_without_confirmation",
+      "category": "calendar_safety",
+      "description": "A calendar create request must never call the real write tool before a yes/no.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.001991440000011835,
+      "error": null
+    },
+    {
+      "id": "failure_calendar_write_error_is_reported_not_hidden",
+      "category": "failure_handling",
+      "description": "If the calendar tool raises, Mochi must say it failed, never claim success.",
+      "passed": true,
+      "skipped_reason": null,
+      "elapsed_seconds": 0.01764330400001768,
+      "error": null
+    },
+    {
+      "id": "conversation_casual_chat_quality",
+      "category": "conversation",
+      "description": "Open-ended small talk reply quality - needs a live model to judge at all.",
+      "passed": null,
+      "skipped_reason": "needs a live model (see harness.py docstring)",
+      "elapsed_seconds": 0.0,
+      "error": null
+    }
+  ]
+}

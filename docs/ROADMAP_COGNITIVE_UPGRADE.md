@@ -5,11 +5,35 @@ memory as a container module, procedural-memory learning from tool
 failures, and an opt-in LLM-based extraction path are all implemented -
 see "Implementation status" below; memory consolidation stays folded
 into fact_extraction.py/remember_fact rather than a separate pipeline
-stage, a deliberate scoping choice explained below). Phase 3 started:
-confidence-aware clarification wording (section 13's own worked
-example) is implemented; the rest of Phase 3 (a general confidence
-gate, reasoning budget, model benchmarking, mood/initiative, voice) is
-not started.
+stage, a deliberate scoping choice explained below).
+
+Phase 3 - as the spec's own section 28 defines it (confidence system,
+clarification policy, reference resolution, correction handling,
+reasoning budget) - is DONE; see "Implementation status" below for
+each of the five pieces and where it lives. Note: an earlier version of
+this status line lumped "model benchmarking" and "mood/initiative"
+into "the rest of Phase 3" - that was imprecise. Per the spec's own
+section 28, those are Phase 4 and Phase 5 respectively, not Phase 3.
+Correcting that here rather than leaving it wrong.
+
+Phase 4 (model benchmark) is PARTIALLY done: a permanent, versioned
+benchmark dataset and harness now exist (`benchmarks/`), with a real,
+reproducible baseline checked in - but the actual cross-model
+comparison the spec asks for still cannot be run in this development
+environment (confirmed no route to Ollama/Hugging Face, no GPU) - see
+"Implementation status" for the full picture.
+
+Phase 5 (mood, expression state, initiative, proactive reminders,
+presence behavior) is partially done: mood/expression state was
+already substantially satisfied by pre-existing architecture (the LLM
+suggests an emotion, the app owns the final state - see below) and is
+now documented as such; an initiative-scoring mechanism is implemented;
+proactive reminders already existed before this spec (reminder-due
+notifications); a NEW proactive channel (e.g. "an important calendar
+event is approaching") does not exist and is left as an open,
+deliberately-not-guessed-at product decision - see below.
+
+Phase 6 (voice) is not started.
 Project: Mochi
 Purpose: Upgrade Mochi from a simple LLM chatbot into a reliable local
 desktop companion with persistent context, memory, and reasoning.
@@ -142,7 +166,11 @@ section 5j for the actual code pointers and data flow.
   deterministic paths, since a model's judgment call is inherently less
   predictable than a fixed pattern match.
 
-**Implemented (Phase 3, partial):**
+## Phase 3 - COMPLETE
+
+Per spec section 28's own definition, Phase 3 is: confidence system,
+clarification policy, reference resolution, correction handling,
+reasoning budget. All five:
 
 - **Confidence-aware clarification wording** (spec section 13's own
   worked example: "Schedule Devika tomorrow evening" -> "what time
@@ -152,34 +180,300 @@ section 5j for the actual code pointers and data flow.
   reminder create - both the keyword and semantic-classification paths
   - and reschedule-reference), the message is checked for a
   time-of-day word ("morning"/"afternoon"/"evening"/"tonight"/"night"/
-  "noon"/"midnight") plus an optional "today"/"tomorrow". If one is
-  found, the clarifying question echoes it back ("what time tomorrow
-  evening?") instead of the generic "but when?" - the same distinction
-  the spec draws between MEDIUM confidence (something is known, ask a
-  targeted question) and LOW confidence (nothing is known, ask
-  generically). Deliberately narrow: this is one concrete instantiation
-  of the confidence idea for the one case the spec itself worked
-  through, not the general scored HIGH/MEDIUM/LOW gate applied to every
-  decision described below under Deferred - no other current Mochi
-  decision point has a comparable "partially known, ask a better
-  question" gap to close, so building a general mechanism now would be
-  speculative.
+  "noon"/"midnight") plus an optional "today"/"tomorrow"/weekday name.
+  If one is found, the clarifying question echoes it back ("what time
+  tomorrow evening?") instead of the generic "but when?".
+- **Weekday-name date resolution** (spec section 15's "do not rely on
+  the LLM to calculate calendar dates" - a general date-parsing gap
+  this phase surfaced, not a scoping choice). `_resolve_explicit_date()`
+  in `app/ai/intent.py` now resolves "Thursday"/"next Thursday" to the
+  next actual occurrence of that weekday (deterministic day-of-week
+  arithmetic, same "pin the date, never re-roll it" pattern already
+  used for "tomorrow"), for calendar creation, reminders, and
+  reschedule-reference alike. Before this fix there was no weekday
+  parsing AT ALL - only "today"/"tomorrow" - so a phrase like "schedule
+  a meeting Thursday at 5pm" would have silently landed on the wrong
+  day. This was a prerequisite for the next item, not just a nice-to-
+  have.
+- **Reference resolution** (section 16) - already existed before this
+  spec (`app/ai/conversation_state.py`, built for an earlier security
+  review; see section 5c in `PROJECT_ARCHITECTURE.md`), and already
+  satisfies the spec's own example: "make it 7" / "reschedule it" /
+  "cancel that" resolve deterministically against the single most
+  recent thing created, resolved, or listed - never guessed at by the
+  model.
+- **Correction handling** (section 17) - the mechanism already existed
+  before this spec too: `app/ai/intent.py`'s `RESCHEDULE_TRIGGER`
+  ("make it"/"change it to"/"move it"/"set it"/"reschedule it") already
+  modifies the same active/most-recent item rather than creating a
+  second one, satisfying the spec's actual point ("a correction should
+  update existing state, not spawn an unrelated new task"). The spec's
+  own literal transcript - a bare "Actually Thursday" with no verb at
+  all - is now also recognized: `BARE_CORRECTION_TRIGGER` matches a
+  leading "actually"/"no, actually"/"wait, actually" (only at the very
+  start of a message, so "I actually love this" is untouched) followed
+  by an explicit, unambiguous date/time signal (a weekday name,
+  "tomorrow", "at <hour>", or "in <N> minutes" - never a loose bare
+  number, which is only safe as a fallback when a verb phrase like
+  "make it" is already the strong signal). A date-only correction with
+  no time at all ("Actually Thursday") now keeps the referenced item's
+  existing time-of-day instead of having nothing to combine with -
+  `app/ai/chat_engine.py`'s `_reschedule_reference_reaction()` resolves
+  the entity first specifically to make that possible. See
+  `PROJECT_ARCHITECTURE.md` section 5l for the full writeup and
+  `tests/test_intent.py`/`tests/test_conversation_state_integration.py`
+  for coverage (mid-sentence "actually" and a bare "actually" with no
+  date/time signal are both confirmed to fall through untouched, not
+  misfire).
 
-**Deferred** (not yet built - noted here so it isn't rediscovered as a
-gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
-18-19, 21-29's remaining scope):
+  One remaining, narrower scope note: this only covers reminders and
+  tasks, which is everything `reschedule_reference` has ever supported
+  - it does not yet extend to calendar events. Digging into this
+  surfaced that calendar events aren't tracked as a reschedulable
+  entity in `app/ai/conversation_state.py` AT ALL (only "reminder" and
+  "task" are recognized `entity_type`s), and `_reschedule_reference_reaction()`
+  has no Google Calendar update path even if they were. So the spec's
+  own worked example as a literal end-to-end scenario - "Schedule
+  Devika tomorrow at 5" (a calendar event) then "Actually Thursday" -
+  still would not work today, even though the identical correction on
+  a reminder or task does. Making it work needs Google Calendar's
+  update-event API wired in, plus `remember_entity("calendar_event",
+  ...)` after a successful creation - a real, separate, and
+  calendar-API-touching piece of work, not a phrasing-recognition
+  problem like the rest of this item was.
 
-- **Multi-slot goals.** `goal_state.py` is deliberately scoped to
-  exactly one missing slot per goal. A goal needing two or more
-  clarifying questions in a row (spec section 4's fuller multi-slot
-  example) isn't implemented - no current intent actually needs it, and
-  building the machinery without a real caller would be speculative and
-  untested. The natural extension point if/when a multi-slot flow is
-  added is `known_slots`/`awaiting` becoming a list rather than a single
-  string.
+  **Update: this is now closed too.** `google_calendar.update_event()`
+  (`events().patch()`, Google's own documented approach for a partial
+  change - confirmed by checking Google's Calendar API docs directly
+  rather than assuming) already existed at the tools layer, complete
+  with the `confirmed=True` gate and post-write verification - the
+  chat-layer wiring was the actual missing piece, not the calendar API
+  integration itself. `_resolve_pending_action()`'s calendar-create
+  branch now calls `convo.remember_entity("calendar_event", event_id,
+  title)` on success, the same pattern already used for reminders/
+  tasks/timers. `_reschedule_reference_reaction()` branches on
+  `entity_type == "calendar_event"` into a new
+  `_reschedule_calendar_event()`, which fetches the event's real
+  current start/end from Google Calendar (never assumed), preserves its
+  original DURATION on any correction (so "make it 5pm" on a 30-minute
+  meeting doesn't silently become an hour), preserves its time-of-day
+  on a date-only correction exactly like the reminder/task path, and -
+  unlike reminders/tasks, which write immediately - proposes rather
+  than writes, going through the exact same yes/no confirmation gate as
+  a fresh calendar create/delete (a reschedule is just as consequential
+  as either). An all-day event or one that's since been deleted both
+  decline gracefully rather than guessing.
+
+  One real bug surfaced and fixed while wiring this: a generic
+  post-processing step in `handle_message()` unconditionally reset
+  `pending_action` to `None` after every `_ACTION_HANDLERS` call, on
+  the historically-true assumption that none of them ever needed to set
+  one (they all write immediately). That's no longer true now that one
+  of them proposes instead - fixed to trust the handler's own return
+  value, the same way `conversation_state` already worked in the same
+  spot. Every other handler in that group already returns
+  `pending_action=None` on its own (the dataclass default, never
+  touched), so this only changes behavior for the one case that
+  actually needed it.
+
+  See `tests/test_chat_engine.py` for the calendar-reschedule coverage
+  (propose-then-confirm, confirmed write includes the preserved
+  duration, date-only correction keeps the existing time, a deleted or
+  all-day event declines gracefully, no recent event asks instead of
+  guessing).
+- **General confidence system** (section 13's HIGH/MEDIUM/LOW rule,
+  named and reusable rather than inline) - `app/ai/confidence.py`.
+  Before this, the exact same act/ask/ignore rule already existed, but
+  only as two bare threshold constants
+  (`app/ai/semantic_intent.CONFIDENCE_LOW`/`CONFIDENCE_ACT`) compared
+  by hand in `app/ai/chat_engine.py`'s semantic-intent handling. This
+  module pulls the thresholds and the resulting band into one small,
+  independently-tested piece: a `Confidence` enum
+  (`LOW`/`MEDIUM`/`HIGH`) and a `band(score)` classifier, using the
+  exact same two numbers as before (still re-exported as
+  `semantic_intent.CONFIDENCE_LOW`/`CONFIDENCE_ACT` for backward
+  compatibility - `semantic_intent.py` now imports them from
+  `confidence.py` rather than defining them itself, so there is one
+  source of truth). `chat_engine.py`'s act/ask/ignore branch now reads
+  `confidence.band(guess.confidence)` and switches on
+  `Confidence.HIGH`/`MEDIUM`/`LOW` by name instead of raw `>=`
+  comparisons - same behavior, now an explicit named rule any future
+  decision point with a numeric confidence score can reuse. Today's one
+  real caller is still `app/ai/semantic_intent.py`'s model-produced
+  score; semantic memory's fact-confidence numbers are deliberately
+  NOT run through this (see that module's docstring and sections 8-9
+  above - a stored fact isn't an action to gate, it already has its own
+  hedged-wording/ranking treatment).
+- **Clarification policy** (section 14) - "use sensible defaults, ask
+  only when necessary". Event duration (one hour), timezone (system
+  local), and default-calendar selection already use sensible defaults
+  without asking (`app/calendar/google_calendar.py`), so there was no
+  further gap here beyond the confidence-aware wording above.
+- **Reasoning budget** (section 18, "Do not spend expensive reasoning
+  on simple messages") - `app/ai/reasoning_budget.py`. Mochi already
+  gets most of the spec's LEVEL 0-4 idea for free from the intent
+  router itself (a deterministic keyword match never touches a model;
+  a keyword miss costs one small, bounded semantic-classification
+  call; only a genuine miss on both reaches open-ended generation) - see
+  that module's docstring for the full breakdown. The one gap: every
+  message reaching the open-ended chat fallback got the same
+  context-gathering work (`get_web_context()`, the semantic-memory
+  facts lookup) even for a bare "lol"/"thanks"/"ok" that plainly has
+  nothing for either to find. `is_trivial_chat()` checks a message
+  against a fixed, deliberately small list of acknowledgments/reactions
+  (never a length-only heuristic, so a short-but-substantive message
+  like "i'm sad" is never mistaken for trivial); when it matches,
+  `app/ai/chat_engine.py`'s unknown-intent branch passes `None` for
+  both `web_context` and `user_facts` instead of calling
+  `get_web_context()`/`_relevant_user_facts_context()`, and skips
+  requesting LLM-based fact extraction for that message too (nothing to
+  extract from a bare "thanks"). Deliberately narrow: not the spec's
+  fuller vision of a model-tier router switching between a smaller/
+  larger reasoning model or a model's own thinking-mode toggle - not
+  applicable to Mochi's current single fixed model (qwen2.5:1.5b via
+  Ollama), which has neither, and there's no second model installed to
+  route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19).
+
+That closes every Phase 3 item from the spec's own section 28 list.
+The bare-"actually" phrasing gap flagged in an earlier version of this
+doc is now fixed (see the "Correction handling" bullet above); the
+model-tier-routing scope boundary on reasoning budget remains
+intentional, not a gap that was missed. The one remaining item, noted
+above under "Correction handling", is scoped narrower than a caveat -
+reschedule corrections don't yet reach calendar events, a distinct,
+calendar-API-touching piece of work.
+
+## Phase 4 - PARTIALLY DONE (the actual cross-model comparison remains infrastructure-blocked, not a scoping choice)
+
+Spec section 19: benchmark Qwen3-4B, Qwen3-8B, Phi-4-mini, and the
+current model against each other on Mochi-specific tests (context
+continuity, calendar/reminder understanding, ambiguity, corrections,
+tool selection, latency, RAM, VRAM).
+
+**What's now built: `benchmarks/`** - a permanent, versioned benchmark
+dataset and runner (spec section 53's own request: "Create a permanent
+Mochi benchmark dataset"), covering intent accuracy, tool correctness,
+hallucination resistance, ambiguity handling, date/time reasoning,
+reference resolution and corrections, calendar safety, and failure
+handling - every category applicable to what Mochi has actually built
+so far ("task prioritization" and "habit reasoning" aren't implemented
+at all yet, so no cases exist for them - nothing to benchmark, not an
+oversight). Every case was verified against real Mochi behavior before
+being written down, not guessed at. `python -m benchmarks.harness` runs
+the whole thing standalone (no pytest needed) and writes a JSON report
+shaped around spec section 55's metric groups. A real baseline is
+checked in at `benchmarks/results/baseline_deterministic_2026-09-14.json`:
+16/16 (100%) on every category that could run against git commit
+`894901b`. See `benchmarks/README.md` for the full picture and
+`tests/test_benchmark_harness.py` for coverage of the harness's own
+scoring logic.
+
+**Why this baseline is real but isn't the comparison the spec actually
+wants:** every case except the placeholder `conversation` one exercises
+Mochi's DETERMINISTIC router (`app/ai/intent.py`/`app/ai/chat_engine.py`)
+directly, never a model call - by design (spec section 60's own rule).
+So this is a genuine, reproducible, model-independent baseline of
+Mochi's own correctness, not a stand-in for comparing Qwen3-4B,
+Qwen3-8B, Phi-4-mini, and the current model against each other.
+
+**What's still not done, and confirmed - not assumed - to be
+infrastructure-blocked in this development environment:** running the
+actual comparison needs a live Ollama instance serving each candidate
+model. Checked directly before writing this, not from memory:
+
+```
+$ curl -sS -D - -o /dev/null https://ollama.com
+HTTP/2 403
+x-deny-reason: host_not_allowed
+```
+
+(same result for `huggingface.co`; no Ollama binary is installed, no
+Ollama server is reachable at `localhost:11434`, and there's no GPU
+either). Current, confirmed official Ollama tags for the three
+candidates are `qwen3:4b` (2.5 GB - the closest available tag to the
+roadmap's specifically-named "Qwen3-4B-Thinking-2507"; the base
+`qwen3:4b` supports a `think` parameter, or the exact 2507 checkpoint
+can be pulled as a GGUF straight from Hugging Face - see
+`benchmarks/README.md` for the exact command), `qwen3:8b` (5.2 GB), and
+`phi4-mini` (2.5 GB, 3.8B params) - confirmed via web search rather
+than assumed from training data, since exact current tags/sizes are
+exactly the kind of thing that goes stale. `benchmarks/harness.py`'s
+`--model`/`--host` flags make running the real comparison a single
+command away the moment this runs somewhere Ollama access exists -
+`benchmarks/README.md` has the exact commands. This remains a
+genuinely open item, blocked on hardware/network access this
+environment doesn't have, not on more engineering effort.
+
+## Phase 5 - PARTIALLY DONE
+
+Spec section 28: mood, expression state, initiative, proactive
+reminders, presence behavior.
+
+- **Mood and expression** (section 22: "the LLM may suggest emotional
+  context, but the application owns the final expression state") - was
+  already substantially satisfied by pre-existing architecture, just
+  never previously connected back to this spec section in the docs.
+  `app/ai/llm.py`'s replies already include an `emotion` field the
+  model suggests; `app/ai/chat_engine.py`'s `_emotion_and_animation()`
+  validates it (falling back to `Emotion.NEUTRAL` on anything not a
+  real `Emotion` value) and maps it through `EMOTION_PROFILE` to decide
+  the actual `CharacterState` - the model suggests, the app decides,
+  exactly as the spec asks. Separately, deterministic application
+  events already drive expression directly throughout the codebase
+  without going through the model at all (a due reminder ->
+  `CharacterState.ALERT`, an ignored reminder -> `ANGRY`, a "*_needs_time"
+  clarifying question -> `CONFUSED` - see `app/reminders/notifications.py`
+  and the many `DetectedIntent(..., animation=...)` sites in
+  `app/ai/intent.py`), matching the spec's own success/failure/waiting
+  examples. No new code needed here - this entry exists so the
+  connection to this spec section is documented rather than looking
+  unaddressed.
+- **Initiative scoring** (section 23) - `app/ai/initiative.py`, new
+  this phase. Implements the spec's own formula: an `InitiativeSignal`
+  (importance/timeliness/user_benefit, each 0.0-1.0, plus
+  recent-interruption count and a focus-mode flag) and a
+  `should_initiate()` decision built on `score()`, discounted by
+  interruption fatigue and a hard focus-mode penalty, defaulting to
+  staying quiet on anything borderline. Deliberately NOT wired to any
+  actual proactive channel yet - see the next two bullets for why, and
+  that module's own docstring for the full reasoning.
+- **Proactive reminders** (existing behavior, unaffected) -
+  `app/reminders/notifications.py`'s `ReminderNotifier` already does
+  this and predates this spec entirely: a due reminder always
+  perks Mochi up, plays a sound, shows a speech bubble, and raises a
+  desktop notification. It was deliberately left untouched rather than
+  gated behind the new initiative score above - a reminder is something
+  the user explicitly asked for at creation time, so silently
+  suppressing it for "notification fatigue" would break a reliability
+  promise (spec section 27), not improve one.
+- **A new proactive channel (e.g. "an important calendar event is
+  approaching")** - does not exist in Mochi at all, and was
+  deliberately NOT built this session. Nothing currently polls the
+  calendar for what's coming up. Building this well means answering
+  product questions this spec doesn't answer on its own - how many
+  minutes of lead time counts as "approaching", what counts as
+  "important" enough to interrupt for, whether/how it respects focus
+  mode - and guessing at those silently while "closing out a phase"
+  felt like the wrong tradeoff versus building a real feature blind.
+  `app/ai/initiative.py` is the scoring piece such a feature would call
+  once those questions have real answers. This is a genuinely open
+  item, not a technical blocker like Phase 4 - just one that needs a
+  product conversation first.
+- **Presence behavior** - not addressed; no further gap identified
+  beyond what's covered above.
+
+## Other known open items (outside phases 3-5, kept from before this session)
+
+- **Multi-slot goals** (spec section 4's fuller multi-slot example).
+  `goal_state.py` is deliberately scoped to exactly one missing slot per
+  goal. A goal needing two or more clarifying questions in a row isn't
+  implemented - no current intent actually needs it, and building the
+  machinery without a real caller would be speculative and untested.
+  The natural extension point if/when a multi-slot flow is added is
+  `known_slots`/`awaiting` becoming a list rather than a single string.
 - **Memory consolidation as its own distinct pipeline stage, and
-  temporal-window contradiction metadata** (sections 8, 9). Semantic
-  memory's contradiction handling (see above) uses a straight
+  temporal-window contradiction metadata** (spec sections 8, 9).
+  Semantic memory's contradiction handling uses a straight
   `status`/`superseded_by` chain rather than the spec's suggested
   `valid_from`/`valid_until` range metadata - sufficient for "what's
   true now" and "what did I used to think", without needing range
@@ -187,31 +481,9 @@ gap by accident; roughly spec sections 6, 8-9 (partially), 14-15,
   duplicate/contradiction detection -> storage) stays collapsed into
   `app/ai/fact_extraction.py` + `semantic_memory.remember_fact`'s
   supersede-by-subject logic rather than being pulled out into a
-  separate multi-stage process - this was sufficient for both the
-  deterministic and the (now implemented, see above) LLM-based
-  extraction paths, so pulling it into its own pipeline stage has been
-  deferred until a concrete need for one actually shows up (e.g. an
-  importance-filtering step that isn't just "did a pattern match").
-- **General confidence system** (section 13) - a scored HIGH/MEDIUM/LOW
-  confidence gate applied uniformly across every decision Mochi makes,
-  not just the one clarification-wording case implemented above under
-  Phase 3.
-- **Clarification policy for other slots** (section 14) - event
-  duration, timezone, and default-calendar selection already use
-  sensible defaults without asking (see `app/calendar/google_calendar.py`'s
-  one-hour default), so the remaining gap is narrower than the spec's
-  full list; nothing further has needed it yet.
-- **Reasoning budget / hybrid thinking mode selection** (section 18) -
-  Mochi's local LLM is invoked the same way regardless of message
-  complexity; there's no LEVEL 0-4 routing.
-- **Model benchmark suite and Qwen3-4B/8B/Phi-4-mini comparison**
-  (section 19) - no formal Mochi-specific benchmark dataset exists yet.
-- **Mood/expression driven by cognitive state, initiative/proactive
-  communication, learning-from-failure as stored procedural memory**
-  (sections 22-24) - expression state is driven by existing
-  success/failure/waiting events (see `PROJECT_ARCHITECTURE.md`'s
-  expression system docs), not by a dedicated cognitive-loop layer; there
-  is no initiative-scoring mechanism.
+  separate multi-stage process - sufficient for both the deterministic
+  and LLM-based extraction paths so far, deferred until a concrete need
+  for a separate stage actually shows up.
 - **Voice interface** (Phase 6) - out of scope for this spec entirely;
   tracked separately in `docs/ROADMAP.md`'s V1.2.
 - **Fine-tuning** (section 25) - explicitly, deliberately not started,

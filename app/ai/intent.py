@@ -427,6 +427,24 @@ RESCHEDULE_TRIGGER = re.compile(
     r"\b(?:make|change|move|set|reschedule) (?:it|that|this)\b(?:\s+to)?\s*",
     re.IGNORECASE,
 )
+# Bare "Actually Thursday" / "actually at 6pm" / "no, actually tomorrow" -
+# spec section 17's own literal correction example, with no verb at all
+# (unlike RESCHEDULE_TRIGGER above, which always needs "make/change/
+# move/set/reschedule" + "it/that/this"). Only matches at the very START
+# of the message, not "actually" appearing mid-sentence ("I actually
+# love this") - a leading "actually" reads as "correcting what I just
+# said", one buried in a sentence usually doesn't. That alone still
+# isn't enough of a signal on its own ("Actually 5 dogs would be
+# enough" also starts with "actually") - see the reschedule-detection
+# block below, which additionally requires the remainder to contain an
+# explicit, unambiguous date/time expression (a weekday name,
+# "tomorrow", "at <hour>", or "in <N> minutes" - never the bare-number
+# fallback _parse_bare_time uses for the verb-based trigger, where the
+# verb phrase itself is already the strong signal a bare number alone
+# isn't here).
+BARE_CORRECTION_TRIGGER = re.compile(
+    r"^(?:no,?\s+|wait,?\s+)?actually\b,?\s*", re.IGNORECASE,
+)
 # "count 1 to 10" / "count from 1 to 10" -> groups 1/2; "count to 10"
 # (implicit start of 1) -> group 3. See the count-handling block in
 # detect_intent() below for why this is deterministic rather than an LLM bit.
@@ -647,6 +665,44 @@ def _strip_trigger(text: str, trigger: re.Pattern) -> str:
     return trigger.sub("", text, count=1).strip(" ,.!")
 
 
+# Weekday names ("Thursday" / "next Thursday") - a real, general date-
+# parsing gap this surfaced: without it, spec section 17's own correction
+# example ("Actually Thursday") can't work at all, since there was
+# nothing to resolve "Thursday" into a date in the first place - not a
+# correction-handling problem, a date-parsing one. Deterministic app
+# code, per spec section 15 ("do not rely on the LLM to calculate
+# calendar dates") - never guessed at by a model.
+_WEEKDAY_NAMES = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+_WEEKDAY_RE = re.compile(
+    r"\b(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_explicit_date(text: str, now: datetime):
+    """The pinned calendar date if `text` names one explicitly
+    ("tomorrow", or a weekday name like "Thursday"/"next Thursday") -
+    None when it names no explicit date, so the caller falls back to
+    "today, rolling to tomorrow only if the clock time already passed"
+    exactly as before this existed. A bare weekday name always means the
+    NEXT occurrence of that day, even if today already is that weekday -
+    "schedule something Thursday" said on a Thursday means next week,
+    not "in the next few hours"; that's what an explicit "today" (not
+    handled here - unchanged pre-existing behavior) would be for."""
+    lowered = text.lower()
+    if "tomorrow" in lowered:
+        return (now + timedelta(days=1)).date()
+    weekday_match = _WEEKDAY_RE.search(lowered)
+    if weekday_match:
+        target_weekday = _WEEKDAY_NAMES[weekday_match.group(1).lower()]
+        days_ahead = (target_weekday - now.weekday()) % 7 or 7
+        return (now + timedelta(days=days_ahead)).date()
+    return None
+
+
 def _resolve_time_from_parts(hour: int, minute: int, meridiem: str, text: str, now: datetime) -> datetime:
     if meridiem == "pm" and hour != 12:
         hour += 12
@@ -664,17 +720,17 @@ def _resolve_time_from_parts(hour: int, minute: int, meridiem: str, text: str, n
     # today, and THEN separately added another day for "tomorrow" - so
     # "tomorrow at 5pm" typed after 5pm today ("5pm today already passed"
     # -> +1 day, PLUS "contains tomorrow" -> +1 day again) landed on the
-    # day after tomorrow instead of tomorrow. An explicit "tomorrow"
-    # always means "the next calendar day", full stop, regardless of what
-    # time it is right now.
-    explicit_tomorrow = "tomorrow" in text.lower()
-    target_date = (now + timedelta(days=1)).date() if explicit_tomorrow else now.date()
+    # day after tomorrow instead of tomorrow. An explicit date word
+    # (today/tomorrow/a weekday name) always pins the date, full stop,
+    # regardless of what time it is right now.
+    explicit_date = _resolve_explicit_date(text, now)
+    target_date = explicit_date if explicit_date is not None else now.date()
     due = datetime.combine(target_date, time_of_day(hour=hour % 24, minute=minute))
     # Only roll forward to the next day when no explicit date word was
     # given and the clock time has already passed today - "at 7" said at
-    # 9pm should mean tomorrow morning, but "tomorrow at 5pm" already has
+    # 9pm should mean tomorrow morning, but an explicit date already has
     # its date pinned down above and must never roll again here.
-    if not explicit_tomorrow and due <= now:
+    if explicit_date is None and due <= now:
         due += timedelta(days=1)
     return due
 
@@ -727,7 +783,10 @@ _VAGUE_PERIOD_RE = re.compile(
     r"\b(morning|afternoon|evening|tonight|night|noon|midnight)\b",
     re.IGNORECASE,
 )
-_TIME_DATE_WORD_RE = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
+_TIME_DATE_WORD_RE = re.compile(
+    r"\b(today|tomorrow|(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b",
+    re.IGNORECASE,
+)
 
 
 def _describe_missing_time(text: str) -> Optional[str]:
@@ -995,19 +1054,55 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
             response="",
             tool_args={"query": _extract_action_query(text)},
         )
-    if RESCHEDULE_TRIGGER.search(lowered):
-        body = _strip_trigger(text, RESCHEDULE_TRIGGER)
+    verb_match = RESCHEDULE_TRIGGER.search(lowered)
+    bare_match = None if verb_match else BARE_CORRECTION_TRIGGER.search(text)
+    if verb_match is not None or bare_match is not None:
+        trigger = RESCHEDULE_TRIGGER if verb_match is not None else BARE_CORRECTION_TRIGGER
+        body = _strip_trigger(text, trigger)
         # Relative ("in 20 minutes") is checked first and, if it matches,
         # bare-time parsing is skipped entirely - BARE_TIME has no "at"
         # requirement and would otherwise misread the "20" in "in 20
         # minutes" as a clock hour.
         minutes = _parse_relative_minutes(body)
         due = _parse_absolute_time(body, now)
-        if due is None and minutes is None:
+        if due is None and minutes is None and verb_match is not None:
+            # Bare-number fallback ("make it 7") only for the verb-based
+            # trigger - see BARE_CORRECTION_TRIGGER's comment for why a
+            # bare number alone isn't a strong enough signal without one.
             due = _parse_bare_time(body, now)
         if due is None and minutes is not None:
             due = now + timedelta(minutes=minutes)
-        if due is None:
+
+        if due is not None:
+            return DetectedIntent(
+                name="reschedule_reference",
+                emotion=Emotion.HAPPY,
+                animation=CharacterState.HAPPY,
+                response="",  # chat_engine fills this in once it resolves which entity "it" means
+                tool_args={"due_iso": due.isoformat()},
+            )
+
+        # No time digit anywhere, but maybe just a date correction
+        # ("Actually Thursday" / "change it to Thursday") - keep
+        # whatever time-of-day the referenced item already has.
+        # app/ai/chat_engine.py's _reschedule_reference_reaction is what
+        # resolves that against the real entity; intent.py has no
+        # access to it here, only the text. Only takes this path when
+        # there's no time-of-day signal AT ALL, not even a vague one -
+        # "tomorrow morning" still means "I want a NEW time, just don't
+        # know the exact hour yet", not "keep the old time" - that case
+        # falls through to the normal clarifying question below.
+        explicit_date = _resolve_explicit_date(body, now)
+        if explicit_date is not None and _describe_missing_time(body) is None:
+            return DetectedIntent(
+                name="reschedule_reference",
+                emotion=Emotion.HAPPY,
+                animation=CharacterState.HAPPY,
+                response="",
+                tool_args={"new_date_iso": explicit_date.isoformat()},
+            )
+
+        if verb_match is not None or explicit_date is not None:
             time_hint = _describe_missing_time(body)
             question = f"Change it to what time {time_hint}" if time_hint else "Change it to when"
             return DetectedIntent(
@@ -1016,13 +1111,10 @@ def detect_intent(raw_text: str, now: Optional[datetime] = None) -> DetectedInte
                 animation=CharacterState.CONFUSED,
                 response=f'{question}? Try a time like "8pm" or "in 20 minutes".',
             )
-        return DetectedIntent(
-            name="reschedule_reference",
-            emotion=Emotion.HAPPY,
-            animation=CharacterState.HAPPY,
-            response="",  # chat_engine fills this in once it resolves which entity "it" means
-            tool_args={"due_iso": due.isoformat()},
-        )
+        # Bare "actually" with no recognizable date/time signal at all
+        # ("Actually, I don't think so") isn't a correction - fall
+        # through to normal handling below rather than asking a
+        # confusing "change it to when?" out of nowhere.
 
     # --- Google Calendar (spec sections 22-24, V3: read-only) -----------
     # Connect/disconnect checked first - "connect my calendar" would

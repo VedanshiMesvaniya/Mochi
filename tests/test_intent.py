@@ -538,6 +538,32 @@ def test_calendar_create_with_vague_evening_echoes_date_and_period():
     assert result.tool is None
 
 
+# --- Weekday-name date resolution (spec section 15/17 - a real, general
+# date-parsing gap: without this, section 17's own correction example
+# ("Actually Thursday") had nothing to resolve "Thursday" into in the
+# first place). NOW is Friday 2026-08-14.
+
+
+def test_calendar_create_with_weekday_name_resolves_to_next_occurrence():
+    result = detect_intent("schedule a meeting with Devika thursday at 5pm", now=NOW)
+    assert result.name == "calendar_create_event"
+    # Next Thursday from Friday 2026-08-14 is 2026-08-20, not today/tomorrow.
+    assert result.tool_args["start_iso"] == "2026-08-20T17:00:00"
+
+
+def test_calendar_create_with_weekday_name_matching_today_rolls_to_next_week():
+    """Said on a Friday, "Friday at 5pm" means next Friday, not "in a
+    couple hours" - a bare weekday name is never today's date."""
+    result = detect_intent("schedule a meeting with Devika friday at 5pm", now=NOW)
+    assert result.tool_args["start_iso"] == "2026-08-21T17:00:00"
+
+
+def test_calendar_create_with_vague_weekday_evening_echoes_it():
+    result = detect_intent("schedule a meeting with Devika thursday evening", now=NOW)
+    assert result.name == "calendar_create_needs_time"
+    assert "thursday evening" in result.response.lower()
+
+
 def test_calendar_create_book_an_appointment():
     result = detect_intent("book an appointment at 3pm", now=NOW)
     assert result.name == "calendar_create_event"
@@ -698,6 +724,71 @@ def test_reschedule_reference_without_a_time_asks_for_one():
 
 def test_reschedule_reference_with_vague_morning_echoes_it_in_the_question():
     result = detect_intent("move it to tomorrow morning", now=NOW)
+    assert result.name == "reschedule_reference_needs_time"
+    assert "tomorrow morning" in result.response
+
+
+def test_reschedule_reference_with_weekday_name():
+    """Spec section 17's own correction example ("Actually Thursday")
+    needs weekday-name resolution to work at all - covered here via the
+    equivalent, already-supported "change it to <value>" phrasing."""
+    result = detect_intent("change it to thursday at 5pm", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-20T17:00:00"
+
+
+# --- Bare "actually" correction (spec section 17's literal transcript -
+# no verb at all) and date-only corrections (preserving whatever time
+# the referenced item already has).
+
+
+def test_bare_actually_with_weekday_is_a_date_only_correction():
+    """The spec's own literal example: "Actually Thursday", no verb."""
+    result = detect_intent("actually thursday", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args == {"new_date_iso": "2026-08-20"}
+
+
+def test_bare_actually_with_explicit_time_reschedules():
+    result = detect_intent("actually at 6pm", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-14T18:00:00"
+
+
+def test_bare_actually_with_relative_minutes_reschedules():
+    result = detect_intent("actually in 20 minutes", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-14T15:20:00"
+
+
+def test_no_actually_and_wait_actually_prefixes_also_work():
+    result = detect_intent("no, actually tomorrow at 5pm", now=NOW)
+    assert result.name == "reschedule_reference"
+    assert result.tool_args["due_iso"] == "2026-08-15T17:00:00"
+
+
+def test_actually_mid_sentence_is_not_a_correction():
+    """"actually" not at the very start of the message is ordinary
+    conversation, not a correction attempt - must fall through
+    completely untouched by the reschedule path."""
+    result = detect_intent("I actually love this game", now=NOW)
+    assert result.name not in ("reschedule_reference", "reschedule_reference_needs_time")
+
+
+def test_bare_actually_with_no_date_or_time_signal_is_not_a_correction():
+    """A leading "actually" with nothing resolvable after it (no
+    weekday, no "tomorrow", no "at <time>", no "in <n> minutes") isn't
+    enough signal on its own - must not hijack ordinary chat into a
+    confusing "change it to when?" out of nowhere."""
+    result = detect_intent("actually 5 dogs would be enough", now=NOW)
+    assert result.name not in ("reschedule_reference", "reschedule_reference_needs_time")
+
+
+def test_bare_actually_with_only_vague_time_of_day_still_asks():
+    """"Actually tomorrow morning" still means a NEW time is coming,
+    just not a specific hour yet - must ask, not silently keep
+    whatever time the referenced item already had."""
+    result = detect_intent("actually tomorrow morning", now=NOW)
     assert result.name == "reschedule_reference_needs_time"
     assert "tomorrow morning" in result.response
 

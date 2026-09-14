@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from app.ai import semantic_intent
 from app.ai import conversation_state as convo
+from app.ai.confidence import Confidence, band as confidence_band
 from app.ai import fact_extraction
 from app.ai import goal_state
+from app.ai import reasoning_budget
 from app.ai.db_glossary import QueryPlan, build_plan
 from app.ai.intent import DetectedIntent, build_semantic_intent, detect_intent, resolve_pending_goal
 from app.ai.llm import LLMUnavailable, ask as ask_llm, phrase_data_answer
@@ -1314,19 +1316,61 @@ def _cancel_ambiguous_reaction(tool_args: dict, state: Optional[dict] = None) ->
     )
 
 
-def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
-    """Handles "make it 8" / "change it to 8:30pm" - the review's
-    canonical conversational-reference example ("remind me to call mom
-    at 7" -> "make it 8"). "it"/"that" here is resolved deterministically
-    against `state` (app/ai/conversation_state.py's remembered last
-    entity), the same as the ambiguous complete/cancel handlers above -
-    never guessed at, and never applied to a reminder/task that's since
-    been completed/cancelled through some other path."""
-    due_iso = tool_args.get("due_iso")
+def _reschedule_calendar_event(
+    event_id: str, due_iso: Optional[str], new_date_iso: Optional[str]
+) -> "ChatReaction":
+    """Calendar-event counterpart to the reminder/task logic below -
+    proposes rather than writing directly, since every Google Calendar
+    write goes through propose-then-confirm (see the section header
+    above _calendar_create_proposal - a reschedule is exactly as
+    consequential as a create or delete, so it gets the same gate).
+    Needs the event's own current start/end, fetched fresh here rather
+    than assumed, for two reasons: preserving its time-of-day on a
+    date-only correction ("Actually Thursday"), and preserving its
+    original DURATION on any correction, so "make it 5pm" on a
+    30-minute meeting doesn't silently turn it into a 1-hour one.
+    """
+    try:
+        event = google_calendar.get_event(event_id)
+    except CalendarError as exc:
+        return _calendar_error_reaction(exc)
+    if event is None:
+        return ChatReaction(
+            text="That event isn't around anymore - I can't reschedule it.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    if event.get("all_day"):
+        return ChatReaction(
+            text="That's an all-day event - I can't reschedule it to a specific time this way yet.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    try:
+        existing_start = datetime.fromisoformat(event["start"])
+        existing_end = datetime.fromisoformat(event["end"])
+    except (TypeError, ValueError):
+        return ChatReaction(
+            text="I couldn't read that event's current time, so I can't reschedule it right now.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+    duration = existing_end - existing_start
+
+    due = None
     try:
         due = datetime.fromisoformat(due_iso) if due_iso else None
     except ValueError:
         due = None
+    if due is None and new_date_iso:
+        # Date-only correction - keep the event's existing time-of-day,
+        # same reasoning as the reminder/task branch below.
+        try:
+            new_date = date.fromisoformat(new_date_iso)
+            due = datetime.combine(new_date, existing_start.time())
+        except ValueError:
+            due = None
+
     if due is None:
         return ChatReaction(
             text='Change it to when? Try a time like "8pm".',
@@ -1334,24 +1378,104 @@ def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None
             animation=CharacterState.CONFUSED,
         )
 
+    new_end = due + duration
+    return ChatReaction(
+        text=(
+            f'Move "{event["title"]}" to {_describe_when(due.isoformat())}? (yes/no)'
+        ),
+        emotion=Emotion.CURIOUS,
+        animation=CharacterState.THINKING,
+        pending_action={
+            "kind": "calendar_reschedule",
+            "event_id": event_id,
+            "title": event["title"],
+            "start_iso": due.isoformat(),
+            "end_iso": new_end.isoformat(),
+        },
+    )
+
+
+def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None) -> "ChatReaction":
+    """Handles "make it 8" / "change it to 8:30pm" - the review's
+    canonical conversational-reference example ("remind me to call mom
+    at 7" -> "make it 8"). "it"/"that" here is resolved deterministically
+    against `state` (app/ai/conversation_state.py's remembered last
+    entity), the same as the ambiguous complete/cancel handlers above -
+    never guessed at, and never applied to a reminder/task that's since
+    been completed/cancelled through some other path.
+
+    Also handles a date-only correction (spec section 17's own example,
+    "Actually Thursday" - app/ai/intent.py's `new_date_iso`, used when
+    the message gave a new date but no new time at all): the entity is
+    resolved FIRST in that case, specifically so its existing due time-
+    of-day can be reused rather than inventing one - a bare date-only
+    correction should never silently reset an established time.
+
+    A calendar event is handled separately (see _reschedule_calendar_event
+    above) since, unlike a reminder/task edit, it has to go through
+    propose-then-confirm rather than writing immediately.
+    """
     entity_type = state.get("entity_type") if state else None
     entity_id = state.get("entity_id") if state else None
-    if entity_type not in ("reminder", "task") or entity_id is None:
+    if entity_type not in ("reminder", "task", "calendar_event") or entity_id is None:
         return ChatReaction(
-            text="Change what, exactly? I don't have a specific reminder or task in mind right now.",
+            text=(
+                "Change what, exactly? I don't have a specific reminder, "
+                "task, or calendar event in mind right now."
+            ),
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    due_iso = tool_args.get("due_iso")
+    new_date_iso = tool_args.get("new_date_iso")
+
+    if entity_type == "calendar_event":
+        return _reschedule_calendar_event(entity_id, due_iso, new_date_iso)
+
+    if entity_type == "reminder":
+        reminder_manager.ensure_ready()
+        reminder = reminder_manager.get_reminder(entity_id)
+        task = None
+    else:
+        task_manager.ensure_ready()
+        reminder = None
+        task = task_manager.get_task(entity_id)
+    entity = reminder if entity_type == "reminder" else task
+    if entity is None:
+        noun = "reminder" if entity_type == "reminder" else "task"
+        return ChatReaction(
+            text=f"That {noun} isn't around anymore - I can't reschedule it.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    try:
+        due = datetime.fromisoformat(due_iso) if due_iso else None
+    except ValueError:
+        due = None
+
+    if due is None and new_date_iso:
+        # Date-only correction - keep the entity's existing time-of-day.
+        # A task with no deadline at all has no time to keep, so this
+        # can't silently invent one; falls through to the "ask for a
+        # time" response below exactly like any other unresolved case.
+        existing_due = getattr(entity, "due_at", None)
+        if existing_due is not None:
+            try:
+                new_date = date.fromisoformat(new_date_iso)
+                due = datetime.combine(new_date, existing_due.time())
+            except ValueError:
+                due = None
+
+    if due is None:
+        return ChatReaction(
+            text='Change it to when? Try a time like "8pm".',
             emotion=Emotion.CONFUSED,
             animation=CharacterState.CONFUSED,
         )
 
     if entity_type == "reminder":
-        reminder_manager.ensure_ready()
-        reminder = reminder_manager.get_reminder(entity_id)
-        if reminder is None:
-            return ChatReaction(
-                text="That reminder isn't around anymore - I can't reschedule it.",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
         reminder_manager.update_reminder(entity_id, due_at=due)
         return ChatReaction(
             text=f'Got it - "{reminder.title}" is now set for {due:%I:%M %p}.',
@@ -1361,14 +1485,6 @@ def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None
             conversation_state=convo.remember_entity("reminder", entity_id, reminder.title),
         )
 
-    task_manager.ensure_ready()
-    task = task_manager.get_task(entity_id)
-    if task is None:
-        return ChatReaction(
-            text="That task isn't around anymore - I can't reschedule it.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
     task_manager.set_due_date(entity_id, due)
     return ChatReaction(
         text=f'Got it - "{task.title}" is now due {due:%m-%d %I:%M %p}.',
@@ -1464,7 +1580,7 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
 
     if kind == "calendar_create":
         try:
-            calendar_tools.create_event(
+            event = calendar_tools.create_event(
                 pending_action["title"], pending_action["start_iso"], confirmed=True
             )
         except MochiError as exc:
@@ -1474,11 +1590,51 @@ def _resolve_pending_action(pending_action: dict) -> "ChatReaction":
             importance=0.7,
             entities=[pending_action["title"]],
         )
+        # Remember it as the most recent entity (same convention as
+        # reminder/task creation - _CREATE_TOOL_ENTITY_KINDS below) so an
+        # immediate follow-up ("actually Thursday" / "make it 6pm") can
+        # resolve "it" without repeating the title. Calendar creation
+        # doesn't run through that generic dispatch table at all (it
+        # needs propose-then-confirm first), so this has to be done here
+        # explicitly rather than picked up automatically.
+        conversation_state = None
+        event_id = event.get("id") if isinstance(event, dict) else None
+        if event_id:
+            conversation_state = convo.remember_entity(
+                "calendar_event", event_id, pending_action["title"]
+            )
         return ChatReaction(
             text=f"Done! Added \"{pending_action['title']}\" to your calendar.",
             emotion=Emotion.HAPPY,
             animation=CharacterState.HAPPY,
             sound="chirp",
+            conversation_state=conversation_state,
+        )
+
+    if kind == "calendar_reschedule":
+        try:
+            calendar_tools.update_event(
+                pending_action["event_id"],
+                start_iso=pending_action["start_iso"],
+                end_iso=pending_action.get("end_iso"),
+                confirmed=True,
+            )
+        except MochiError as exc:
+            return _failure_reaction("calendar", "Hmm, I couldn't reschedule that", exc)
+        episodic_memory.record_event(
+            f"Rescheduled calendar event: {pending_action['title']}",
+            importance=0.6,
+            entities=[pending_action["title"]],
+        )
+        when = _describe_when(pending_action["start_iso"])
+        return ChatReaction(
+            text=f'Done! "{pending_action["title"]}" is now {when}.',
+            emotion=Emotion.HAPPY,
+            animation=CharacterState.HAPPY,
+            sound="chirp",
+            conversation_state=convo.remember_entity(
+                "calendar_event", pending_action["event_id"], pending_action["title"]
+            ),
         )
 
     if kind == "calendar_delete":
@@ -1810,7 +1966,10 @@ def handle_message(
     resolved here before anything else runs. Any other message expires
     it immediately (see the block below) rather than carrying it forward,
     so a stale proposal can never be confirmed by an unrelated later
-    "yes".
+    "yes". A handler can also set a FRESH `pending_action` on the
+    reaction it returns this same call (a calendar create/delete/
+    reschedule proposal) - that's a brand-new "waiting for the next
+    yes/no" state, not the old one surviving.
 
     `conversation_state` (security review I1/I3, app/ai/conversation_state.py)
     is Mochi's deterministic memory of the single most recent task/
@@ -1914,7 +2073,14 @@ def handle_message(
             guess = None
 
         if guess is not None and guess.intent != "small_talk":
-            if guess.confidence >= semantic_intent.CONFIDENCE_ACT:
+            # Cognitive Upgrade spec section 13's general rule (see
+            # app/ai/confidence.py): HIGH -> act, MEDIUM -> ask, LOW ->
+            # stays "unknown". semantic_intent.CONFIDENCE_LOW/ACT are the
+            # same two numbers confidence.band() uses under the hood -
+            # kept as attributes on that module too since this is also
+            # where the score itself comes from.
+            guess_band = confidence_band(guess.confidence)
+            if guess_band is Confidence.HIGH:
                 built = build_semantic_intent(guess.intent, text)
                 if built is not None:
                     # No raw message text here (security review S1) - the
@@ -1927,14 +2093,14 @@ def handle_message(
                         guess.intent, guess.confidence,
                     )
                     intent = built
-            elif guess.confidence >= semantic_intent.CONFIDENCE_LOW:
+            elif guess_band is Confidence.MEDIUM:
                 logger.info(
                     "Semantic intent=%s confidence=%.2f (asking, not acting)",
                     guess.intent, guess.confidence,
                 )
                 intent = _semantic_clarify_intent(guess.intent)
-            # else: below CONFIDENCE_LOW - stays "unknown", falls through
-            # to the open-ended LLM chat reply exactly as before.
+            # else LOW: stays "unknown", falls through to the open-ended
+            # LLM chat reply exactly as before.
 
     # Observability (bug report: reminders/timers/tasks "not getting set"
     # with nothing in the logs to say why): log what every message was
@@ -2007,10 +2173,18 @@ def handle_message(
                 emotion=Emotion.CONFUSED,
                 animation=CharacterState.CONFUSED,
             )
-        # `pending_action` is guaranteed None here - see the comment
-        # above the docstring's `pending_action` paragraph and the
-        # expiration block near the top of this function.
-        reaction.pending_action = None
+        # Every _ACTION_HANDLERS entry writes directly and immediately
+        # (complete/cancel/reschedule a reminder or task) - EXCEPT
+        # _reschedule_reference_reaction's calendar-event branch
+        # (_reschedule_calendar_event), which proposes rather than
+        # writing, exactly like a fresh calendar_create/calendar_delete
+        # proposal, and sets its own `pending_action` accordingly. So
+        # this can no longer force `pending_action` to None
+        # unconditionally - it has to trust what the handler actually
+        # returned, same as `conversation_state` right below it. Every
+        # other handler already returns `pending_action=None` on its own
+        # (the dataclass default, never touched), so this is a no-op for
+        # all of them and only matters for the one that now needs it.
         if reaction.conversation_state is None:
             reaction.conversation_state = conversation_state
         return reaction
@@ -2088,8 +2262,18 @@ def handle_message(
             # (app/ai/fact_extraction.py) found nothing for this exact
             # message, so the two paths never both try to save the same
             # thing.
+            #
+            # Reasoning budget (Cognitive Upgrade spec section 18, see
+            # app/ai/reasoning_budget.py) - a bare "lol"/"thanks"/"ok"
+            # has nothing for web_context/user_facts retrieval to find,
+            # so that work (and the fact-extraction request, which is
+            # equally pointless on a message with no content to extract
+            # from) is skipped entirely for it, rather than run and come
+            # back empty every time.
+            trivial = reasoning_budget.is_trivial_chat(text)
             want_llm_extraction = (
-                settings.memory_enabled
+                not trivial
+                and settings.memory_enabled
                 and settings.llm_fact_extraction_enabled
                 and fact_extraction.extract(text) is None
             )
@@ -2099,8 +2283,8 @@ def handle_message(
                 history=history,
                 trend_topic=pick_one_trend(),
                 meme_premise=pick_one_meme(),
-                web_context=get_web_context(text),
-                user_facts=_relevant_user_facts_context(text),
+                web_context=None if trivial else get_web_context(text),
+                user_facts=None if trivial else _relevant_user_facts_context(text),
                 request_fact_extraction=want_llm_extraction,
             )
             response = llm_reply["response"]

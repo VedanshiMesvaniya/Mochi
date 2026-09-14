@@ -1453,6 +1453,331 @@ See `tests/test_intent.py` for the vague-time-echoes and
 no-time-context-keeps-generic-question cases across all four call
 sites.
 
+**Follow-up: weekday-name date resolution.** Closing out phase 3's
+"correction handling" item (spec section 17, "Actually Thursday")
+surfaced that there was no weekday-name parsing anywhere in Mochi at
+all - only "today"/"tomorrow". `_resolve_explicit_date()` in
+`app/ai/intent.py` fills that gap: "Thursday"/"next Thursday" resolves
+to the next actual occurrence of that weekday (plain day-of-week
+arithmetic against `now.weekday()`, always the *next* occurrence even
+if today already is that weekday - "schedule something Thursday" said
+on a Thursday means next week). It plugs into `_resolve_time_from_parts()`
+the same way "tomorrow" already did: an explicit date word pins the
+date and is never re-rolled by the "time already passed today" check
+below it. This benefits every caller of `_parse_absolute_time()`/
+`_parse_bare_time()` - calendar creation, reminders, and
+reschedule-reference all gained weekday support from the one change.
+See `tests/test_intent.py`'s weekday-name tests (calendar create,
+reschedule, and the vague-time echo combined with a weekday).
+
+One honest caveat on the "correction handling" item itself: the fix
+above makes "change it to Thursday" work, but the spec's literal
+transcript - a bare "Actually Thursday" with no verb - is still not
+recognized. Extending `RESCHEDULE_TRIGGER` to catch a bare "actually
+<value>" was deliberately not done: "actually" appears constantly in
+ordinary conversation ("I actually love this"), and a loose match on it
+risks misreading an unrelated sentence as a reschedule attempt - the
+exact false-positive risk that trigger's own comment already warns
+about for other phrasings. Known, intentional, narrow gap.
+
+**Update: this gap is now closed.** A separate, narrower trigger -
+`BARE_CORRECTION_TRIGGER` - recognizes a leading "actually"/"no,
+actually"/"wait, actually" (only at the very start of the message, so
+"I actually love this" is untouched) followed by an explicit,
+unambiguous date/time signal: a weekday name, "tomorrow", "at <hour>",
+or "in <N> minutes" - deliberately never the loose bare-number fallback
+(`_parse_bare_time`) the verb-based trigger can use, since without a
+verb phrase as the strong signal, a bare number is too easy to
+misread ("actually 5 dogs would be enough" must not become "reschedule
+to 5pm"). No date/time signal at all after "actually" falls straight
+through to ordinary chat, untouched.
+
+This also closes a second gap the corrections work surfaced: a
+date-only correction ("Actually Thursday", with no time at all)
+previously had nothing to combine with, since `reschedule_reference`
+always replaced the FULL due timestamp and a bare weekday has no hour
+in it. `app/ai/intent.py` now emits `tool_args={"new_date_iso": ...}`
+for a date-only correction (both the bare-"actually" and the verb-based
+"change it to Thursday" phrasing), and
+`app/ai/chat_engine.py`'s `_reschedule_reference_reaction()` was
+restructured to resolve the entity FIRST in that case specifically so
+it can reuse the entity's existing due time-of-day rather than
+inventing one - "Actually Thursday" after "remind me to call mom
+tomorrow at 6pm" now correctly keeps 6pm and only changes the date.
+A vague time-of-day word changes nothing about this: "actually tomorrow
+morning" still asks for the exact hour (the user is clearly signaling
+a NEW time, not "keep the old one") rather than silently preserving
+whatever time was there before - `_describe_missing_time()` is checked
+before taking the date-only path, precisely to make that distinction.
+
+See `tests/test_intent.py` (the bare-trigger cases: weekday, explicit
+time, relative minutes, the "no,"/"wait," prefixes, mid-sentence
+"actually" correctly ignored, no-signal "actually" correctly ignored,
+vague-time-of-day still asks) and
+`tests/test_conversation_state_integration.py` (end-to-end: a bare
+"actually at 8pm" reschedules a just-created reminder, and "actually
+thursday" changes only the date while keeping the existing time).
+
+**Follow-up: the same corrections now also reach calendar events.**
+The paragraph above (and `docs/ROADMAP_COGNITIVE_UPGRADE.md`) originally
+flagged this as a known, separate, deliberately-not-folded-in gap:
+`reschedule_reference` only ever supported "reminder"/"task", calendar
+events were never tracked as a reschedulable entity at all, and there
+was no calendar-event write path in `_reschedule_reference_reaction()`.
+Checking Google's own Calendar API docs first confirmed
+`google_calendar.update_event()` (`events().patch()`) was already the
+right approach and already existed at the tools layer, complete with
+`confirmed=True` and post-write verification (`app/tools/calendar_tools.py`)
+- the chat-layer wiring was the actual gap, not the calendar
+integration itself:
+
+- `_resolve_pending_action()`'s `calendar_create` branch now calls
+  `convo.remember_entity("calendar_event", event_id, title)` on
+  success - the same pattern reminder/task/timer creation already used,
+  just not wired for calendar events since creation there goes through
+  its own propose-then-confirm branch rather than the generic
+  `_CREATE_TOOL_ENTITY_KINDS` dispatch.
+- `_reschedule_reference_reaction()` now branches on
+  `entity_type == "calendar_event"` into a new
+  `_reschedule_calendar_event()`. It fetches the event's real current
+  start/end from Google Calendar (never assumed) to preserve its
+  original DURATION on any correction (a 30-minute meeting stays
+  30 minutes after "make it 5pm", it doesn't silently become an hour)
+  and its time-of-day on a date-only correction, exactly like the
+  reminder/task path. Unlike reminders/tasks, which write immediately,
+  this proposes rather than writes - a calendar reschedule is exactly
+  as consequential as a fresh create or delete, so it goes through the
+  identical yes/no confirmation gate (see the section header above
+  `_calendar_create_proposal`). An all-day event, or one that's since
+  been deleted, both decline gracefully rather than guessing.
+
+One real bug this surfaced and fixed: `handle_message()` had a generic
+post-processing step that unconditionally reset `pending_action` to
+`None` after every `_ACTION_HANDLERS` call, on the historically-true
+assumption that none of them ever needed to set one (they all write
+immediately - complete/cancel/reschedule a reminder or task). That
+stopped being true the moment one of them needed to propose instead of
+write, and would have silently discarded the calendar-reschedule
+proposal every time. Fixed to trust the handler's own returned
+`pending_action`, the same way `conversation_state` right next to it
+already worked - every other handler in that group already returns
+`pending_action=None` on its own (the dataclass default, never
+touched), so this only changes behavior for the one case that actually
+needed it.
+
+See `tests/test_chat_engine.py`'s calendar-reschedule tests: propose-
+then-confirm (never writes on the first message), the confirmed write
+preserves the original duration, a date-only correction keeps the
+existing time, a deleted or all-day event both decline gracefully, and
+no recent event asks instead of guessing.
+
+---
+
+## 5m. General confidence system and reasoning budget (Cognitive Upgrade, phase 3)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md` for the full spec and what's
+implemented vs deferred. Two more phase 3 slices, both narrow and both
+extracted from/added alongside code that already existed:
+
+**General confidence system (`app/ai/confidence.py`, spec section
+13).** The HIGH -> act / MEDIUM -> ask / LOW -> stay uncertain rule
+already existed, but only as two bare numbers
+(`CONFIDENCE_LOW = 0.50`, `CONFIDENCE_ACT = 0.75`) compared by hand
+inside `app/ai/chat_engine.py`'s semantic-intent handling. This module
+is those same two numbers plus a `Confidence` enum
+(`LOW`/`MEDIUM`/`HIGH`) and a `band(score) -> Confidence` classifier -
+nothing about the actual thresholds or behavior changed, only that the
+rule now has one name and one place it lives. `app/ai/semantic_intent.py`
+imports `CONFIDENCE_LOW`/`CONFIDENCE_ACT` from `confidence.py` and
+re-exports them (so `semantic_intent.CONFIDENCE_LOW` still works
+unchanged for every existing caller/test), and `chat_engine.py`'s
+act/ask/ignore branch now reads:
+
+```text
+guess_band = confidence.band(guess.confidence)
+if guess_band is Confidence.HIGH:    build + run the intent
+elif guess_band is Confidence.MEDIUM: ask a clarifying question
+else:                                 stays "unknown"
+```
+
+instead of the previous raw `if guess.confidence >= ...` chain - same
+outcome, now the named rule any future numeric-confidence decision
+point can import and reuse. Today's only real caller is still
+`app/ai/semantic_intent.py`'s model-produced classification score.
+Semantic memory's per-fact confidence numbers deliberately do NOT run
+through this module - see `app/memory/semantic_memory.py`'s own
+docstring: a stored fact isn't an action to gate, it already has a
+differently-shaped treatment (hedged wording for an uncertain
+statement, confidence used for retrieval ranking, not for an
+act/ask/ignore decision).
+
+**Reasoning budget (`app/ai/reasoning_budget.py`, spec section 18).**
+Mochi already gets most of the spec's LEVEL 0-4 idea for free from the
+intent router itself - a deterministic keyword/regex match never
+touches a model (LEVEL 0), a keyword miss costs one small, ~60-token-
+capped semantic-classification call (LEVEL 1, `app/ai/semantic_intent.py`),
+and only a genuine miss on both reaches the open-ended chat fallback
+(LEVEL 2+). The one place level wasn't actually distinguished was
+inside that LEVEL 2+ fallback itself
+(`app/ai/chat_engine.py`'s `handle_message()`, the `intent.name ==
+"unknown"` branch): every such message triggered the same
+context-gathering work - `get_web_context(text)` and
+`_relevant_user_facts_context(text)` - even for a bare "lol"/"thanks"/
+"ok" that has nothing for either lookup to find.
+
+`is_trivial_chat(text)` checks the message (lowercased, punctuation
+stripped) against a fixed, deliberately small set of acknowledgments/
+reactions/filler. It is never a length-only heuristic - a short but
+substantive reply like "i'm sad" or "it broke again" is not on the
+list and is never treated as trivial. When it matches:
+
+```text
+web_context = None if trivial else get_web_context(text)
+user_facts  = None if trivial else _relevant_user_facts_context(text)
+want_llm_extraction = not trivial and <existing conditions>
+```
+
+`llm.ask()` already treats `None` for `web_context`/`user_facts` as
+"no extra context" (the same convention `trend_topic`/`meme_premise`
+already used), so this is a pure skip, not a new code path through the
+model call itself. The LLM-based fact-extraction request
+(`settings.llm_fact_extraction_enabled`, phase 2) is skipped for the
+same trivial messages too - there is nothing to extract a fact from in
+"thanks".
+
+Deliberately narrow, same reasoning as every other phase 3 slice: this
+is not the spec's fuller LEVEL 0-4 vision of routing between a smaller
+and a larger reasoning model, or toggling a model's own thinking-mode
+switch - Mochi's current local model (qwen2.5:1.5b via Ollama) exposes
+neither, and there's no second, larger reasoning model installed to
+route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19, still
+unactioned). Building a model-tier router with only one real model
+to route into would be speculative and untested.
+
+See `tests/test_confidence.py` (the band classifier in isolation),
+`tests/test_reasoning_budget.py` (the trivial-phrase check in
+isolation), and `tests/test_chat_engine.py` (a trivial message skips
+`get_web_context`/`_relevant_user_facts_context`/fact-extraction, and
+an ordinary message still gets all three, unchanged).
+
+That closes out every phase 3 item from the spec's own section 28 list
+(confidence system, clarification policy, reference resolution,
+correction handling, reasoning budget) - see
+`docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 3 - COMPLETE" section for
+the full rundown, including the two narrow, intentional caveats (bare
+"actually" phrasing, model-tier routing) that stay open on purpose
+rather than being silently dropped.
+
+---
+
+## 5n. Initiative scoring, and mood/expression documented (Cognitive Upgrade, phase 5)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 5 - PARTIALLY DONE"
+section for the full picture, including what's deliberately still
+open. Two things landed here:
+
+**Mood/expression (spec section 22) - no new code, a documentation
+catch-up.** This was already satisfied by architecture that predates
+this spec entirely, just never explicitly connected to this section
+before. `app/ai/llm.py`'s replies already carry a model-suggested
+`emotion` field; `app/ai/chat_engine.py`'s `_emotion_and_animation()`
+validates it (anything not a real `Emotion` value falls back to
+`NEUTRAL`) and maps it through `EMOTION_PROFILE` to the actual
+`CharacterState` - the model suggests, the app decides, exactly the
+split the spec asks for. Deterministic events drive expression
+directly the rest of the time, with no model involved at all: see
+`app/reminders/notifications.py` (due -> `ALERT`, ignored -> `ANGRY`)
+and the `animation=` argument on `DetectedIntent` throughout
+`app/ai/intent.py` (a "*_needs_time" clarifying question ->
+`CONFUSED`, and so on).
+
+**Initiative scoring (spec section 23) - new module,
+`app/ai/initiative.py`.** A pure, dependency-free scoring function
+implementing the spec's own formula: an `InitiativeSignal`
+(`importance`/`timeliness`/`user_benefit`, each 0.0-1.0, plus a
+`recent_interruptions` count and a `focus_mode` flag) and
+`should_initiate()`, built on `score()`, which averages the three main
+factors and then subtracts a per-interruption fatigue penalty and a
+larger flat penalty when focus mode is on - defaulting to staying quiet
+on anything that doesn't clearly clear `INITIATIVE_THRESHOLD` (0.6).
+
+This module is deliberately NOT wired to any real proactive channel
+yet:
+
+- `app/reminders/notifications.py`'s `ReminderNotifier` (a due
+  reminder always fires - sound, speech bubble, desktop notification)
+  was left completely untouched. It predates this spec, and a reminder
+  is something the user explicitly asked for at creation time -
+  running it through a fuzziness score and possibly staying quiet would
+  be a reliability regression (spec section 27: never let a heuristic
+  override correctness), not the improvement this module is meant to
+  be.
+- A genuinely new channel the spec itself names as an example -
+  "an important calendar event is approaching" - does not exist in
+  Mochi at all. Nothing currently polls the calendar for what's coming
+  up. Building it well needs real product decisions (how much lead
+  time counts as "approaching", what counts as "important" enough to
+  interrupt for, how it interacts with focus mode) that this spec
+  doesn't answer on its own, so it was left as an open item rather than
+  guessed at silently. `initiative.py` is the piece such a feature
+  would call once those questions have real answers.
+
+See `tests/test_initiative.py` for the scoring function on its own
+(strong signal initiates, weak signal stays quiet, fatigue and focus
+mode can flip a decision, output is always clamped to 0.0-1.0).
+
+---
+
+## 5o. Benchmark dataset and harness (Cognitive Upgrade, phase 4)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 4" section and
+`benchmarks/README.md` for the full picture, including exactly why the
+actual cross-model comparison (Qwen3-4B vs Qwen3-8B vs Phi-4-mini vs
+the current model) remains blocked in this development environment
+(confirmed directly - no route to Ollama or Hugging Face, no GPU - not
+assumed).
+
+`benchmarks/dataset.py` holds a permanent, versioned set of `Case`s
+(spec section 53's "Create a permanent Mochi benchmark dataset")
+across every evaluation category from spec section 53 that Mochi has
+something to test (task prioritization and habit reasoning aren't
+implemented yet, so they're absent rather than padded with placeholder
+cases). Every case was run against real code before being written
+down - none of the expected outcomes are guessed at.
+
+`benchmarks/harness.py` runs the dataset: each case gets a fresh,
+isolated temp SQLite database (same mechanism as `tests/conftest.py`'s
+`temp_db` fixture, reimplemented so the harness runs standalone outside
+pytest), sends its `setup_messages` then its `message` through
+`chat_engine.handle_message()`, and checks the final reaction. A case
+can opt out of carrying `pending_action`/`conversation_state` forward
+between messages (`carry_state=False`) - needed for
+`ambiguity_cancel_asks_which_one`, where carrying state forward from
+creating the second reminder would make the cancel resolve
+deterministically to it and never actually exercise the genuinely-
+ambiguous code path the case exists to test. Failure-injection cases
+reference a named patch factory in `harness.py`'s `_PATCH_FACTORIES`
+rather than importing `unittest.mock` into the dataset file, keeping
+that file a plain data description.
+
+The report is shaped around spec section 55's metric groups
+(correctness/safety-reliability/performance), with per-category
+accuracy, and is real and reproducible for every case except the one
+`conversation` placeholder (open-ended reply quality has no
+deterministic right answer - it's marked `needs_llm=True` and shows up
+in every report as explicitly skipped, never silently dropped). A
+checked-in baseline lives at
+`benchmarks/results/baseline_deterministic_2026-09-14.json`: 16/16
+(100%) against git commit `894901b`.
+
+See `tests/test_benchmark_harness.py` for the harness's own scoring/
+aggregation logic tested in isolation (a case that raises is caught as
+a failure rather than crashing the run, per-category accuracy
+aggregates correctly, every category from the dataset's own list
+appears in a report even with zero matching cases, a `--model` request
+against an unreachable Ollama host is recorded rather than silently
+ignored).
+
 ---
 
 ## 7. Error handling philosophy

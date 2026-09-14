@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from app.ai.chat_engine import handle_message
 from app.character.state_machine import CharacterState, Emotion
 from app.memory import relationship
@@ -148,7 +150,7 @@ def test_mark_reminder_done_actually_completes_it(temp_db):
 
 def test_cancel_reminder_actually_cancels_it(temp_db):
     handle_message("remind me to call mom at 7pm")
-    reaction = handle_message("cancel my reminder to call mom")
+    handle_message("cancel my reminder to call mom")
     # Cancelled reminders are archived out of `reminders` - see
     # app/reminders/manager.py's cancel_reminder().
     assert reminder_manager.list_reminders() == []
@@ -442,6 +444,151 @@ def test_declining_create_event_never_calls_calendar_tools(temp_db, monkeypatch)
 
     assert reaction.pending_action is None
     assert "never mind" in reaction.text.lower()
+
+
+def test_calendar_reschedule_proposes_and_waits_for_confirmation(temp_db, monkeypatch):
+    """"actually thursday" after creating a calendar event must propose
+    the reschedule, exactly like create/delete, never write directly."""
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-15T17:00:00", "end": "2026-08-15T18:00:00",
+            "all_day": False,
+        },
+    )
+
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("must propose, not write directly")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.update_event", _fail_if_called)
+
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+
+    reaction = handle_message("actually thursday", conversation_state=created.conversation_state)
+
+    assert reaction.pending_action is not None
+    assert reaction.pending_action["kind"] == "calendar_reschedule"
+    assert reaction.pending_action["event_id"] == "evt1"
+
+
+def test_confirming_calendar_reschedule_calls_update_event_with_confirmed_true(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-15T17:00:00", "end": "2026-08-15T18:00:00",
+            "all_day": False,
+        },
+    )
+    calls = []
+
+    def _fake_update(event_id, title=None, start_iso=None, end_iso=None, confirmed=False):
+        calls.append((event_id, start_iso, end_iso, confirmed))
+        return {"id": event_id}
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.update_event", _fake_update)
+
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+    proposal = handle_message("make it 6pm", conversation_state=created.conversation_state)
+    reaction = handle_message("yes", pending_action=proposal.pending_action)
+
+    assert len(calls) == 1
+    event_id, start_iso, end_iso, confirmed = calls[0]
+    assert event_id == "evt1"
+    assert confirmed is True
+    # No date given in "make it 6pm", so the date defaults to today (real
+    # wall-clock date) exactly like the reminder/task path already does -
+    # only the time-of-day and the preserved 1-hour duration matter here.
+    assert start_iso.endswith("T18:00:00")
+    start_dt = datetime.fromisoformat(start_iso)
+    end_dt = datetime.fromisoformat(end_iso)
+    assert end_dt - start_dt == timedelta(hours=1)
+    assert reaction.pending_action is None
+    assert "done" in reaction.text.lower()
+
+
+def test_calendar_reschedule_date_only_keeps_existing_time_and_duration(temp_db, monkeypatch):
+    """"Actually Thursday" (no time) must keep the event's existing
+    5pm-6pm slot, just move it to Thursday's date."""
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-14T17:00:00", "end": "2026-08-14T18:00:00",
+            "all_day": False,
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.update_event",
+        lambda event_id, title=None, start_iso=None, end_iso=None, confirmed=False: (
+            calls.append((start_iso, end_iso)) or {"id": event_id}
+        ),
+    )
+
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+    proposal = handle_message("actually thursday", conversation_state=created.conversation_state)
+    handle_message("yes", pending_action=proposal.pending_action)
+
+    assert len(calls) == 1
+    start_iso, end_iso = calls[0]
+    assert start_iso.endswith("T17:00:00")
+    assert end_iso.endswith("T18:00:00")
+
+
+def test_calendar_reschedule_with_no_recent_event_asks_instead_of_guessing(temp_db):
+    reaction = handle_message("make it 6pm", conversation_state=None)
+    assert "don't have a specific" in reaction.text.lower()
+
+
+def test_calendar_reschedule_when_event_was_since_deleted(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+
+    monkeypatch.setattr("app.ai.chat_engine.google_calendar.get_event", lambda event_id: None)
+    reaction = handle_message("make it 6pm", conversation_state=created.conversation_state)
+
+    assert "isn't around anymore" in reaction.text.lower()
+
+
+def test_calendar_reschedule_declines_all_day_events(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-15", "end": "2026-08-16", "all_day": True,
+        },
+    )
+    reaction = handle_message("make it 6pm", conversation_state=created.conversation_state)
+
+    assert "all-day" in reaction.text.lower()
 
 
 def test_ambiguous_reply_expires_pending_action_instead_of_keeping_it_alive(temp_db, monkeypatch):
@@ -1347,3 +1494,71 @@ def test_llm_fact_extraction_disabled_when_memory_itself_is_off(temp_db, monkeyp
 
     handle_message("just chatting about my weekend")  # must not raise
     assert captured_kwargs.get("request_fact_extraction") is False
+
+
+# ---------------------------------------------------------------------------
+# Reasoning budget (Cognitive Upgrade phase 3, app/ai/reasoning_budget.py) -
+# a trivial acknowledgment skips memory/web-context retrieval and the
+# LLM-based fact-extraction request entirely; anything else still gets
+# the full context-gathering it always did.
+# ---------------------------------------------------------------------------
+
+
+def test_trivial_chat_skips_context_retrieval(temp_db, monkeypatch):
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "np!", "emotion": "happy"}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+    monkeypatch.setattr(
+        "app.ai.chat_engine.get_web_context",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("web context should be skipped")),
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine._relevant_user_facts_context",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("user facts should be skipped")),
+    )
+
+    handle_message("thanks")
+
+    assert captured_kwargs.get("web_context") is None
+    assert captured_kwargs.get("user_facts") is None
+
+
+def test_trivial_chat_skips_llm_fact_extraction_even_when_enabled(temp_db, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "llm_fact_extraction_enabled", True)
+    captured_kwargs = {}
+
+    def _fake_ask(text, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"response": "np!", "emotion": "happy", "notable_fact": "User owns a boat."}
+
+    monkeypatch.setattr("app.ai.chat_engine.ask_llm", _fake_ask)
+
+    handle_message("lol")
+
+    assert captured_kwargs.get("request_fact_extraction") is False
+
+
+def test_non_trivial_chat_still_gathers_context(temp_db, monkeypatch):
+    """Regression guard: the reasoning-budget skip must only ever apply
+    to the fixed trivial-phrase list, never to an ordinary message."""
+    calls = []
+
+    def _fake_get_web_context(text):
+        calls.append(text)
+        return None
+
+    monkeypatch.setattr("app.ai.chat_engine.get_web_context", _fake_get_web_context)
+    monkeypatch.setattr(
+        "app.ai.chat_engine.ask_llm",
+        lambda text, **kwargs: {"response": "hi", "emotion": "happy"},
+    )
+
+    handle_message("what's a good recipe for banana bread")
+
+    assert calls == ["what's a good recipe for banana bread"]
