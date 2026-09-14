@@ -16,9 +16,12 @@ into "the rest of Phase 3" - that was imprecise. Per the spec's own
 section 28, those are Phase 4 and Phase 5 respectively, not Phase 3.
 Correcting that here rather than leaving it wrong.
 
-Phase 4 (model benchmark) is NOT done and cannot be finished in this
-project's current working environment - see "Implementation status"
-for why this is an infrastructure limitation, not a scoping choice.
+Phase 4 (model benchmark) is PARTIALLY done: a permanent, versioned
+benchmark dataset and harness now exist (`benchmarks/`), with a real,
+reproducible baseline checked in - but the actual cross-model
+comparison the spec asks for still cannot be run in this development
+environment (confirmed no route to Ollama/Hugging Face, no GPU) - see
+"Implementation status" for the full picture.
 
 Phase 5 (mood, expression state, initiative, proactive reminders,
 presence behavior) is partially done: mood/expression state was
@@ -340,32 +343,66 @@ above under "Correction handling", is scoped narrower than a caveat -
 reschedule corrections don't yet reach calendar events, a distinct,
 calendar-API-touching piece of work.
 
-## Phase 4 - NOT DONE (infrastructure-blocked, not a scoping choice)
+## Phase 4 - PARTIALLY DONE (the actual cross-model comparison remains infrastructure-blocked, not a scoping choice)
 
 Spec section 19: benchmark Qwen3-4B, Qwen3-8B, Phi-4-mini, and the
 current model against each other on Mochi-specific tests (context
 continuity, calendar/reminder understanding, ambiguity, corrections,
 tool selection, latency, RAM, VRAM).
 
-This cannot be done in this project's current development environment:
-running it for real means downloading and serving multiple multi-
-gigabyte model weights through Ollama and measuring their actual
-behavior, and this environment has no route to ollama.com or
-huggingface.co (network access here is limited to package registries -
-pypi, npm, github - not model hosts), no GPU, and no Ollama instance to
-query. Writing a benchmark *script* that calls Ollama without ever
-being able to run it here would mean shipping integration code that
-was never actually exercised against a live model - exactly the kind
-of untested-before-commit work this project's own conventions rule
-out. So nothing was built for this phase rather than something
-unverifiable. What Mochi already has, independent of this phase, is
-extensive coverage of the *deterministic* side of the spec's section 26
-evaluation categories (intent accuracy, tool correctness, hallucination
-resistance, memory recall, reference resolution, corrections - all
-covered by the existing 800+ pytest suite) - what's missing is
-specifically the cross-model comparison piece, which needs a real
-model-serving environment to mean anything. This is a genuinely open
-item, to be picked up when Ollama/model access is available.
+**What's now built: `benchmarks/`** - a permanent, versioned benchmark
+dataset and runner (spec section 53's own request: "Create a permanent
+Mochi benchmark dataset"), covering intent accuracy, tool correctness,
+hallucination resistance, ambiguity handling, date/time reasoning,
+reference resolution and corrections, calendar safety, and failure
+handling - every category applicable to what Mochi has actually built
+so far ("task prioritization" and "habit reasoning" aren't implemented
+at all yet, so no cases exist for them - nothing to benchmark, not an
+oversight). Every case was verified against real Mochi behavior before
+being written down, not guessed at. `python -m benchmarks.harness` runs
+the whole thing standalone (no pytest needed) and writes a JSON report
+shaped around spec section 55's metric groups. A real baseline is
+checked in at `benchmarks/results/baseline_deterministic_2026-09-14.json`:
+16/16 (100%) on every category that could run against git commit
+`894901b`. See `benchmarks/README.md` for the full picture and
+`tests/test_benchmark_harness.py` for coverage of the harness's own
+scoring logic.
+
+**Why this baseline is real but isn't the comparison the spec actually
+wants:** every case except the placeholder `conversation` one exercises
+Mochi's DETERMINISTIC router (`app/ai/intent.py`/`app/ai/chat_engine.py`)
+directly, never a model call - by design (spec section 60's own rule).
+So this is a genuine, reproducible, model-independent baseline of
+Mochi's own correctness, not a stand-in for comparing Qwen3-4B,
+Qwen3-8B, Phi-4-mini, and the current model against each other.
+
+**What's still not done, and confirmed - not assumed - to be
+infrastructure-blocked in this development environment:** running the
+actual comparison needs a live Ollama instance serving each candidate
+model. Checked directly before writing this, not from memory:
+
+```
+$ curl -sS -D - -o /dev/null https://ollama.com
+HTTP/2 403
+x-deny-reason: host_not_allowed
+```
+
+(same result for `huggingface.co`; no Ollama binary is installed, no
+Ollama server is reachable at `localhost:11434`, and there's no GPU
+either). Current, confirmed official Ollama tags for the three
+candidates are `qwen3:4b` (2.5 GB - the closest available tag to the
+roadmap's specifically-named "Qwen3-4B-Thinking-2507"; the base
+`qwen3:4b` supports a `think` parameter, or the exact 2507 checkpoint
+can be pulled as a GGUF straight from Hugging Face - see
+`benchmarks/README.md` for the exact command), `qwen3:8b` (5.2 GB), and
+`phi4-mini` (2.5 GB, 3.8B params) - confirmed via web search rather
+than assumed from training data, since exact current tags/sizes are
+exactly the kind of thing that goes stale. `benchmarks/harness.py`'s
+`--model`/`--host` flags make running the real comparison a single
+command away the moment this runs somewhere Ollama access exists -
+`benchmarks/README.md` has the exact commands. This remains a
+genuinely open item, blocked on hardware/network access this
+environment doesn't have, not on more engineering effort.
 
 ## Phase 5 - PARTIALLY DONE
 

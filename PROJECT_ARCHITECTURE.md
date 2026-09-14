@@ -1728,6 +1728,58 @@ mode can flip a decision, output is always clamped to 0.0-1.0).
 
 ---
 
+## 5o. Benchmark dataset and harness (Cognitive Upgrade, phase 4)
+
+See `docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 4" section and
+`benchmarks/README.md` for the full picture, including exactly why the
+actual cross-model comparison (Qwen3-4B vs Qwen3-8B vs Phi-4-mini vs
+the current model) remains blocked in this development environment
+(confirmed directly - no route to Ollama or Hugging Face, no GPU - not
+assumed).
+
+`benchmarks/dataset.py` holds a permanent, versioned set of `Case`s
+(spec section 53's "Create a permanent Mochi benchmark dataset")
+across every evaluation category from spec section 53 that Mochi has
+something to test (task prioritization and habit reasoning aren't
+implemented yet, so they're absent rather than padded with placeholder
+cases). Every case was run against real code before being written
+down - none of the expected outcomes are guessed at.
+
+`benchmarks/harness.py` runs the dataset: each case gets a fresh,
+isolated temp SQLite database (same mechanism as `tests/conftest.py`'s
+`temp_db` fixture, reimplemented so the harness runs standalone outside
+pytest), sends its `setup_messages` then its `message` through
+`chat_engine.handle_message()`, and checks the final reaction. A case
+can opt out of carrying `pending_action`/`conversation_state` forward
+between messages (`carry_state=False`) - needed for
+`ambiguity_cancel_asks_which_one`, where carrying state forward from
+creating the second reminder would make the cancel resolve
+deterministically to it and never actually exercise the genuinely-
+ambiguous code path the case exists to test. Failure-injection cases
+reference a named patch factory in `harness.py`'s `_PATCH_FACTORIES`
+rather than importing `unittest.mock` into the dataset file, keeping
+that file a plain data description.
+
+The report is shaped around spec section 55's metric groups
+(correctness/safety-reliability/performance), with per-category
+accuracy, and is real and reproducible for every case except the one
+`conversation` placeholder (open-ended reply quality has no
+deterministic right answer - it's marked `needs_llm=True` and shows up
+in every report as explicitly skipped, never silently dropped). A
+checked-in baseline lives at
+`benchmarks/results/baseline_deterministic_2026-09-14.json`: 16/16
+(100%) against git commit `894901b`.
+
+See `tests/test_benchmark_harness.py` for the harness's own scoring/
+aggregation logic tested in isolation (a case that raises is caught as
+a failure rather than crashing the run, per-category accuracy
+aggregates correctly, every category from the dataset's own list
+appears in a report even with zero matching cases, a `--model` request
+against an unreachable Ollama host is recorded rather than silently
+ignored).
+
+---
+
 ## 7. Error handling philosophy
 
 Each subsystem raises a specific exception from `app/core/exceptions.py`.
