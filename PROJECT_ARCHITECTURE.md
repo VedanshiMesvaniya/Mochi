@@ -1480,6 +1480,44 @@ risks misreading an unrelated sentence as a reschedule attempt - the
 exact false-positive risk that trigger's own comment already warns
 about for other phrasings. Known, intentional, narrow gap.
 
+**Update: this gap is now closed.** A separate, narrower trigger -
+`BARE_CORRECTION_TRIGGER` - recognizes a leading "actually"/"no,
+actually"/"wait, actually" (only at the very start of the message, so
+"I actually love this" is untouched) followed by an explicit,
+unambiguous date/time signal: a weekday name, "tomorrow", "at <hour>",
+or "in <N> minutes" - deliberately never the loose bare-number fallback
+(`_parse_bare_time`) the verb-based trigger can use, since without a
+verb phrase as the strong signal, a bare number is too easy to
+misread ("actually 5 dogs would be enough" must not become "reschedule
+to 5pm"). No date/time signal at all after "actually" falls straight
+through to ordinary chat, untouched.
+
+This also closes a second gap the corrections work surfaced: a
+date-only correction ("Actually Thursday", with no time at all)
+previously had nothing to combine with, since `reschedule_reference`
+always replaced the FULL due timestamp and a bare weekday has no hour
+in it. `app/ai/intent.py` now emits `tool_args={"new_date_iso": ...}`
+for a date-only correction (both the bare-"actually" and the verb-based
+"change it to Thursday" phrasing), and
+`app/ai/chat_engine.py`'s `_reschedule_reference_reaction()` was
+restructured to resolve the entity FIRST in that case specifically so
+it can reuse the entity's existing due time-of-day rather than
+inventing one - "Actually Thursday" after "remind me to call mom
+tomorrow at 6pm" now correctly keeps 6pm and only changes the date.
+A vague time-of-day word changes nothing about this: "actually tomorrow
+morning" still asks for the exact hour (the user is clearly signaling
+a NEW time, not "keep the old one") rather than silently preserving
+whatever time was there before - `_describe_missing_time()` is checked
+before taking the date-only path, precisely to make that distinction.
+
+See `tests/test_intent.py` (the bare-trigger cases: weekday, explicit
+time, relative minutes, the "no,"/"wait," prefixes, mid-sentence
+"actually" correctly ignored, no-signal "actually" correctly ignored,
+vague-time-of-day still asks) and
+`tests/test_conversation_state_integration.py` (end-to-end: a bare
+"actually at 8pm" reschedules a just-created reminder, and "actually
+thursday" changes only the date while keeping the existing time).
+
 ---
 
 ## 5m. General confidence system and reasoning budget (Cognitive Upgrade, phase 3)

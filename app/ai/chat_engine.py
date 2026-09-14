@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from app.ai import semantic_intent
@@ -1323,19 +1323,15 @@ def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None
     against `state` (app/ai/conversation_state.py's remembered last
     entity), the same as the ambiguous complete/cancel handlers above -
     never guessed at, and never applied to a reminder/task that's since
-    been completed/cancelled through some other path."""
-    due_iso = tool_args.get("due_iso")
-    try:
-        due = datetime.fromisoformat(due_iso) if due_iso else None
-    except ValueError:
-        due = None
-    if due is None:
-        return ChatReaction(
-            text='Change it to when? Try a time like "8pm".',
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
+    been completed/cancelled through some other path.
 
+    Also handles a date-only correction (spec section 17's own example,
+    "Actually Thursday" - app/ai/intent.py's `new_date_iso`, used when
+    the message gave a new date but no new time at all): the entity is
+    resolved FIRST in that case, specifically so its existing due time-
+    of-day can be reused rather than inventing one - a bare date-only
+    correction should never silently reset an established time.
+    """
     entity_type = state.get("entity_type") if state else None
     entity_id = state.get("entity_id") if state else None
     if entity_type not in ("reminder", "task") or entity_id is None:
@@ -1348,12 +1344,48 @@ def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None
     if entity_type == "reminder":
         reminder_manager.ensure_ready()
         reminder = reminder_manager.get_reminder(entity_id)
-        if reminder is None:
-            return ChatReaction(
-                text="That reminder isn't around anymore - I can't reschedule it.",
-                emotion=Emotion.CONFUSED,
-                animation=CharacterState.CONFUSED,
-            )
+        task = None
+    else:
+        task_manager.ensure_ready()
+        reminder = None
+        task = task_manager.get_task(entity_id)
+    entity = reminder if entity_type == "reminder" else task
+    if entity is None:
+        noun = "reminder" if entity_type == "reminder" else "task"
+        return ChatReaction(
+            text=f"That {noun} isn't around anymore - I can't reschedule it.",
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    due_iso = tool_args.get("due_iso")
+    new_date_iso = tool_args.get("new_date_iso")
+    try:
+        due = datetime.fromisoformat(due_iso) if due_iso else None
+    except ValueError:
+        due = None
+
+    if due is None and new_date_iso:
+        # Date-only correction - keep the entity's existing time-of-day.
+        # A task with no deadline at all has no time to keep, so this
+        # can't silently invent one; falls through to the "ask for a
+        # time" response below exactly like any other unresolved case.
+        existing_due = getattr(entity, "due_at", None)
+        if existing_due is not None:
+            try:
+                new_date = date.fromisoformat(new_date_iso)
+                due = datetime.combine(new_date, existing_due.time())
+            except ValueError:
+                due = None
+
+    if due is None:
+        return ChatReaction(
+            text='Change it to when? Try a time like "8pm".',
+            emotion=Emotion.CONFUSED,
+            animation=CharacterState.CONFUSED,
+        )
+
+    if entity_type == "reminder":
         reminder_manager.update_reminder(entity_id, due_at=due)
         return ChatReaction(
             text=f'Got it - "{reminder.title}" is now set for {due:%I:%M %p}.',
@@ -1363,14 +1395,6 @@ def _reschedule_reference_reaction(tool_args: dict, state: Optional[dict] = None
             conversation_state=convo.remember_entity("reminder", entity_id, reminder.title),
         )
 
-    task_manager.ensure_ready()
-    task = task_manager.get_task(entity_id)
-    if task is None:
-        return ChatReaction(
-            text="That task isn't around anymore - I can't reschedule it.",
-            emotion=Emotion.CONFUSED,
-            animation=CharacterState.CONFUSED,
-        )
     task_manager.set_due_date(entity_id, due)
     return ChatReaction(
         text=f'Got it - "{task.title}" is now due {due:%m-%d %I:%M %p}.',

@@ -9,7 +9,6 @@ from __future__ import annotations
 from app.ai.chat_engine import handle_message
 from app.reminders import manager as reminder_manager
 from app.tasks import manager as task_manager
-from app.timers import manager as timer_manager
 
 
 def test_delete_it_resolves_to_just_created_task_even_with_others_open(temp_db):
@@ -59,6 +58,34 @@ def test_make_it_time_reschedules_just_created_reminder(temp_db):
 def test_reschedule_reference_without_prior_context_asks_instead_of_guessing():
     reaction = handle_message("make it 8", conversation_state=None)
     assert "don't have a specific" in reaction.text.lower()
+
+
+def test_bare_actually_reschedules_just_created_reminder(temp_db):
+    """Spec section 17's own literal correction example, no verb at
+    all: "Actually 8pm" after "remind me to call mom at 6pm"."""
+    created = handle_message("remind me to call mom at 6pm")
+
+    reaction = handle_message("actually at 8pm", conversation_state=created.conversation_state)
+
+    assert "8:00 pm" in reaction.text.lower()
+    reminders = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+    assert len(reminders) == 1
+    assert reminders[0].due_at.hour == 20
+
+
+def test_bare_actually_with_only_a_date_keeps_the_existing_time(temp_db):
+    """"Actually Thursday" - date-only correction (spec section 17's
+    exact transcript) must keep the reminder's existing time-of-day
+    (6pm here), not silently reset it to midnight or ask again."""
+    created = handle_message("remind me to call mom tomorrow at 6pm")
+
+    reaction = handle_message("actually thursday", conversation_state=created.conversation_state)
+
+    assert "call mom" in reaction.text.lower()
+    reminders = reminder_manager.list_reminders(status=reminder_manager.ReminderStatus.PENDING)
+    assert len(reminders) == 1
+    assert reminders[0].due_at.hour == 18
+    assert reminders[0].due_at.minute == 0
 
 
 def test_the_second_one_resolves_against_a_prior_list_query(temp_db):

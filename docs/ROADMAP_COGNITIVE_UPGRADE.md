@@ -204,16 +204,43 @@ reasoning budget. All five:
   ("make it"/"change it to"/"move it"/"set it"/"reschedule it") already
   modifies the same active/most-recent item rather than creating a
   second one, satisfying the spec's actual point ("a correction should
-  update existing state, not spawn an unrelated new task"). One
-  honest caveat: the spec's literal transcript, a bare "Actually
-  Thursday" with no verb at all, is not specially recognized - only the
-  equivalent "change it to Thursday" phrasing is. Extending the trigger
-  to catch a bare "actually <value>" was deliberately not done: "actually"
-  is common in ordinary conversation ("I actually love this"), and a
-  loose match risks misreading an unrelated sentence as a reschedule
-  attempt - the exact false-positive risk `RESCHEDULE_TRIGGER`'s own
-  comment already warns about for other phrasings. This is a narrow,
-  known, intentional gap, not a silently-dropped item.
+  update existing state, not spawn an unrelated new task"). The spec's
+  own literal transcript - a bare "Actually Thursday" with no verb at
+  all - is now also recognized: `BARE_CORRECTION_TRIGGER` matches a
+  leading "actually"/"no, actually"/"wait, actually" (only at the very
+  start of a message, so "I actually love this" is untouched) followed
+  by an explicit, unambiguous date/time signal (a weekday name,
+  "tomorrow", "at <hour>", or "in <N> minutes" - never a loose bare
+  number, which is only safe as a fallback when a verb phrase like
+  "make it" is already the strong signal). A date-only correction with
+  no time at all ("Actually Thursday") now keeps the referenced item's
+  existing time-of-day instead of having nothing to combine with -
+  `app/ai/chat_engine.py`'s `_reschedule_reference_reaction()` resolves
+  the entity first specifically to make that possible. See
+  `PROJECT_ARCHITECTURE.md` section 5l for the full writeup and
+  `tests/test_intent.py`/`tests/test_conversation_state_integration.py`
+  for coverage (mid-sentence "actually" and a bare "actually" with no
+  date/time signal are both confirmed to fall through untouched, not
+  misfire).
+
+  One remaining, narrower scope note: this only covers reminders and
+  tasks, which is everything `reschedule_reference` has ever supported
+  - it does not yet extend to calendar events. Digging into this
+  surfaced that calendar events aren't tracked as a reschedulable
+  entity in `app/ai/conversation_state.py` AT ALL (only "reminder" and
+  "task" are recognized `entity_type`s), and `_reschedule_reference_reaction()`
+  has no Google Calendar update path even if they were. So the spec's
+  own worked example as a literal end-to-end scenario - "Schedule
+  Devika tomorrow at 5" (a calendar event) then "Actually Thursday" -
+  still would not work today, even though the identical correction on
+  a reminder or task does. Making it work needs Google Calendar's
+  update-event API wired in, plus `remember_entity("calendar_event",
+  ...)` after a successful creation - a real, separate, and
+  calendar-API-touching piece of work, not a phrasing-recognition
+  problem like the rest of this item was. Left open rather than folded
+  in here silently; flagging it explicitly rather than claiming this
+  bullet is 100% done when the spec's own headline scenario still
+  doesn't run end-to-end.
 - **General confidence system** (section 13's HIGH/MEDIUM/LOW rule,
   named and reusable rather than inline) - `app/ai/confidence.py`.
   Before this, the exact same act/ask/ignore rule already existed, but
@@ -268,8 +295,13 @@ reasoning budget. All five:
   route into yet (`MOCHI_VERSIONED_ROADMAP.md` section 19).
 
 That closes every Phase 3 item from the spec's own section 28 list.
-The two caveats above (bare "actually" phrasing, model-tier routing)
-are intentional, explained scope boundaries, not gaps that were missed.
+The bare-"actually" phrasing gap flagged in an earlier version of this
+doc is now fixed (see the "Correction handling" bullet above); the
+model-tier-routing scope boundary on reasoning budget remains
+intentional, not a gap that was missed. The one remaining item, noted
+above under "Correction handling", is scoped narrower than a caveat -
+reschedule corrections don't yet reach calendar events, a distinct,
+calendar-API-touching piece of work.
 
 ## Phase 4 - NOT DONE (infrastructure-blocked, not a scoping choice)
 
