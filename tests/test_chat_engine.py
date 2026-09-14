@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from app.ai.chat_engine import handle_message
 from app.character.state_machine import CharacterState, Emotion
 from app.memory import relationship
@@ -442,6 +444,151 @@ def test_declining_create_event_never_calls_calendar_tools(temp_db, monkeypatch)
 
     assert reaction.pending_action is None
     assert "never mind" in reaction.text.lower()
+
+
+def test_calendar_reschedule_proposes_and_waits_for_confirmation(temp_db, monkeypatch):
+    """"actually thursday" after creating a calendar event must propose
+    the reschedule, exactly like create/delete, never write directly."""
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-15T17:00:00", "end": "2026-08-15T18:00:00",
+            "all_day": False,
+        },
+    )
+
+    def _fail_if_called(*_a, **_kw):
+        raise AssertionError("must propose, not write directly")
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.update_event", _fail_if_called)
+
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+
+    reaction = handle_message("actually thursday", conversation_state=created.conversation_state)
+
+    assert reaction.pending_action is not None
+    assert reaction.pending_action["kind"] == "calendar_reschedule"
+    assert reaction.pending_action["event_id"] == "evt1"
+
+
+def test_confirming_calendar_reschedule_calls_update_event_with_confirmed_true(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-15T17:00:00", "end": "2026-08-15T18:00:00",
+            "all_day": False,
+        },
+    )
+    calls = []
+
+    def _fake_update(event_id, title=None, start_iso=None, end_iso=None, confirmed=False):
+        calls.append((event_id, start_iso, end_iso, confirmed))
+        return {"id": event_id}
+
+    monkeypatch.setattr("app.ai.chat_engine.calendar_tools.update_event", _fake_update)
+
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+    proposal = handle_message("make it 6pm", conversation_state=created.conversation_state)
+    reaction = handle_message("yes", pending_action=proposal.pending_action)
+
+    assert len(calls) == 1
+    event_id, start_iso, end_iso, confirmed = calls[0]
+    assert event_id == "evt1"
+    assert confirmed is True
+    # No date given in "make it 6pm", so the date defaults to today (real
+    # wall-clock date) exactly like the reminder/task path already does -
+    # only the time-of-day and the preserved 1-hour duration matter here.
+    assert start_iso.endswith("T18:00:00")
+    start_dt = datetime.fromisoformat(start_iso)
+    end_dt = datetime.fromisoformat(end_iso)
+    assert end_dt - start_dt == timedelta(hours=1)
+    assert reaction.pending_action is None
+    assert "done" in reaction.text.lower()
+
+
+def test_calendar_reschedule_date_only_keeps_existing_time_and_duration(temp_db, monkeypatch):
+    """"Actually Thursday" (no time) must keep the event's existing
+    5pm-6pm slot, just move it to Thursday's date."""
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-14T17:00:00", "end": "2026-08-14T18:00:00",
+            "all_day": False,
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.update_event",
+        lambda event_id, title=None, start_iso=None, end_iso=None, confirmed=False: (
+            calls.append((start_iso, end_iso)) or {"id": event_id}
+        ),
+    )
+
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+    proposal = handle_message("actually thursday", conversation_state=created.conversation_state)
+    handle_message("yes", pending_action=proposal.pending_action)
+
+    assert len(calls) == 1
+    start_iso, end_iso = calls[0]
+    assert start_iso.endswith("T17:00:00")
+    assert end_iso.endswith("T18:00:00")
+
+
+def test_calendar_reschedule_with_no_recent_event_asks_instead_of_guessing(temp_db):
+    reaction = handle_message("make it 6pm", conversation_state=None)
+    assert "don't have a specific" in reaction.text.lower()
+
+
+def test_calendar_reschedule_when_event_was_since_deleted(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+
+    monkeypatch.setattr("app.ai.chat_engine.google_calendar.get_event", lambda event_id: None)
+    reaction = handle_message("make it 6pm", conversation_state=created.conversation_state)
+
+    assert "isn't around anymore" in reaction.text.lower()
+
+
+def test_calendar_reschedule_declines_all_day_events(temp_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.ai.chat_engine.calendar_tools.create_event",
+        lambda title, start_iso, confirmed=False: {"id": "evt1", "title": title},
+    )
+    created = handle_message("schedule a meeting with Devika tomorrow at 5pm")
+    created = handle_message("yes", pending_action=created.pending_action)
+
+    monkeypatch.setattr(
+        "app.ai.chat_engine.google_calendar.get_event",
+        lambda event_id: {
+            "id": "evt1", "title": "Meeting with Devika",
+            "start": "2026-08-15", "end": "2026-08-16", "all_day": True,
+        },
+    )
+    reaction = handle_message("make it 6pm", conversation_state=created.conversation_state)
+
+    assert "all-day" in reaction.text.lower()
 
 
 def test_ambiguous_reply_expires_pending_action_instead_of_keeping_it_alive(temp_db, monkeypatch):

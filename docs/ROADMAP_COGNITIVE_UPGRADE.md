@@ -237,10 +237,47 @@ reasoning budget. All five:
   update-event API wired in, plus `remember_entity("calendar_event",
   ...)` after a successful creation - a real, separate, and
   calendar-API-touching piece of work, not a phrasing-recognition
-  problem like the rest of this item was. Left open rather than folded
-  in here silently; flagging it explicitly rather than claiming this
-  bullet is 100% done when the spec's own headline scenario still
-  doesn't run end-to-end.
+  problem like the rest of this item was.
+
+  **Update: this is now closed too.** `google_calendar.update_event()`
+  (`events().patch()`, Google's own documented approach for a partial
+  change - confirmed by checking Google's Calendar API docs directly
+  rather than assuming) already existed at the tools layer, complete
+  with the `confirmed=True` gate and post-write verification - the
+  chat-layer wiring was the actual missing piece, not the calendar API
+  integration itself. `_resolve_pending_action()`'s calendar-create
+  branch now calls `convo.remember_entity("calendar_event", event_id,
+  title)` on success, the same pattern already used for reminders/
+  tasks/timers. `_reschedule_reference_reaction()` branches on
+  `entity_type == "calendar_event"` into a new
+  `_reschedule_calendar_event()`, which fetches the event's real
+  current start/end from Google Calendar (never assumed), preserves its
+  original DURATION on any correction (so "make it 5pm" on a 30-minute
+  meeting doesn't silently become an hour), preserves its time-of-day
+  on a date-only correction exactly like the reminder/task path, and -
+  unlike reminders/tasks, which write immediately - proposes rather
+  than writes, going through the exact same yes/no confirmation gate as
+  a fresh calendar create/delete (a reschedule is just as consequential
+  as either). An all-day event or one that's since been deleted both
+  decline gracefully rather than guessing.
+
+  One real bug surfaced and fixed while wiring this: a generic
+  post-processing step in `handle_message()` unconditionally reset
+  `pending_action` to `None` after every `_ACTION_HANDLERS` call, on
+  the historically-true assumption that none of them ever needed to set
+  one (they all write immediately). That's no longer true now that one
+  of them proposes instead - fixed to trust the handler's own return
+  value, the same way `conversation_state` already worked in the same
+  spot. Every other handler in that group already returns
+  `pending_action=None` on its own (the dataclass default, never
+  touched), so this only changes behavior for the one case that
+  actually needed it.
+
+  See `tests/test_chat_engine.py` for the calendar-reschedule coverage
+  (propose-then-confirm, confirmed write includes the preserved
+  duration, date-only correction keeps the existing time, a deleted or
+  all-day event declines gracefully, no recent event asks instead of
+  guessing).
 - **General confidence system** (section 13's HIGH/MEDIUM/LOW rule,
   named and reusable rather than inline) - `app/ai/confidence.py`.
   Before this, the exact same act/ask/ignore rule already existed, but

@@ -1518,6 +1518,59 @@ vague-time-of-day still asks) and
 "actually at 8pm" reschedules a just-created reminder, and "actually
 thursday" changes only the date while keeping the existing time).
 
+**Follow-up: the same corrections now also reach calendar events.**
+The paragraph above (and `docs/ROADMAP_COGNITIVE_UPGRADE.md`) originally
+flagged this as a known, separate, deliberately-not-folded-in gap:
+`reschedule_reference` only ever supported "reminder"/"task", calendar
+events were never tracked as a reschedulable entity at all, and there
+was no calendar-event write path in `_reschedule_reference_reaction()`.
+Checking Google's own Calendar API docs first confirmed
+`google_calendar.update_event()` (`events().patch()`) was already the
+right approach and already existed at the tools layer, complete with
+`confirmed=True` and post-write verification (`app/tools/calendar_tools.py`)
+- the chat-layer wiring was the actual gap, not the calendar
+integration itself:
+
+- `_resolve_pending_action()`'s `calendar_create` branch now calls
+  `convo.remember_entity("calendar_event", event_id, title)` on
+  success - the same pattern reminder/task/timer creation already used,
+  just not wired for calendar events since creation there goes through
+  its own propose-then-confirm branch rather than the generic
+  `_CREATE_TOOL_ENTITY_KINDS` dispatch.
+- `_reschedule_reference_reaction()` now branches on
+  `entity_type == "calendar_event"` into a new
+  `_reschedule_calendar_event()`. It fetches the event's real current
+  start/end from Google Calendar (never assumed) to preserve its
+  original DURATION on any correction (a 30-minute meeting stays
+  30 minutes after "make it 5pm", it doesn't silently become an hour)
+  and its time-of-day on a date-only correction, exactly like the
+  reminder/task path. Unlike reminders/tasks, which write immediately,
+  this proposes rather than writes - a calendar reschedule is exactly
+  as consequential as a fresh create or delete, so it goes through the
+  identical yes/no confirmation gate (see the section header above
+  `_calendar_create_proposal`). An all-day event, or one that's since
+  been deleted, both decline gracefully rather than guessing.
+
+One real bug this surfaced and fixed: `handle_message()` had a generic
+post-processing step that unconditionally reset `pending_action` to
+`None` after every `_ACTION_HANDLERS` call, on the historically-true
+assumption that none of them ever needed to set one (they all write
+immediately - complete/cancel/reschedule a reminder or task). That
+stopped being true the moment one of them needed to propose instead of
+write, and would have silently discarded the calendar-reschedule
+proposal every time. Fixed to trust the handler's own returned
+`pending_action`, the same way `conversation_state` right next to it
+already worked - every other handler in that group already returns
+`pending_action=None` on its own (the dataclass default, never
+touched), so this only changes behavior for the one case that actually
+needed it.
+
+See `tests/test_chat_engine.py`'s calendar-reschedule tests: propose-
+then-confirm (never writes on the first message), the confirmed write
+preserves the original duration, a date-only correction keeps the
+existing time, a deleted or all-day event both decline gracefully, and
+no recent event asks instead of guessing.
+
 ---
 
 ## 5m. General confidence system and reasoning budget (Cognitive Upgrade, phase 3)
