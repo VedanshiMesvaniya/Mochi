@@ -1733,9 +1733,13 @@ mode can flip a decision, output is always clamped to 0.0-1.0).
 See `docs/ROADMAP_COGNITIVE_UPGRADE.md`'s "Phase 4" section and
 `benchmarks/README.md` for the full picture, including exactly why the
 actual cross-model comparison (Qwen3-4B vs Qwen3-8B vs Phi-4-mini vs
-the current model) remains blocked in this development environment
-(confirmed directly - no route to Ollama or Hugging Face, no GPU - not
-assumed).
+the current model) remains blocked in this development environment -
+confirmed directly, not assumed: the Ollama binary itself is reachable
+(via `github.com`'s release-asset redirect) and runs fine, but
+`registry.ollama.ai`, which every model pull actually needs, isn't.
+Every model this benchmark targets comes from Ollama's own registry
+only - this project is local-first by design, no cloud model API is
+ever in scope regardless of network access.
 
 `benchmarks/dataset.py` holds a permanent, versioned set of `Case`s
 (spec section 53's "Create a permanent Mochi benchmark dataset")
