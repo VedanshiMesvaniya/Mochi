@@ -20,12 +20,19 @@ NOT measurable here: the actual point of spec section 19 - comparing
 Qwen3-4B, Qwen3-8B, Phi-4-mini, and the current model (qwen2.5:1.5b)
 against each other on open-ended conversation quality, and each one's
 real latency/RAM/VRAM. That needs an actual running Ollama instance
-serving each model, which this project's current sandboxed development
-environment cannot reach (no route to ollama.com or huggingface.co -
-verified directly, not assumed: `curl https://ollama.com` here returns
-HTTP 403 with `x-deny-reason: host_not_allowed`) and has no GPU. This
-harness is written to make that comparison a single command away the
-moment it's run somewhere that Ollama access exists - see `--model` and
+serving each model, entirely locally - this project is local-first by
+design (MOCHI_VERSIONED_ROADMAP.md section 4: "Never require a cloud
+API"), so Ollama's own registry is the only model source in scope at
+all. This project's current sandboxed development environment cannot
+reach it: `ollama pull` needs `registry.ollama.ai`, which returns
+`403: Host not in allowlist` here - checked directly by actually
+running a real Ollama server (the binary itself is reachable via a
+different, already-allowed path, `github.com`'s release-asset
+redirect, and confirmed working) and attempting a real pull, not
+assumed. There is also no GPU, and only 3.9 GB total RAM - even with
+network access, an 8B model likely wouldn't fit here at all. This
+harness is written to make the real comparison a single command away
+the moment it's run somewhere Ollama access exists - see `--model` and
 `--host` below and benchmarks/README.md for exact `ollama pull`
 commands - rather than something that needs to be built from scratch
 later.

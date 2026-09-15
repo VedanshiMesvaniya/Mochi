@@ -20,8 +20,10 @@ Phase 4 (model benchmark) is PARTIALLY done: a permanent, versioned
 benchmark dataset and harness now exist (`benchmarks/`), with a real,
 reproducible baseline checked in - but the actual cross-model
 comparison the spec asks for still cannot be run in this development
-environment (confirmed no route to Ollama/Hugging Face, no GPU) - see
-"Implementation status" for the full picture.
+environment (confirmed: `registry.ollama.ai`, the only model source in
+scope - this project is local-first, no cloud API - isn't reachable
+here, and there's no GPU) - see "Implementation status" for the full
+picture.
 
 Phase 5 (mood, expression state, initiative, proactive reminders,
 presence behavior) is partially done: mood/expression state was
@@ -379,25 +381,35 @@ Qwen3-8B, Phi-4-mini, and the current model against each other.
 **What's still not done, and confirmed - not assumed - to be
 infrastructure-blocked in this development environment:** running the
 actual comparison needs a live Ollama instance serving each candidate
-model. Checked directly before writing this, not from memory:
+model, entirely locally (this project is local-first by design - see
+`MOCHI_VERSIONED_ROADMAP.md` section 4, "Never require a cloud API" -
+so Ollama, via `registry.ollama.ai`, is the only model source in scope
+at all; no cloud inference API is an option regardless of network
+access). Checked directly, one step at a time, not assumed:
 
-```
-$ curl -sS -D - -o /dev/null https://ollama.com
-HTTP/2 403
-x-deny-reason: host_not_allowed
-```
+- `ollama.com` and `huggingface.co` both return `403
+  x-deny-reason: host_not_allowed`.
+- The Ollama *binary* itself turned out to be reachable anyway, through
+  a path that was already allowed for other reasons: `github.com`'s
+  release-download redirect lands on
+  `release-assets.githubusercontent.com`, which this environment
+  already permits for other purposes. Downloaded and ran it for real to
+  confirm - server started, detected CPU-only inference correctly (no
+  GPU here, confirmed rather than assumed).
+- `ollama pull qwen3:4b` against that real server failed with `403:
+  Host not in allowlist: registry.ollama.ai` - the specific, actual
+  blocker for getting any model's weights, distinct from `ollama.com`
+  itself.
+- Total RAM in this environment is 3.9 GB (3.5 GB available, no swap) -
+  even with weights available, an 8B model likely wouldn't fit at all,
+  and the 4B/mini candidates would be extremely tight.
 
-(same result for `huggingface.co`; no Ollama binary is installed, no
-Ollama server is reachable at `localhost:11434`, and there's no GPU
-either). Current, confirmed official Ollama tags for the three
-candidates are `qwen3:4b` (2.5 GB - the closest available tag to the
-roadmap's specifically-named "Qwen3-4B-Thinking-2507"; the base
-`qwen3:4b` supports a `think` parameter, or the exact 2507 checkpoint
-can be pulled as a GGUF straight from Hugging Face - see
-`benchmarks/README.md` for the exact command), `qwen3:8b` (5.2 GB), and
-`phi4-mini` (2.5 GB, 3.8B params) - confirmed via web search rather
-than assumed from training data, since exact current tags/sizes are
-exactly the kind of thing that goes stale. `benchmarks/harness.py`'s
+Current, confirmed official Ollama tags: `qwen2.5:1.5b` (current
+default), `qwen3:4b` (2.5 GB), `qwen3:8b` (5.2 GB), and `phi4-mini`
+(2.5 GB, 3.8B params) - confirmed via web search rather than assumed
+from training data, since exact current tags/sizes are exactly the
+kind of thing that goes stale. See `benchmarks/README.md` for the full
+list and exact `ollama pull` commands. `benchmarks/harness.py`'s
 `--model`/`--host` flags make running the real comparison a single
 command away the moment this runs somewhere Ollama access exists -
 `benchmarks/README.md` has the exact commands. This remains a

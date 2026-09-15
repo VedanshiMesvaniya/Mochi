@@ -44,45 +44,60 @@ way that would change the pass/fail outcome.
 The actual point of spec section 19 is comparing those three models
 plus the current one (`qwen2.5:1.5b`) against each other - conversation
 quality, tool selection under ambiguity, latency, RAM, VRAM. That needs
-a real, running Ollama instance serving each model in turn. **This
-project's current sandboxed development environment cannot do that**:
+a real, running Ollama instance serving each model in turn, entirely
+locally (see "Local models: Ollama only" below - no cloud fallback is
+in scope). **This project's current sandboxed development environment
+cannot do that**, checked one step at a time, not assumed:
 
-- No route to `ollama.com` or `huggingface.co` to download model
-  weights. Verified directly, not assumed:
+- The Ollama *binary* itself is actually reachable, through a path
+  already allowed for other reasons (`github.com`'s release-download
+  redirect lands on `release-assets.githubusercontent.com`, already
+  permitted). Downloaded and ran it for real to confirm this - the
+  server starts and correctly detects CPU-only inference.
+- But `ollama pull <model>` against that real, running server fails:
   ```
-  $ curl -sS -D - -o /dev/null https://ollama.com
-  HTTP/2 403
-  x-deny-reason: host_not_allowed
+  Error: pull model manifest: 403: Host not in allowlist:
+  registry.ollama.ai. Add this host to your network egress settings
+  to allow access.
   ```
-  (same result for `huggingface.co`)
-- No Ollama binary installed, no Ollama server reachable at
-  `localhost:11434` either.
-- No GPU.
+  `registry.ollama.ai` is what every model pull actually needs, and
+  it's not reachable here - confirmed by trying it for real, not
+  assumed from the earlier `ollama.com` block alone.
+- No GPU, and only 3.9 GB total RAM (3.5 GB available, no swap) - even
+  with weights available, the 8B candidate likely wouldn't fit here at
+  all.
 
 This is an infrastructure limitation of *this development
 environment*, not a property of Mochi's code or of the benchmark
 design - the harness is written so the real comparison is a single
 command away the moment it's run somewhere Ollama access exists.
 
-## Running the real comparison, once Ollama is available
+## Local models: Ollama only
+
+This project is local-first by design (see `MOCHI_VERSIONED_ROADMAP.md`
+section 4: "Never require a cloud API"). Every model this benchmark
+suite targets is pulled through Ollama's own registry
+(`registry.ollama.ai`) and run entirely on-device - no Hugging Face
+account, no API key, no cloud inference endpoint, ever. If a model
+isn't available as a plain `ollama pull <tag>`, it's not in scope for
+Mochi.
+
+## Recommended local models (all via `ollama pull`)
+
+| Tag | Size | Params | Role |
+|---|---|---|---|
+| `qwen2.5:1.5b` | ~1 GB | 1.5B | Current Mochi default - the always-on baseline every comparison runs against |
+| `qwen3:4b` | 2.5 GB | 4B | Phase 4 candidate - supports a `think` on/off toggle (spec section 18's reasoning-budget idea, natively) |
+| `qwen3:8b` | 5.2 GB | 8B | Phase 4 candidate - higher-quality reasoning tier, same `think` toggle |
+| `phi4-mini` | 2.5 GB | 3.8B | Phase 4 candidate - Microsoft's small reasoning model, alternative lineage to Qwen |
+
+Pull whichever you want to test:
 
 ```bash
-# Current model (already Mochi's default)
 ollama pull qwen2.5:1.5b
-
-# The three phase-4 candidates (official Ollama library tags,
-# confirmed current as of this writing)
-ollama pull qwen3:4b       # 2.5 GB - closest available tag to the
-                            # roadmap's named "Qwen3-4B-Thinking-2507";
-                            # the base qwen3:4b supports a `think`
-                            # parameter, so pass think=True for the
-                            # closest match to that variant. For the
-                            # exact 2507 checkpoint instead of the
-                            # base model, pull a GGUF build of it from
-                            # Hugging Face directly, e.g.:
-                            # ollama run hf.co/unsloth/Qwen3-4B-Thinking-2507-GGUF
-ollama pull qwen3:8b       # 5.2 GB
-ollama pull phi4-mini      # 2.5 GB, 3.8B params
+ollama pull qwen3:4b
+ollama pull qwen3:8b
+ollama pull phi4-mini
 
 ollama serve   # if not already running
 
